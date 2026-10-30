@@ -1,7 +1,7 @@
 import type { RowResult } from "../convert/convert"
 import type { Basis, GyoshuSummary } from "../convert/koji-selection"
 import { nonCp932Chars } from "../convert/text"
-import { KOJI_KEIREKI, type KojiFieldId } from "../spec/koji-keireki"
+import { fieldLabel, KOJI_KEIREKI, type KojiFieldId } from "../spec/koji-keireki"
 
 /**
  * 書き出す前の確認（CSV・取り込み用の Excel）。決まった検査の残り（エラー・要確認）と、Excel の「CSV で保存」で「?」になる文字、
@@ -28,7 +28,6 @@ export type ExportCheck = {
   mismatches: BasisMismatch[]
 }
 
-const fieldLabel = (f: KojiFieldId) => KOJI_KEIREKI.fields.find((x) => x.id === f)!.label
 
 /**
  * 基準額と行の合計が「合う」幅（千円）。行ごとに千円未満を切り捨て・四捨五入するので、行の数だけずれうる

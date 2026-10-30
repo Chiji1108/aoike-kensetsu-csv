@@ -1,3 +1,4 @@
+import { MODEL } from "@/lib/constants"
 import Anthropic from "@anthropic-ai/sdk"
 import { z } from "zod"
 import { parseAiResponse, type AiBatchRequest } from "@/lib/convert/ai-tasks"
@@ -14,7 +15,6 @@ import { searchable } from "./location-store"
  * 外に送るのは CSV に出す工事名・注文者（匿名化のあと）だけ。個人名のある現場は呼ぶ前に断る
  */
 
-const MODEL = "claude-opus-5-5"
 /** Web 検索の料金（1,000回 $10） */
 export const USD_PER_SEARCH = 0.01
 /** 1現場で検索してよい回数 */

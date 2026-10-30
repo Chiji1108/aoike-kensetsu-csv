@@ -1,6 +1,6 @@
 import { groupBy } from "../group-by"
 import { codeLabel } from "../spec/code-sets"
-import { KOJI_KEIREKI, type KojiFieldId } from "../spec/koji-keireki"
+import { fieldLabel, KOJI_KEIREKI, type KojiFieldId } from "../spec/koji-keireki"
 import { addressKey, type AddressBook, type AddressLookup } from "../convert/address"
 import { applyEdits, editKey, resolveRows, type CellEdits, type Replacements, transformCell, type CellDraft, type CellEdit, type CellResult, type RowDraft, type RowResult } from "../convert/convert"
 import { fillAiCache, type AiCache, type AiCaller } from "../convert/pipeline"
@@ -710,4 +710,3 @@ export function mergeAnswers(
   return { edits: new Map([...now.edits, ...merged.edits]), report: merged }
 }
 
-export const fieldLabel = (f: KojiFieldId) => KOJI_KEIREKI.fields.find((x) => x.id === f)!.label

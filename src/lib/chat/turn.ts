@@ -12,14 +12,15 @@ import { applyPlanPatch, beforeOf, describePlanPatch, patchFromInput, planPatchI
 import { CODE_SETS } from "../spec/code-sets"
 import type { Basis, SelectionMode, TaxMode } from "../convert/koji-selection"
 import { basisSchema, fieldIdSchema, selectionSchema, taxSchema } from "../schemas"
-import { KOJI_ANONYMIZE, KOJI_KEIREKI, type KojiFieldId } from "../spec/koji-keireki"
+import { MODEL } from "../constants"
+import { fieldLabel, KOJI_ANONYMIZE, KOJI_KEIREKI, type KojiFieldId } from "../spec/koji-keireki"
 import { applyChanges, type ChatChange } from "./proposals"
 import { charCount, MAX_RULE_ITEM_LENGTH, RULE7_TAX_LABELS, ruleScopeSchema, type Rule7Tax, type RuleScope } from "./rules"
 import { MAX_REVIEW_NOTES, MAX_REVIEW_RULES, reviewGuard, reviewMaterial, sameRuleText, UNKNOWN_RESULT, type ReviewGuard, type ReviewTurn } from "./review"
 import { CHAT_ACTIONS, type ChatAction } from "./messages"
 import { outcomeChanges } from "../location/changes"
 import { askReason, estimateUsd, MAX_SITES_PER_RUN, runSitesOf, siteOfRow, SOURCE_LABELS, type Outcome, type Site } from "../location/sites"
-import { ANSWER_FIELDS, collectInquiries, fieldLabel, inquiryKey, QUESTION_HEADER, readAiAnswers, REASONS, type AiAnswerReport } from "../inquiry/inquiry"
+import { ANSWER_FIELDS, collectInquiries, inquiryKey, QUESTION_HEADER, readAiAnswers, REASONS, type AiAnswerReport } from "../inquiry/inquiry"
 import { checkQuestions, newQuestionId, questionGroups, introSchema, MAX_QUESTION_KEYS, MAX_QUESTIONS, MAX_TOTAL_KEYS, MAX_QUESTION_LENGTH, otherCustomerTest, questionTargetsSchema, questionTextSchema, subjectSchema, type QuestionTarget } from "../inquiry/text"
 import type { AddressLookup } from "../convert/address"
 import type { AiCache, AiCaller } from "../convert/pipeline"
@@ -30,7 +31,6 @@ import type { Rounding } from "../convert/transforms"
  * （programmatic tool calling）で送る。変更はすぐ表に入れず、変更案（pending）に溜めて職員の承認を待つ
  */
 
-export const MODEL = "claude-opus-5-5"
 /** 1回の指示で道具（コード実行を除く）を呼べる回数 */
 export const MAX_TOOL_CALLS = 20
 /** 1回の指示の往復の上限（安全装置。道具の回数の上限で先に止まる） */

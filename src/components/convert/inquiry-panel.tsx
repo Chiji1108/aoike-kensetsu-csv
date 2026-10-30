@@ -8,6 +8,7 @@ import { Textarea } from "@/components/ui/textarea"
 import type { RowResult } from "@/lib/convert/convert"
 import { datedFileName } from "@/lib/convert/csv"
 import { withNames } from "@/lib/convert/persons"
+import { fieldLabel } from "@/lib/spec/koji-keireki"
 import { errorMessage } from "@/lib/errors"
 import { saveFile } from "@/lib/save-file"
 import { DEFAULT_INTRO, inquiryEmail } from "@/lib/inquiry/email"
@@ -15,7 +16,6 @@ import { DraftText } from "./draft-text"
 import { editQuestion, groupCount, MAX_INTRO_LENGTH, MAX_QUESTION_LENGTH, MAX_SUBJECT_LENGTH, questionGroups, type InquiryText, type QuestionGroup } from "@/lib/inquiry/text"
 import {
   CASE_TOPICS,
-  fieldLabel,
   inquiryKey,
   inquirySheet,
   REASONS,

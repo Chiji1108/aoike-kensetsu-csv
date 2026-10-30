@@ -7,7 +7,7 @@ import type { TableView } from "@/lib/cases/view"
 import type { ChatChange, Proposal } from "@/lib/chat/proposals"
 import { errorMessage } from "@/lib/errors"
 import { INCLUDE_HEADER, type EditReport } from "@/lib/excel/edit-sheet"
-import { fieldLabel } from "@/lib/inquiry/inquiry"
+import { fieldLabel } from "@/lib/spec/koji-keireki"
 import type { KojiFieldId } from "@/lib/spec/koji-keireki"
 
 export type EditImport = { report: EditReport } | { error: string }

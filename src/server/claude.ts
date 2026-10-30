@@ -5,11 +5,11 @@ import { aiResponseSchema, type AiBatchRequest } from "@/lib/convert/ai-tasks"
 import { mappingPlanWireSchema } from "@/lib/convert/plan"
 import { batchUserMessage, planUserMessage, systemPrompt, type PlanExcerpt } from "@/lib/convert/prompt"
 import { tokensOfMessage, usdOf } from "@/lib/cost"
+import { MODEL } from "@/lib/constants"
 import { KOJI_KEIREKI } from "@/lib/spec/koji-keireki"
 
 /** Claude の呼び出し（Workers の env に依存しないので、ローカルの照合スクリプトからも使える） */
 
-const MODEL = "claude-opus-5-5"
 
 export type AiFailure = { ok: false; reason: "noKey" | "error"; message: string }
 

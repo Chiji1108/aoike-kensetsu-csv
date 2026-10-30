@@ -1,14 +1,13 @@
 import type { TableView } from "../cases/view"
 import { INCLUSION_LABELS, SELECTION_LABELS, TAX_LABELS, type Basis, type SelectionMode, type TaxMode } from "../convert/koji-selection"
 import { personKey, withNames, type PersonLetters } from "../convert/persons"
-import { KOJI_KEIREKI, type KojiFieldId } from "../spec/koji-keireki"
+import { fieldLabel, KOJI_KEIREKI, type KojiFieldId } from "../spec/koji-keireki"
 import type { MappingPlan } from "../convert/plan"
 import { beforeOf, describePlanPatch } from "../convert/plan-patch"
 import { SOURCE_LABELS } from "../location/sites"
 import type { ChatChange } from "./proposals"
 import { askLabel, CORRECTION_MESSAGE } from "../inquiry/inquiry"
 
-const fieldLabel = new Map(KOJI_KEIREKI.fields.map((f) => [f.id, f.label]))
 
 /** 印の人を今の記号で見せる。今の表にいない人（承認すると現れる人）は名前を出さない */
 function shownValue(stored: string, letters: PersonLetters) {
@@ -41,9 +40,9 @@ export function describeChange(c: ChatChange, view: TableView, byKey: ReadonlyMa
   }
   switch (c.kind) {
     case "cell":
-      return { where: rowName(c.rowKey), what: `${fieldLabel.get(c.field) ?? c.field}${c.edit.by === "customer" && c.edit.message?.startsWith(CORRECTION_MESSAGE) ? "（顧客の訂正）" : (BY_NOTE[c.edit.by] ?? "")}`, from: byKey.get(c.rowKey)?.cells[c.field].value ?? "", to: shownValue(c.edit.value, view.letters), values: true }
+      return { where: rowName(c.rowKey), what: `${fieldLabel(c.field)}${c.edit.by === "customer" && c.edit.message?.startsWith(CORRECTION_MESSAGE) ? "（顧客の訂正）" : (BY_NOTE[c.edit.by] ?? "")}`, from: byKey.get(c.rowKey)?.cells[c.field].value ?? "", to: shownValue(c.edit.value, view.letters), values: true }
     case "ask":
-      return { where: rowName(c.rowKey), what: fieldLabel.get(c.field) ?? c.field, from: byKey.get(c.rowKey)?.cells[c.field].value ?? "", to: `顧客に確認: ${c.reason}` }
+      return { where: rowName(c.rowKey), what: fieldLabel(c.field), from: byKey.get(c.rowKey)?.cells[c.field].value ?? "", to: `顧客に確認: ${c.reason}` }
     case "add": {
       const values = KOJI_KEIREKI.fields.flatMap((f) => (c.cells[f.id]?.value ? [`${f.label}: ${shownValue(c.cells[f.id]!.value, view.letters)}`] : []))
       return { where: c.by === "excel" ? "Excelで追加" : "AIが追加", what: "工事を足す", from: "", to: values.join(" / ") }
