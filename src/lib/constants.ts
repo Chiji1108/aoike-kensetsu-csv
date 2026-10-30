@@ -7,3 +7,6 @@ export const APP_NAME = "青池事務所 工事経歴CSV"
  */
 export const OFFICE_ACCOUNT_EMAIL = "office@aoike-kensetsu-csv.internal"
 export const OFFICE_ACCOUNT_NAME = "青池事務所"
+
+/** 使う Claude のモデル（変換・チャット・工事場所の調査） */
+export const MODEL = "claude-opus-5-5"

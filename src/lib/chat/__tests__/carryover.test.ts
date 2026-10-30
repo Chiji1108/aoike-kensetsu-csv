@@ -3,7 +3,7 @@ import type { ModelMessage } from "ai"
 import { aiKey } from "../../convert/convert"
 import { personToken } from "../../convert/persons"
 import { kojiRow } from "../../convert/__tests__/helpers"
-import { approvedChatProposals, carryoverPrompt, carryoverReady, knownWords, MASKED, maskUnknownText, namesForCarryover, codesFromModel, codesFromUi, MAX_CARRYOVER_CHARS, namesOfCase, scrubNames } from "../carryover"
+import { approvedChatProposals, carryoverPrompt, carryoverReady, knownWords, MASKED, maskUnknownText, namesForCarryover, codesFromModel, codesFromUi, MAX_CARRYOVER_CHARS, namesOfCase, nameScrubber } from "../carryover"
 import type { ChatMessage } from "../messages"
 import type { Proposal } from "../proposals"
 
@@ -75,21 +75,21 @@ describe("去年のコード", () => {
     const names = namesOfCase(work, aiCache)
     expect([...names].sort()).toEqual(["佐藤　次郎", "佐藤　花子", "山田太郎", "青池　一郎", "高橋　健", "高橋健", "鈴木一郎"].sort())
     const src = `m = {"山田太郎": "x", "青池一郎": "y", "青池 一郎": "z", "鈴木一郎": "w"}\nif c == "株式会社中村建設": pass  # 佐藤`
-    const out = scrubNames(src, names)
+    const out = nameScrubber(names)(src)
     expect(out).toBe(`m = {"〔個人名〕": "x", "〔個人名〕": "y", "〔個人名〕": "z", "〔個人名〕": "w"}\nif c == "株式会社中村建設": pass  # 佐藤`)
   })
 
   test("氏名は氏名ごと置き換え、会社名・地名の中の姓は壊さない。2文字以下の名前は前後が文字でないときだけ。全角半角の違う書き方も置き換える", () => {
     const names = ["中村　一郎", "山田", "ヤマダタロウ", "青池"]
     const src = [`a = "株式会社中村建設"`, `b = "山田町"`, `c = "山田"`, `d = "中村一郎邸新築工事"`, `e = "ﾔﾏﾀﾞﾀﾛｳ"`, `f = "中村 一郎"`, `g = ["青池", "青池工務店"]`].join("\n")
-    expect(scrubNames(src, names)).toBe(
+    expect(nameScrubber(names)(src)).toBe(
       [`a = "株式会社中村建設"`, `b = "山田町"`, `c = "〔個人名〕"`, `d = "〔個人名〕邸新築工事"`, `e = "〔個人名〕"`, `f = "〔個人名〕"`, `g = ["〔個人名〕", "青池工務店"]`].join("\n"),
     )
   })
 
   test("空白で囲まれた短い名前・空白の入った氏名も置き換える（空白は消さずに比べる）", () => {
-    expect(scrubNames("# 担当 山田 の行", ["山田"])).toBe("# 担当 〔個人名〕 の行")
-    expect(scrubNames(`a = "山田 太郎"\nb = "山田　太郎"\nc = "山田  太郎"`, ["山田　太郎"])).toBe(`a = "〔個人名〕"\nb = "〔個人名〕"\nc = "〔個人名〕"`)
+    expect(nameScrubber(["山田"])("# 担当 山田 の行")).toBe("# 担当 〔個人名〕 の行")
+    expect(nameScrubber(["山田　太郎"])(`a = "山田 太郎"\nb = "山田　太郎"\nc = "山田  太郎"`)).toBe(`a = "〔個人名〕"\nb = "〔個人名〕"\nc = "〔個人名〕"`)
   })
 
   test("集めた名前に無い固有名も伏せる: 日本語の文字列とコメントのうち、今年の表の値・見出し・ルールに無い語を含むものは伏せる", () => {

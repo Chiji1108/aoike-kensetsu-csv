@@ -276,3 +276,6 @@ export const KOJI_PLAN_HINTS: PlanHints<KojiFieldId> = {
   ],
   excludeHeaders: ["除外", "対象外", "実績外"],
 }
+
+/** 項目の名前（画面・チャット・問い合わせで出す） */
+export const fieldLabel = (f: KojiFieldId) => KOJI_KEIREKI.fields.find((x) => x.id === f)!.label

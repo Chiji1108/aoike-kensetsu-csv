@@ -119,18 +119,7 @@ bun scripts/eval-report.ts --cases <cases.json> --out /path/to/report /path/to/r
 
 回のフォルダには、回ごとの要約（`summary-*.json`。終わったか・落ちた理由を持つ）と、使った時点で足す費用（`costs.jsonl`。落ちた照合の分も残る）が入ります。表の値は終わった回だけで出し、落ちた・止めた回は数と理由を出します。まとめ流しは、前の variant が落ちたらその案件の残りを流さず、落ちたら 1 で終わります。
 案件定義は `variants`（流す順）と `files`（変換の元のほかに AI に渡すファイル）も書けます。合成の例（技術者一覧が別ファイル・PDF で届いた数件、顧客の回答をメールの本文・記入用Excelの別の列・一部だけで受け取る `synth-answers-*`）は `fixtures/eval/cases.json` にあり（`bun scripts/make-sample-eval.ts`・`bun scripts/make-sample-answers.ts` で作り直す）、実データの案件定義と1つのファイルにまとめて使います。
-コードを簡単にしたときの比べ方は、案件ごとのセルの一致率で下がり幅が2ポイント以内なら簡単な方です（`docs/plan-chat-rebuild.md`）。
-
-## 既存のチェックアウトからの移行（apps/web 構成のときに clone していた場合）
-
-ローカル用のシークレットとローカル D1 のデータは git の管理外なので、pull しても `apps/web` に残ります。ルートに移してください。
-
-```bash
-mv apps/web/.dev.vars .                                  # ローカル用シークレット
-mkdir -p .wrangler && mv apps/web/.wrangler/state .wrangler/   # ローカル D1 のデータ
-rm -rf apps                                              # 古い生成物（node_modules・dist など）
-bun install
-```
+照合は一致率を上げる目標ではなく安全網です。コードを簡単にしたときは、案件ごとのセルの一致率の下がり幅が2ポイント以内なら簡単な方を選びます（同じ条件で2回流した揺れは案件ごとに最大0.5ポイント。列ごとの一致率は揺れが大きいので比べに使わない。1.5〜2ポイントの境目なら両方を2回ずつ流して平均で比べる）。
 
 ## CI と依存ライブラリの更新
 
@@ -257,7 +246,7 @@ AI の結果は `ai.apply` が検算します。
 
 6. チャット（`lib/chat/turn.ts` / `server/chat.ts`）：AI SDK（`ai`・`@ai-sdk/anthropic`）の streamText。AI はコード実行（`code_execution_20260120`）で案件のファイル（Files API に上げてコンテナに渡す）と今の表を読み、表の変更はコードから呼ぶ道具（programmatic tool calling）で変更案に溜める。表を作り直すのは画面と同じ `lib/cases/view.ts` の `deriveTable`
 
-変換・検証・CSV出力・変更案は純粋関数（`src/lib/` 以下。React / Workers に依存しない）。Claude の呼び出しはサーバー関数 `src/server/ai.ts` とチャットの `src/server/chat.ts` だけです。
+変換・検証・CSV出力・変更案は純粋関数（`src/lib/` 以下。React / Workers に依存しない）。Claude の呼び出しはサーバー関数 `src/server/ai.ts`、チャットの `src/server/chat.ts`、工事場所の調査の `src/server/location.ts`・`src/server/location-workflow.ts` だけです（モデルは `src/lib/constants.ts` の `MODEL`）。
 
 ### Claude API
 
@@ -293,8 +282,8 @@ src/
     api/cases/$caseId/chat.ts   チャットの1回の指示（AI SDK の UI メッセージのストリーム）
     api/files/$fileId.ts      ファイルのダウンロード（ログイン必須）
   components/
-    convert/                  列の対応の表・プレビューの表・業種ごとの合計・問い合わせのパネル
-    cases/                    削除の確認・文章の設定・案件の状態の自動保存
+    convert/                  結果の表・業種ごとの合計・問い合わせのパネル
+    cases/                    削除の確認・案件の状態の自動保存
     chat/                     チャット欄・変更案（承認の一覧・聞き返し）・返事の Markdown（Streamdown）
     ui/                       shadcn/ui
   server/

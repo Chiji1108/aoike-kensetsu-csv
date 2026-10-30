@@ -17,7 +17,7 @@ export const csvCustomers = sqliteTable("csv_customers", {
 
 /**
  * 全体ルール・顧客ルールの項目（1項目1行）。並びは position（同じ一覧の中で小さい順）。customer_id は顧客ルールのときだけ（全体ルールは null）。
- * source は誰が足したか（staff: 職員が画面で・移した前の文章、chat: チャットの変更案の承認）、case_id は由来の案件（無ければ null。案件を消すと null にする）。
+ * source は誰が足したか（staff: 職員が画面で・移した前の文章、chat: チャットの変更案の承認、review: 案件を終えるときの顧客ルールの案の承認）、case_id は由来の案件（無ければ null。案件を消すと null にする）。
  * version は文章を直すたびに1つ上げ、同じ項目を2つの画面で直したときに後の保存を断る（並べ替えでは上げない）。顧客を消すと顧客ルールの項目も消す
  */
 export const csvRuleItems = sqliteTable(
