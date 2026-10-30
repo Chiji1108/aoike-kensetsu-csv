@@ -65,6 +65,7 @@ const TOOL_LABELS: Record<string, string> = {
   find_location: "工事場所を調べる",
   get_inquiries: "問い合わせを読む",
   record_answers: "顧客の回答の変更案",
+  propose_inquiry: "問い合わせの文面の案",
 }
 
 export type ChatPanelProps = {

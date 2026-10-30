@@ -137,7 +137,7 @@ function UndoLine({ id, actions, busy }: { id: string; actions: ProposalActions;
 }
 
 function countKinds(changes: readonly ChatChange[]) {
-  const n = { cell: 0, ask: 0, include: 0, add: 0, settings: 0, rule: 0, location: 0, plan: 0 }
+  const n = { cell: 0, ask: 0, include: 0, add: 0, settings: 0, rule: 0, location: 0, plan: 0, inquiry: 0, inquiryMail: 0 }
   for (const c of changes) n[c.kind]++
   return [
     n.cell && `セル ${n.cell}`,
@@ -148,6 +148,8 @@ function countKinds(changes: readonly ChatChange[]) {
     n.rule && `ルールの項目 ${n.rule}`,
     n.location && `工事場所 ${n.location}現場`,
     n.plan && "列の対応",
+    n.inquiry && `問い合わせの文 ${n.inquiry}`,
+    n.inquiryMail && "メールの下書き",
   ]
     .filter(Boolean)
     .join("・")

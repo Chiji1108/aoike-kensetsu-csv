@@ -397,3 +397,51 @@ describe("顧客の回答を読む（get_inquiries・record_answers）", () => {
     expect(await call(chatTools(newTurnState(answering)), "record_answers", { items: [{ key: "s!2", field: "engineer", answer: "試験 次郎" }] })).toMatchObject({ ok: false })
   })
 })
+
+describe("問い合わせの文面（propose_inquiry）", () => {
+  const asking = [
+    kojiRow({ ...base, client: yamada, workName: `${yamada}邸新築工事`, amount: "5000", engineer: "" }, 2),
+    kojiRow({ ...base, client: "株式会社　テスト", workName: "テストビル電気工事", amount: "1000", engineer: "" }, 3),
+  ]
+  asking[1]!.cells.endYm = { value: "202409", status: "warning", source: "J列", original: "", message: "引渡日から推定", guessed: true }
+  const asked = { ...table, rows: asking, tax: "unknown" as const }
+  const mail = { subject: "工事経歴書のご確認", intro: "資料ありがとうございました。いくつか教えてください。" }
+  const others = { otherCustomers: async () => ["株式会社サンプル建設"] }
+
+  test("get_inquiries は理由の id と推定の根拠を返す", async () => {
+    const out = await call(chatTools(newTurnState(asked)), "get_inquiries", {})
+    expect(out.cells.find((c: { field: string }) => c.field === "endYm")).toMatchObject({ key: "s!3", reasonId: "needsReview", note: "引渡日から推定" })
+    expect(out.cells.find((c: { field: string }) => c.field === "engineer")).toMatchObject({ reasonId: "missing" })
+  })
+
+  test("質問の文とメールの下書きを変更案に溜める（表は変えない）。決まった文のまま残る数を返す", async () => {
+    const state = newTurnState(asked, undefined, undefined, null, null, null, others)
+    const out = await call(chatTools(state), "propose_inquiry", {
+      ...mail,
+      questions: [
+        { text: "この工事に置いた主任技術者の氏名を教えてください。", targets: [{ field: "engineer" }] },
+        { text: "この工事は引渡日を完成日としてよいですか。", targets: [{ field: "endYm", reasonId: "needsReview", keys: ["s!3"] }] },
+      ],
+    })
+    expect(out).toEqual({ ok: true, questions: 2, covered: 3, fallback: 1 })
+    expect(state.pending).toEqual([
+      { kind: "inquiry", text: "この工事に置いた主任技術者の氏名を教えてください。", targets: [{ field: "engineer" }] },
+      { kind: "inquiry", text: "この工事は引渡日を完成日としてよいですか。", targets: [{ field: "endYm", reason: "needsReview", keys: ["s!3"] }] },
+      { kind: "inquiryMail", ...mail },
+    ])
+    expect(state.current).toBe(asked)
+  })
+
+  test("個人名・表の記号・ほかの顧客の名前の入った文と、当てはまらない対象は何も受け取らない", async () => {
+    const tryText = async (patch: object) => {
+      const state = newTurnState(asked, undefined, undefined, null, null, null, others)
+      const out = await call(chatTools(state), "propose_inquiry", { ...mail, questions: [{ text: "この工事の技術者を教えてください。", targets: [{ field: "engineer" }] }], ...patch })
+      expect(state.pending).toEqual([])
+      return out
+    }
+    expect(await tryText({ questions: [{ text: "山田太郎様の工事の技術者を教えてください。", targets: [{ field: "engineer" }] }] })).toMatchObject({ ok: false, items: ["questions[0]"] })
+    expect(await tryText({ intro: "〔Ａ〕邸の件でご連絡します。" })).toMatchObject({ ok: false, items: ["intro"] })
+    expect(await tryText({ subject: "サンプル建設様と同じ件" })).toMatchObject({ ok: false, items: ["subject"] })
+    expect(await tryText({ questions: [{ text: "着工年月を教えてください。", targets: [{ field: "startYm" }] }] })).toMatchObject({ ok: false, problems: ["questions[0].targets[0]: 今の問い合わせに当てはまりません"] })
+  })
+})
