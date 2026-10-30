@@ -36,5 +36,149 @@
    "baseline",
    "edit"
   ]
+ },
+ "synth-answers-mail": {
+  "xlsx": "fixtures/eval/synth-answers/工事経歴.xlsx",
+  "staffCsv": "fixtures/eval/synth-answers/期待.csv",
+  "customerName": "合成サンプル内装",
+  "customerRules": "",
+  "staffErrors": [],
+  "notDerivable": [],
+  "instructions": [],
+  "variants": [
+   "baseline",
+   "answers"
+  ],
+  "answerInstructions": [
+   "顧客からのメールの本文です。答えを取り込んで。\n\n-----\n青池事務所 御中\n\nいつもお世話になっております。お問い合わせの件、回答いたします。\n\n・病院の待合室の改装は、10月18日に引き渡しました。\n・店舗の内装仕上は横浜市中区の店舗です（神奈川県横浜市中区元町2丁目）。\n・冷凍倉庫の間仕切りは11月末に完成しています。\n・共同住宅のエントランスは世田谷区です。東京都世田谷区上馬4丁目のマンションになります。\n・保育園の床の工事の技術者は山本 健太です。\n・倉庫の件の担当技術者も山本です。\n\n以上、よろしくお願いいたします。\nサンプル内装 工事部"
+  ],
+  "answerTruth": [
+   {
+    "workName": "サンプル病院外来待合室改装工事",
+    "field": "endYm",
+    "value": "202410"
+   },
+   {
+    "workName": "店舗内装仕上工事",
+    "field": "prefecture",
+    "value": "神奈川県"
+   },
+   {
+    "workName": "店舗内装仕上工事",
+    "field": "place",
+    "value": "横浜市中区"
+   },
+   {
+    "workName": "冷凍倉庫事務所間仕切り工事",
+    "field": "endYm",
+    "value": "202411"
+   },
+   {
+    "workName": "共同住宅エントランス改修工事",
+    "field": "prefecture",
+    "value": "東京都"
+   },
+   {
+    "workName": "共同住宅エントランス改修工事",
+    "field": "place",
+    "value": "世田谷区"
+   },
+   {
+    "workName": "保育園保育室床改修工事",
+    "field": "engineer",
+    "value": "山本　健太"
+   }
+  ]
+ },
+ "synth-answers-column": {
+  "xlsx": "fixtures/eval/synth-answers/工事経歴.xlsx",
+  "staffCsv": "fixtures/eval/synth-answers/期待.csv",
+  "customerName": "合成サンプル内装",
+  "customerRules": "",
+  "staffErrors": [],
+  "notDerivable": [],
+  "instructions": [],
+  "variants": [
+   "baseline",
+   "answers"
+  ],
+  "answerSheet": {
+   "物流倉庫休憩室内装工事": "担当は山本 健太です",
+   "サンプル病院外来待合室改装工事": "完成は2024年10月",
+   "店舗内装仕上工事": "神奈川県横浜市中区です",
+   "冷凍倉庫事務所間仕切り工事": "2024年11月完成",
+   "共同住宅エントランス改修工事": "東京都世田谷区",
+   "保育園保育室床改修工事": "技術者は山本 健太"
+  },
+  "answerTruth": [
+   {
+    "workName": "物流倉庫休憩室内装工事",
+    "field": "engineer",
+    "value": "山本　健太"
+   },
+   {
+    "workName": "サンプル病院外来待合室改装工事",
+    "field": "endYm",
+    "value": "202410"
+   },
+   {
+    "workName": "店舗内装仕上工事",
+    "field": "prefecture",
+    "value": "神奈川県"
+   },
+   {
+    "workName": "店舗内装仕上工事",
+    "field": "place",
+    "value": "横浜市中区"
+   },
+   {
+    "workName": "冷凍倉庫事務所間仕切り工事",
+    "field": "endYm",
+    "value": "202411"
+   },
+   {
+    "workName": "共同住宅エントランス改修工事",
+    "field": "prefecture",
+    "value": "東京都"
+   },
+   {
+    "workName": "共同住宅エントランス改修工事",
+    "field": "place",
+    "value": "世田谷区"
+   },
+   {
+    "workName": "保育園保育室床改修工事",
+    "field": "engineer",
+    "value": "山本　健太"
+   }
+  ]
+ },
+ "synth-answers-partial": {
+  "xlsx": "fixtures/eval/synth-answers/工事経歴.xlsx",
+  "staffCsv": "fixtures/eval/synth-answers/期待.csv",
+  "customerName": "合成サンプル内装",
+  "customerRules": "",
+  "staffErrors": [],
+  "notDerivable": [],
+  "instructions": [],
+  "variants": [
+   "baseline",
+   "answers"
+  ],
+  "answerInstructions": [
+   "顧客からのメールの本文です。答えを取り込んで。\n\n-----\nお世話になっております。一部ですが先に回答します。\n物流倉庫の休憩室の工事の担当は山本 健太です。\n病院の待合室は10月に完成しています。\nそのほかの件は現場に確認中のため、分かり次第ご連絡します。"
+  ],
+  "answerTruth": [
+   {
+    "workName": "物流倉庫休憩室内装工事",
+    "field": "engineer",
+    "value": "山本　健太"
+   },
+   {
+    "workName": "サンプル病院外来待合室改装工事",
+    "field": "endYm",
+    "value": "202410"
+   }
+  ]
  }
 }
