@@ -51,8 +51,28 @@ export async function attachAndConvert(page: Page, file: Parameters<Locator["set
 
 /** 表の絞り込みを「すべて」にする（はじめは確かめる行だけ） */
 export async function showAllRows(page: Page) {
-  await page.getByTestId("row-filters").locator('[data-filter="all"]').click()
-  await expect(page.getByTestId("row-filters").locator('[data-filter="all"]')).toHaveAttribute("aria-pressed", "true")
+  await page.getByTestId("row-filters-all").click()
+  await expect(page.getByTestId("row-filters-all")).toHaveAttribute("aria-pressed", "true")
+}
+
+/** 見出しの「…」を開いて、案件の AI の費用の文を読む（閉じて返す） */
+export async function caseCostText(page: Page) {
+  await page.getByTestId("case-menu").click()
+  const cost = page.getByTestId("case-cost")
+  await expect(cost).toBeVisible()
+  const text = (await cost.textContent()) ?? ""
+  await page.keyboard.press("Escape")
+  await expect(cost).toBeHidden()
+  return text
+}
+
+/** 案件の AI の費用（ドル） */
+export const caseCostUsd = async (page: Page) => Number(/\$([\d.]+)/.exec(await caseCostText(page))![1])
+
+/** 見出しの「…」から案件を消すダイアログを開く */
+export async function openCaseDelete(page: Page) {
+  await page.getByTestId("case-menu").click()
+  await page.getByTestId("delete-button").click()
 }
 
 /** 表の下の欄を開く */
