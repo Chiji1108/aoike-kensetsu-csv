@@ -9,6 +9,7 @@ import { savedPlanSchema } from "../convert/plan-schema"
 import type { AnswerReport, CellInquiry } from "../inquiry/inquiry"
 import { proposalSchema, type Proposal } from "../chat/proposals"
 import { addedRowSchema, MAX_ADDED_ROWS, type AddedRow } from "./added"
+import { undoEntrySchema, type UndoEntry } from "./undo"
 import { basisSchema, cellEditSchema, fieldIdSchema, legacySelection, replacementsSchema, selectionSchema, taxSchema } from "../schemas"
 import type { KojiFieldId } from "../spec/koji-keireki"
 
@@ -41,6 +42,10 @@ export type CaseWork = {
   proposals: Proposal[]
   /** 元のファイルに無い、足した工事（cases/added.ts。値は edits）。この項目より前に保存した作業には無いので、読むときは空 */
   added: AddedRow[]
+  /** 承認の取り消しの記録（cases/undo.ts）。この項目より前に保存した作業には無いので、読むときは空 */
+  undo: UndoEntry[]
+  /** 変換の報告の聞き返しへの答え（聞き返しの id → 答え。例: 金額の税込・税抜を「顧客に聞く」）。前の作業には無いので、読むときは空 */
+  reportAnswers: Record<string, string>
 }
 
 export type SavedPlan = { plan: MappingPlan<KojiFieldId>; source: "ai" | "rule"; notice?: string }
@@ -64,6 +69,8 @@ export const newWork = (sourceFileId: string | null = null): CaseWork => ({
   threshold: { on: false, yen: "" },
   proposals: [],
   added: [],
+  undo: [],
+  reportAnswers: {},
 })
 
 // ---- 保存する形（D1 の csv_case_states.json）。Map・Set は組の配列にする ----
@@ -121,6 +128,8 @@ export const savedWorkSchema = z
   threshold: z.object({ on: z.boolean(), yen: z.string() }),
   proposals: z.array(proposalSchema).default([]),
   added: z.array(addedRowSchema).max(MAX_ADDED_ROWS).default([]),
+  undo: z.array(undoEntrySchema).default([]),
+  reportAnswers: z.record(z.string(), z.string().max(100)).default({}),
   })
   .transform(({ alreadyApplied, selection, ...w }) => ({ ...w, selection: legacySelection(selection, alreadyApplied) ?? "rule7" }))
 export type SavedWork = z.infer<typeof savedWorkSchema>
