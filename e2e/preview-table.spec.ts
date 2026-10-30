@@ -73,6 +73,12 @@ test("プレビューの表で絞り込み・並べ替え・列の表示・手�
     await colored.focus()
     await expect(cellNote(page)).toHaveAttribute("data-status", /warning|ai/)
     await expect(colored).toHaveAttribute("aria-describedby", "preview-cell-note")
+    // マウスを乗せただけのセルは、注意書きを出しても説明につながない（読み上げは選んだときだけ）
+    const other = page.locator(`${ROWS} td[data-field="workName"] button`).first()
+    await other.hover()
+    await expect(cellNote(page)).toContainText("工事名")
+    await expect(other).not.toHaveAttribute("aria-describedby", /./)
+    await expect(page.getByTestId("cell-note")).not.toHaveAttribute("aria-live", /./)
   })
 
   await test.step("並べ替え: 請負代金の昇順・降順・元に戻す", async () => {

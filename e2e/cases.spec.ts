@@ -79,8 +79,10 @@ test("顧客と案件を作り、変換と手直しを保存して再読み込�
     expect(aiCalls).toEqual([])
   })
 
-  await test.step("PDF を付けると一覧に出て、変換の元は変わらない", async () => {
-    await page.getByTestId("file-input").setInputFiles(PDF)
+  await test.step("表ができたあとも元ファイルの行の「ファイル」で付けられる。PDF を付けると一覧に出て、変換の元は変わらない", async () => {
+    const choosing = page.waitForEvent("filechooser")
+    await page.getByTestId("attach-button").click()
+    await (await choosing).setFiles(PDF)
     const pdf = page.locator(`[data-testid="file-list"] [data-file="${PDF.name}"]`)
     await expect(pdf).toBeVisible()
     await expect(pdf).not.toContainText("変換の元")
@@ -138,6 +140,11 @@ test("顧客と案件を作り、変換と手直しを保存して再読み込�
     expect(keys.map(inLocalR2)).toEqual([true, true, true])
     // 削除は見出しの「…」から
     await openCaseDelete(page)
+    // メニューが閉じてフォーカスを「…」に戻しても、確かめの入力欄からフォーカスを取られない
+    const confirmName = page.getByRole("alertdialog").getByTestId("delete-confirm-name")
+    await expect(confirmName).toBeFocused()
+    await page.keyboard.type("確かめ")
+    await expect(confirmName).toHaveValue("確かめ")
     await expect(page.getByRole("alertdialog").getByTestId("delete-counts")).toContainText("案件 1 件と、付けたファイル 3 件")
     await confirmDelete(page, customer)
     await expect(page.getByRole("heading", { name: customer })).toBeVisible()
