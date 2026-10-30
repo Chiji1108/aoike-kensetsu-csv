@@ -15,7 +15,7 @@ const SIDE = { total: "完成工事高", motouke: "うち元請" } as const
 /**
  * 書き出す前の確認（1枚）。載せる件数・7割に届いたか・業種ごとの完成工事高と元請の額・エラーと要確認の残り・Shift_JIS で書けない文字を出し、
  * 決算書の業種ごとの完成工事高（7割の基準額と同じ値）を入れると表の合計と照らす。合わなくても止めない。
- * 出すのは取り込み用の Excel（職員がこれまで作っていた形。Excel で確かめて「CSV で保存」する）。CSV は控え
+ * 出すのは最後の Excel（職員がこれまで作っていた形。Excel で確かめて「CSV で保存」する。直して上げ直すと表に戻る）。CSV は控え
  */
 export function ExportDialog({
   open,
@@ -90,7 +90,7 @@ export function ExportDialog({
             )}
             <GyoshuSummaryTable summary={summary} basis={basis} rule7Tax={rule7Tax} onBasisChange={onBasisChange} />
             <p className="text-xs text-muted-foreground" data-testid="export-note">
-              Excel で直した分はこの画面に戻りません。直しが多いときは「Excel で直す」から。取込は1回だけ（追加になる）、「1行目が項目行」は外す。
+              Excel で直したら、その Excel をチャット欄か表に上げると表に戻ります。取込は1回だけ（追加になる）、「1行目が項目行」は外す。
             </p>
           </div>
         )}

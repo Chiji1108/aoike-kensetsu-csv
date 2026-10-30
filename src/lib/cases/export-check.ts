@@ -4,7 +4,7 @@ import { nonCp932Chars } from "../convert/text"
 import { fieldLabel, KOJI_KEIREKI, type KojiFieldId } from "../spec/koji-keireki"
 
 /**
- * 書き出す前の確認（CSV・取り込み用の Excel）。決まった検査の残り（エラー・要確認）と、Excel の「CSV で保存」で「?」になる文字、
+ * 書き出す前の確認（CSV・最後の Excel）。決まった検査の残り（エラー・要確認）と、Excel の「CSV で保存」で「?」になる文字、
  * 決算書の業種ごとの完成工事高（基準額）と表の合計の食い違いをまとめる。止めずに知らせる（書き出すかは職員が決める）
  */
 

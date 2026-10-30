@@ -53,6 +53,11 @@ export type CaseWork = {
   reportAnswers: Record<string, string>
   /** 問い合わせの文面（承認した AI の質問の文・職員が直した文、メールの件名・前置き。lib/inquiry/text.ts）。前の作業には無いので、読むときは空 */
   inquiryText: InquiryText
+  /**
+   * 直した Excel の変更案で却下した項目（lib/excel/final-import.ts の changeSignature）。同じ Excel を上げ直しても出し直さない。
+   * 前の作業には無いので、読むときは空
+   */
+  rejectedExcel: string[]
 }
 
 export type SavedPlan = { plan: MappingPlan<KojiFieldId>; source: "ai" | "rule"; notice?: string }
@@ -79,6 +84,7 @@ export const newWork = (sourceFileId: string | null = null, rule7Tax: Rule7Tax =
   undo: [],
   reportAnswers: {},
   inquiryText: EMPTY_INQUIRY_TEXT,
+  rejectedExcel: [],
 })
 
 // ---- 保存する形（D1 の csv_case_states.json）。Map・Set は組の配列にする ----
@@ -114,6 +120,9 @@ const answerReport: z.ZodType<AnswerReport> = z.object({
   invalid: z.array(z.object({ inquiry: cellInquiry, answer: z.string(), message: z.string() })),
 })
 
+/** 覚えておく、却下した直した Excel の項目の数（古いものから捨てる） */
+export const MAX_REJECTED_EXCEL = 20_000
+
 /** 手直しのたびに保存する作業（AI の結果を除く。小さい） */
 export const savedWorkSchema = z
   .object({
@@ -139,6 +148,7 @@ export const savedWorkSchema = z
   undo: z.array(undoEntrySchema).default([]),
   reportAnswers: z.record(z.string(), z.string().max(100)).default({}),
   inquiryText: inquiryTextSchema.default(EMPTY_INQUIRY_TEXT),
+  rejectedExcel: z.array(z.string().max(4000)).max(MAX_REJECTED_EXCEL).default([]),
   })
   .transform(({ alreadyApplied, selection, ...w }) => ({ ...w, selection: legacySelection(selection, alreadyApplied) ?? "rule7" }))
 export type SavedWork = z.infer<typeof savedWorkSchema>

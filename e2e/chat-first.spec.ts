@@ -7,7 +7,7 @@ import { callsServerFn, csvCount, deleteCustomer, openNewCase, reload, showAllRo
 
 /**
  * チャット中心の流れ: ファイルを落とす → 自動で変換 → 変換の報告（注意書き・聞き返し・確かめる行の件数） → チャットで列の対応を直す変更案 →
- * 承認で変換し直す → 承認を取り消すと元に戻る（開き直しても） → 書き出す前の確認で決算書の額と照らす → 取り込み用の Excel と CSV。
+ * 承認で変換し直す → 承認を取り消すと元に戻る（開き直しても） → 書き出す前の確認で決算書の額と照らす → 最後の Excel と CSV。
  * 列の対応は見出しからの推定にし（計画の AI を断る）、チャットは決まった返事にする（AI なしで同じ結果になる）
  */
 
@@ -139,7 +139,7 @@ test("ファイルを落とすと自動で変換して報告で聞き返し、�
     await expect(startYm(page)).toHaveText(row.start)
   })
 
-  await test.step("書き出す前の確認: 決算書の額が表の合計と合わなければ知らせ（止めない）、取り込み用の Excel と CSV を出す", async () => {
+  await test.step("書き出す前の確認: 決算書の額が表の合計と合わなければ知らせ（止めない）、最後の Excel と CSV を出す", async () => {
     const n = await csvCount(page)
     await page.getByTestId("export-button").click()
     const dialog = page.getByTestId("export-dialog")
@@ -161,7 +161,8 @@ test("ファイルを落とすと自動で変換して報告で聞き返し、�
     expect(xlsx.suggestedFilename()).toMatch(/\.xlsx$/)
     const wb = new ExcelJS.Workbook()
     await wb.xlsx.load(readFileSync((await xlsx.path())!).buffer as ArrayBuffer)
-    expect(wb.worksheets).toHaveLength(1)
+    // データのシートと、照合用の隠しシート（上げ直すと表に戻る）
+    expect(wb.worksheets.map((w) => w.state)).toEqual(["visible", "veryHidden"])
     const ws = wb.worksheets[0]!
     expect(ws.rowCount).toBe(rows)
     expect(ws.columnCount).toBeLessThanOrEqual(14)
@@ -177,12 +178,12 @@ test("ファイルを落とすと自動で変換して報告で聞き返し、�
   })
 })
 
-test("表ができる前に編集用の Excel を落としても、黙って捨てずに報告に理由を出す", async ({ page }) => {
+test("表ができる前に直した Excel を落としても、黙って捨てずに報告に理由を出す", async ({ page }) => {
   const { customer } = await openNewCase(page)
   created.push(customer)
   const wb = new ExcelJS.Workbook()
-  wb.addWorksheet("工事経歴（編集用）").addRows([["業種", "照合用"], ["8", "{}"]])
-  wb.addWorksheet("照合用").state = "veryHidden"
+  wb.addWorksheet("工事経歴").addRows([[8, "株式会社テスト"]])
+  wb.addWorksheet("照合用（最後の Excel）").addRows([["aoike-final-check", "1"]])
   await page.getByTestId("chat-file-input").setInputFiles({ name: "直した.xlsx", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buffer: Buffer.from(await wb.xlsx.writeBuffer()) })
   const upload = page.getByTestId("report-upload")
   await expect(upload).toContainText("直した.xlsx")

@@ -7,7 +7,7 @@ import { CaseReport, type ReportProps, type ReportQuestion, type UploadNote } fr
 import { reportPhase } from "@/lib/cases/phase"
 import { DeleteDialog } from "@/components/cases/delete-dialog"
 import { useCaseAutosave, type SaveStatus } from "@/components/cases/use-case-autosave"
-import { EditExcelPanel, type EditImport } from "@/components/convert/edit-excel-panel"
+import { FinalImportPanel, type FinalImport } from "@/components/convert/final-import-panel"
 import { ExportDialog } from "@/components/convert/export-dialog"
 import { InquiryPanel } from "@/components/convert/inquiry-panel"
 import { LocationPanel, useLocationSearch } from "@/components/convert/location-panel"
@@ -32,11 +32,11 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem,
 import { Segmented } from "@/components/segmented"
 import { MAX_ADDED_ROWS } from "@/lib/cases/added"
 import { fetchCaseFile, uploadCaseFile } from "@/lib/cases/files-client"
-import { fromSaved, newWork, type CaseWork, type SavedPlan } from "@/lib/cases/state"
+import { fromSaved, MAX_REJECTED_EXCEL, newWork, type CaseWork, type SavedPlan } from "@/lib/cases/state"
 import { setTax, withPlanTax } from "@/lib/cases/tax"
 import { ATTACH_ACCEPT, CASE_STATUSES, CASE_STATUS_LABELS, contentTypeOf, FILE_KIND_LABELS, fileUrl, isSheetFile, onlyNonSheetSources, type CaseFile, type CaseStatus, type FileKind } from "@/lib/cases/types"
 import { canUndo, pushUndo, undo, undoEntry, type UndoEntry } from "@/lib/cases/undo"
-import { uploadKind } from "@/lib/cases/upload-kind"
+import { uploadKind, warnsUnlinked } from "@/lib/cases/upload-kind"
 import { baseRows, editRows, orderAndFinalize, selectRows } from "@/lib/cases/view"
 import { carryoverReady } from "@/lib/chat/carryover"
 import { caseContext, NO_SOURCE_CONTEXT } from "@/lib/chat/context"
@@ -56,8 +56,8 @@ import { applyPlanPatch, sheetShapeOf } from "@/lib/convert/plan-patch"
 import { planExcerpt, previousPlanContext } from "@/lib/convert/prompt"
 import { collectSourceRows, sameHeader, sourceKey } from "@/lib/convert/sources"
 import type { Rounding } from "@/lib/convert/transforms"
-import { editSheet, readEditSheet } from "@/lib/excel/edit-sheet"
-import { finalSheetRows } from "@/lib/excel/final-sheet"
+import { changeSignature, readFinalSheet, recount, withoutKnown, type FinalReport } from "@/lib/excel/final-import"
+import { finalSheet } from "@/lib/excel/final-sheet"
 import { Cost, useUsdJpy } from "@/components/cost"
 import { CASE_COST_NOTICE_USD } from "@/lib/cost"
 import type { UsdJpy } from "@/lib/fx"
@@ -83,8 +83,7 @@ export const Route = createFileRoute("/_authed/cases/$caseId")({
   component: CasePage,
 })
 
-/** 編集用の Excel・取り込み用の Excel を書く ExcelJS は、落とすときにブラウザで読み込む */
-const loadEditXlsx = createClientOnlyFn(() => import("@/lib/excel/edit-xlsx"))
+/** 最後の Excel を書く ExcelJS は、落とすときにブラウザで読み込む */
 const loadFinalXlsx = createClientOnlyFn(() => import("@/lib/excel/final-xlsx"))
 
 /** チャット（Markdown の描画・AI SDK）は画面を開いたあとに読み込む */
@@ -112,7 +111,6 @@ type PreviousCase = NonNullable<NonNullable<Awaited<ReturnType<typeof getCasePag
 const TABS = [
   { id: "selection", label: "7割と金額" },
   { id: "inquiry", label: "問い合わせ" },
-  { id: "excel", label: "Excel で直す" },
   { id: "location", label: "工事場所" },
   { id: "replace", label: "一括置換" },
 ] as const
@@ -205,7 +203,7 @@ function CasePage() {
   return <CaseWorkspace key={page.kase.id} {...page} />
 }
 
-function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled, proposals: recordedProposals, previous, settings }: NonNullable<Awaited<ReturnType<typeof getCasePageFn>>>) {
+function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled, proposals: recordedProposals, previous, settings, excelKey }: NonNullable<Awaited<ReturnType<typeof getCasePageFn>>>) {
   const router = useRouter()
   const [files, setFiles] = useState(initialFiles)
   const [status, setStatus] = useState(kase.status)
@@ -241,7 +239,8 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
   const [pendingSource, setPendingSource] = useState<CaseFile | null>(null)
   const [filter, setFilter] = useState<RowFilter | null>(null)
   const [tab, setTab] = useState<Tab>("selection")
-  const [editResult, setEditResult] = useState<EditImport | null>(null)
+  /** 最後に上げ直した最後の Excel の結果（チャット欄の報告の下に出す。保存しない） */
+  const [finalResult, setFinalResult] = useState<FinalImport | null>(null)
   /** 決まった欄で読めなかった記入のある、返ってきた記入用Excel（ファイルごとに AI に読ませるかをチャットに出す。保存しない） */
   const [answerHints, setAnswerHints] = useState<{ fileId: string; name: string }[]>([])
   /** 案件を「完了」にしたので、チャットに振り返り（来年のための顧客ルールの案）を出せると案内するか（保存しない。完了から戻すか、送ったら消す） */
@@ -400,17 +399,18 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
 
   /**
    * 届いたファイルを付ける（表の欄・チャット欄に落としたファイル、付けるボタン）。種類は決まった印で見分ける（lib/cases/upload-kind.ts）:
-   * この画面で落とした編集用の Excel は差分を変更案に、記入用Excel は回答として取り込み、ほかの表は届いたファイルとして保存する。
-   * 変換の元がまだ無ければ最初の表を変換の元にし、もう元があれば変換の元にするか聞く
+   * この画面で落とした最後の Excel は差分を変更案に、記入用Excel は回答として取り込み、ほかの表は届いたファイルとして保存する。
+   * 変換の元がまだ無ければ最初の表を変換の元にし、もう元があれば変換の元にするか聞く。照合用のシートの無い最後の Excel の形の表は、
+   * 変換の元があれば直した Excel と取り違えないよう、表に戻せないと伝えて聞く（前の編集用の Excel も同じ。lib/cases/upload-kind.ts の warnsUnlinked）
    */
   async function attach(list: readonly File[]) {
     let hasSource = !!workRef.current.sourceFileId
     for (const f of list) {
-      let kind = uploadKind(null)
+      let sheets: SheetGrid[] | null = null
       if (isSheetFile(f.name)) {
         try {
           const { readWorkbook } = await import("@/lib/convert/workbook")
-          kind = uploadKind(readWorkbook(f.name, new Uint8Array(await f.arrayBuffer())))
+          sheets = readWorkbook(f.name, new Uint8Array(await f.arrayBuffer()))
         } catch (e) {
           const text = errorMessage(e, "読めませんでした")
           toast.error(`${f.name}: ${text}`)
@@ -418,10 +418,9 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
           continue
         }
       }
-      if (kind === "edit") {
-        setTab("excel")
-        const result = await importEditFile(f)
-        if (result) setEditResult(result)
+      const kind = uploadKind(sheets)
+      if (kind === "final" && sheets) {
+        await importFinalFile(f, sheets)
         continue
       }
       if (kind === "answer") {
@@ -433,6 +432,12 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
       if (!saved) continue
       if (isPdf(saved.name) || !isSheetFile(saved.name)) {
         note({ name: f.name, text: "届いたファイルとして保存しました（チャットの AI は読めます）" })
+        continue
+      }
+      if (warnsUnlinked(kind, hasSource)) {
+        note({ name: f.name, text: "書き出した Excel の形ですが照合用のシートが無いので、直した Excel としては表に戻せません。変換の元にするかを選んでください" })
+        hasSource = true
+        setPendingSource(saved)
         continue
       }
       if (!hasSource) {
@@ -638,6 +643,9 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
   const fx = useUsdJpy()
   /** 開いている変更案の中身（サーバーが R2 から読んだもの。指示の返事で届いたものを足す。保存はサーバーが済ませている） */
   const [proposalChanges, setProposalChanges] = useState(() => new Map(recordedProposals.map((r) => [r.proposal.id, r.changes])))
+  /** 待っている間に読む、最新の変更案の中身（同じ Excel を2回上げたかを見る） */
+  const proposalChangesRef = useRef(proposalChanges)
+  proposalChangesRef.current = proposalChanges
   /** ルールの追記・工事場所を保存している間（変更案の承認を止める） */
   const [savingRule, setSavingRule] = useState(false)
 
@@ -696,7 +704,12 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
     const changes = proposalChanges.get(id)
     if (!p || p.state !== "open" || !changes) return
     const chosen = indices.filter((i) => decisionOf(p, i) === "pending")
-    if (decision === "rejected") return updateProposal(id, (x) => decide(x, chosen, "rejected"))
+    if (decision === "rejected") {
+      // 直した Excel の却下した項目は覚え、同じ Excel を上げ直しても出し直さない
+      if (p.origin.kind === "excel" && chosen.length)
+        setWork((w) => ({ ...w, rejectedExcel: [...w.rejectedExcel, ...chosen.map((i) => changeSignature(changes[i]!))].slice(-MAX_REJECTED_EXCEL) }))
+      return updateProposal(id, (x) => decide(x, chosen, "rejected"))
+    }
     if (!isAnswered(p)) return
     // 工事場所は、サーバーが顧客の覚えた結果に書けてから承認する（ルールの追記と同じく、承認と覚えることを食い違わせない）
     const located = chosen.filter((i) => changes[i]!.kind === "location")
@@ -803,61 +816,70 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
     }
   }
 
-  /** 編集用の Excel を落とす（今の表のすべての行。lib/excel/edit-sheet.ts） */
-  async function downloadEditSheet() {
-    if (!view) return
-    const { editXlsx } = await loadEditXlsx()
-    const name = datedFileName("工事経歴_編集用", customer.name, new Date(), "xlsx")
-    saveFile(await editXlsx(editSheet(view)), name, contentTypeOf(name))
-  }
-
   /**
-   * 直した Excel を取り込む: 案件のファイルに残し、落としたときの値との差分を変更案にしてサーバーに置く（チャットの変更案と同じく、開き直しても残る）。
-   * 差分は取り込み始めたときの表と比べる。待っている間に変換の元が変わったら捨てる
+   * 直した最後の Excel を取り込む: 照合用のシートの落としたときの値との差分を変更案にしてサーバーに置き（チャットの変更案と同じく、開き直しても残る）、
+   * 上げたファイルを案件に残す。差分は取り込み始めたときの表と比べる。待っている間に変換の元が変わったら捨てる
    */
-  async function readEditFile(f: File) {
+  async function readFinalFile(f: File, sheets: readonly SheetGrid[]): Promise<{ report: FinalReport } | { error: string } | undefined> {
     const against = live.current.hasTable ? live.current.view : null
     if (!against) return { error: "表がまだありません。変換が済んでから上げてください" }
     const generation = caseGeneration.current
-    const { readWorkbook } = await import("@/lib/convert/workbook")
-    const sheets = readWorkbook(f.name, new Uint8Array(await f.arrayBuffer()))
     const failures = new Set<string>()
     const cache: AiCache = new Map(workRef.current.aiCache)
-    // 件数の上限は readEditSheet が AI を呼ぶ前に確かめる。案件のファイルに残すのは読めたあと
-    const result = await readEditSheet(sheets, against, { rounding: workRef.current.rounding, cache, callAi: serverAi(kase.id, failures, addCost), lookup: (raws) => ensureAddresses([...raws]) })
+    // 件数の上限は readFinalSheet が AI を呼ぶ前に確かめる。案件のファイルに残すのは読めたあと
+    const result = await readFinalSheet(
+      sheets,
+      against,
+      { caseId: kase.id, sourceFileId: workRef.current.sourceFileId, excelKey },
+      { rounding: workRef.current.rounding, cache, callAi: serverAi(kase.id, failures, addCost), lookup: (raws) => ensureAddresses([...raws]) },
+    )
     if (generation !== caseGeneration.current) return undefined
     if ("error" in result) return result
     if (failures.size) toast.warning(`AI を使えなかった値があります: ${[...failures].join(" / ")}`)
     setWork((w) => ({ ...w, aiCache: new Map([...cache, ...w.aiCache]) }))
+    // 開いている（未決の）・却下した直した Excel の変更案と同じ項目は除く（同じ Excel をもう一度上げても二重にせず、却下したものを出し直さない。
+    // 承認した項目は、表がもうその値なので readFinalSheet が出さない）
+    const known = new Set(workRef.current.rejectedExcel)
+    for (const p of workRef.current.proposals) {
+      if (p.origin.kind !== "excel" || p.state !== "open") continue
+      proposalChangesRef.current.get(p.id)?.forEach((c, i) => {
+        if (decisionOf(p, i) !== "applied") known.add(changeSignature(c))
+      })
+    }
+    const { changes, skipped } = withoutKnown(result.changes, known)
+    const report = recount(result.report, changes, skipped)
+    if (!changes.length) return { report }
     const saved = await keepFile("edit_sheet", f, f.name)
     if (!saved) return undefined
-    if (!result.changes.length) return { report: result.report }
-    const proposal = newProposal(crypto.randomUUID(), { kind: "excel", fileId: saved.id }, result.changes, null)
-    await recordExcelProposalFn({ data: { caseId: kase.id, record: { proposal, changes: result.changes } } })
-    setProposalChanges((m) => new Map(m).set(proposal.id, result.changes))
+    const proposal = newProposal(crypto.randomUUID(), { kind: "excel", fileId: saved.id }, changes, null)
+    await recordExcelProposalFn({ data: { caseId: kase.id, record: { proposal, changes } } })
+    setProposalChanges((m) => new Map(m).set(proposal.id, changes))
     update("proposals", (ps) => [...ps, proposal])
-    return { report: result.report }
+    return { report }
   }
 
-  /** チャット欄・表の欄に落とした編集用の Excel。結果は報告と通知に出す（表がまだ無くて「Excel で直す」の欄が見えないときも） */
-  async function importEditFile(f: File): Promise<EditImport | undefined> {
-    let r: EditImport | undefined
+  /** チャット欄・表の欄に落とした直した Excel。結果はチャット欄の報告の下と通知に出す */
+  async function importFinalFile(f: File, sheets: readonly SheetGrid[]) {
+    let r: { report: FinalReport } | { error: string } | undefined
     try {
-      r = await readEditFile(f)
+      r = await readFinalFile(f, sheets)
     } catch (e) {
       r = { error: errorMessage(e, "Excel を取り込めませんでした") }
     }
-    if (!r) return r
+    if (!r) return
     if ("error" in r) {
       toast.error(r.error)
       note({ name: f.name, text: r.error, tone: "error" })
-    } else {
-      const n = r.report.cells + r.report.added + r.report.included + r.report.excluded
-      const text = n ? `直した Excel の変更 ${n} 件を変更案にしました（「Excel で直す」の欄）` : "直した Excel に変わったところはありませんでした"
-      toast.success(text)
-      note({ name: f.name, text })
+      return
     }
-    return r
+    setFinalResult({ name: f.name, report: r.report })
+    const { report } = r
+    const n = report.cells + report.added + report.excluded
+    const left = report.conflicts.length + report.ambiguous.length + report.invalid.length + report.refused.length + report.extraColumns.length
+    if (!n && report.skipped) toast.info("前に出した・却下した変更と同じなので、変更案にしていません（チャット欄）")
+    else if (n) toast.success(`直した Excel の変更 ${n} 件を変更案にしました${left ? `（取り込めなかったもの ${left} 件はチャット欄）` : ""}`)
+    else if (left) toast.warning(`直した Excel の変更を取り込めませんでした（${left} 件。理由はチャット欄）`)
+    else toast.success("直した Excel に変わったところはありませんでした")
   }
 
   /**
@@ -933,12 +955,13 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
     void keepFile("csv", new Blob([bytes as BlobPart], { type: "text/csv" }), name)
   }
 
-  /** 取り込み用の Excel を落とす（lib/excel/final-sheet.ts。値は CSV と同じ）。案件のファイルに残す */
+  /** 最後の Excel を落とす（lib/excel/final-sheet.ts。値は CSV と同じ。直して上げ直せる照合用の隠しシート付き）。案件のファイルに残す */
   async function downloadFinalExcel() {
-    if (!output) return
+    if (!view || !output) return
     try {
       const { finalXlsx } = await loadFinalXlsx()
-      const bytes = await finalXlsx(finalSheetRows(output))
+      // 照合用の鍵はサーバーが案件ごとに決めたもの（Excel には書かない）
+      const bytes = await finalXlsx(await finalSheet(view, { caseId: kase.id, sourceFileId: workRef.current.sourceFileId, excelKey }))
       const name = datedFileName(SPEC.fileNamePrefix, customer.name, new Date(), "xlsx")
       saveFile(bytes, name, contentTypeOf(name))
       void keepFile("final_sheet", new Blob([bytes as BlobPart], { type: contentTypeOf(name) }), name)
@@ -956,8 +979,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
 
   function onChatAction(a: ChatAction) {
     if (a === "export") setExportOpen(true)
-    else if (a === "inquiry_excel") showTab("inquiry")
-    else void downloadEditSheet()
+    else showTab("inquiry")
   }
 
   // ---- 変換の報告（チャットの最初の返事） ----
@@ -1011,7 +1033,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
     setWork((w) => ({ ...setTax(w, next, "staff"), reportAnswers: { ...w.reportAnswers, tax: value === "ask" ? "ask" : next } }))
   }
   const locationSites = locationSearch.sites
-  const report = (
+  const caseReport = (
     <CaseReport
       phase={phase}
       source={sourceFile ? `「${sourceFile.name}」${sourceSheets.length ? `のシート「${sourceSheets.join("」「")}」` : ""}` : null}
@@ -1038,6 +1060,12 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
       }}
       uploads={uploadNotes}
     />
+  )
+  const report = (
+    <>
+      {caseReport}
+      <FinalImportPanel result={finalResult} view={view} proposals={excelProposals} changes={proposalChanges} actions={proposalActions} busy={savingRule} />
+    </>
   )
 
   const chatPanel = chatEnabled ? (
@@ -1273,7 +1301,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
             <div ref={tabsRef} className="scroll-mt-20 pt-4">
               <div className="flex flex-wrap gap-1 border-b" role="tablist" aria-label="表のほかの作業">
                 {TABS.map((t) => {
-                  const badge = t.id === "inquiry" ? inquiries.length : t.id === "excel" ? excelProposals.filter((p) => p.state === "open").length : t.id === "location" ? locationProposals.filter((p) => p.state === "open").length : 0
+                  const badge = t.id === "inquiry" ? inquiries.length : t.id === "location" ? locationProposals.filter((p) => p.state === "open").length : 0
                   return (
                     <button
                       key={t.id}
@@ -1328,21 +1356,6 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
                   }
                   importAnswers={importAnswers}
                 />
-              </div>
-              <div className="pt-4" hidden={tab !== "excel"} role="tabpanel">
-                {view && (
-                  <EditExcelPanel
-                    view={view}
-                    proposals={excelProposals}
-                    changes={proposalChanges}
-                    actions={proposalActions}
-                    busy={savingRule}
-                    download={downloadEditSheet}
-                    upload={readEditFile}
-                    result={editResult}
-                    onResult={setEditResult}
-                  />
-                )}
               </div>
               <div className="pt-4" hidden={tab !== "location"} role="tabpanel">
                 {view && <LocationPanel search={locationSearch} view={view} proposals={locationProposals} changes={proposalChanges} actions={proposalActions} busy={savingRule} fx={fx} />}

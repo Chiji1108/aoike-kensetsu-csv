@@ -4,7 +4,7 @@ import { getDb } from "@/db"
 import * as store from "./case-store"
 import { chatChangeSchema, proposalSchema } from "@/lib/chat/proposals"
 import { ruleTextSchema } from "@/lib/chat/rules"
-import { MAX_EXCEL_CHANGES } from "@/lib/excel/edit-sheet"
+import { MAX_EXCEL_CHANGES } from "@/lib/excel/final-import"
 import { endChat, readProposal, recordExcelProposal, stopChat } from "./chat"
 import { authMiddleware } from "./middleware"
 
@@ -38,7 +38,7 @@ export const approveRuleFn = createServerFn({ method: "POST" })
     return store.appendRuleOnce(db, target, { caseId: kase.id, proposalId: data.proposalId, item: data.item, text: text.data, source: change.source })
   })
 
-/** 返ってきた編集用の Excel の変更案を置く（画面が作った差分。形はここで確かめる） */
+/** 上げ直した最後の Excel の変更案を置く（画面が作った差分。形はここで確かめる） */
 export const recordExcelProposalFn = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator(z.object({ caseId: z.string().min(1).max(64), record: z.object({ proposal: proposalSchema, changes: z.array(chatChangeSchema).max(MAX_EXCEL_CHANGES) }) }))
