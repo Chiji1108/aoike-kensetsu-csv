@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import type { ModelMessage } from "ai"
 import { kojiRow } from "../../convert/__tests__/helpers"
 import { fileAddressLookup } from "../../convert/address-file"
+import { CORRECTION_MESSAGE } from "../../inquiry/inquiry"
 import { personToken } from "../../convert/persons"
 import { deriveTable } from "../../cases/view"
 import { applyChanges, type ChatChange } from "../proposals"
@@ -361,17 +362,28 @@ describe("顧客の回答を読む（get_inquiries・record_answers）", () => {
         { key: "s!3", field: "workName", answer: "鈴木一郎様邸改修工事" },
       ],
     })
-    expect(out).toMatchObject({ ok: true, applied: 4, answered: [{ key: "s!2", field: "engineer" }, { key: "s!3", field: "prefecture" }, { key: "s!3", field: "place" }, { key: "s!3", field: "workName" }] })
+    expect(out).toMatchObject({ ok: true, applied: 4, answered: [{ key: "s!2", field: "engineer" }, { key: "s!3", field: "prefecture" }, { key: "s!3", field: "place" }], corrected: [{ key: "s!3", field: "workName" }] })
     expect(out.invalid).toEqual([{ key: "s!2", field: "endYm", answer: "そのうち", message: "年月として読めません（例: 2024年4月）" }])
     expect(asked).toEqual(["鈴木一郎様邸改修工事"])
     expect(state.pending).toEqual([
       { kind: "cell", rowKey: "s!2", field: "engineer", edit: { value: "試験　次郎", by: "customer" } },
       { kind: "cell", rowKey: "s!3", field: "prefecture", edit: { value: "大阪府", by: "customer" } },
       { kind: "cell", rowKey: "s!3", field: "place", edit: { value: "大阪市北区", by: "customer" } },
-      { kind: "cell", rowKey: "s!3", field: "workName", edit: { value: `${suzuki}様邸改修工事`, by: "customer", status: "ai", byAi: true } },
+      { kind: "cell", rowKey: "s!3", field: "workName", edit: { value: `${suzuki}様邸改修工事`, by: "customer", status: "ai", byAi: true, message: CORRECTION_MESSAGE } },
     ])
     expect(state.current).not.toBe(answering)
     expect(state.start).toBe(answering)
+  })
+
+  test("record_answers の匿名化の AI の結果は指示の間で持ち、同じ答えを送り直しても AI に聞き直さない", async () => {
+    const asked: string[] = []
+    const state = newTurnState(answering, cannedAnonymize(asked), undefined, null, answers)
+    const tools = chatTools(state)
+    const items = [{ key: "s!3", field: "workName", answer: "鈴木一郎様邸改修工事" }]
+    await call(tools, "record_answers", { items })
+    state.current = state.start
+    await call(tools, "record_answers", { items })
+    expect(asked).toEqual(["鈴木一郎様邸改修工事"])
   })
 
   test("知らない key・answer と confirm の両方・どちらも無い項目は何もしない。道具が無ければ使えないと返す", async () => {

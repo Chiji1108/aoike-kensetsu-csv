@@ -18,9 +18,9 @@ import { charCount, MAX_RULE_ITEM_LENGTH, RULE7_TAX_LABELS, ruleScopeSchema, typ
 import { CHAT_ACTIONS, type ChatAction } from "./messages"
 import { outcomeChanges } from "../location/changes"
 import { askReason, estimateUsd, MAX_SITES_PER_RUN, runSitesOf, siteOfRow, SOURCE_LABELS, type Outcome, type Site } from "../location/sites"
-import { ANSWER_FIELDS, collectInquiries, fieldLabel, readAiAnswers, REASONS, type AnswerReport } from "../inquiry/inquiry"
+import { ANSWER_FIELDS, collectInquiries, fieldLabel, readAiAnswers, REASONS, type AiAnswerReport } from "../inquiry/inquiry"
 import type { AddressLookup } from "../convert/address"
-import type { AiCaller } from "../convert/pipeline"
+import type { AiCache, AiCaller } from "../convert/pipeline"
 import type { Rounding } from "../convert/transforms"
 
 /**
@@ -150,6 +150,8 @@ export type TurnState = {
   actions: ChatAction[]
   /** 顧客の回答を値にするもの（record_answers。住所の分け方と、記入を整える計画の変換・端数。無ければ道具は使えない） */
   answers: AnswerDeps | null
+  /** record_answers の匿名化の AI の結果（指示の間で持ち、同じ答えを送り直しても聞き直さない） */
+  answerCache: AiCache
 }
 
 /** record_answers が顧客の回答を値にするのに使うもの（記入用Excelの取り込みと同じ。AI は匿名化の AI を使う） */
@@ -177,6 +179,7 @@ export function newTurnState(table: CaseTable, anonymize?: AnonymizeCaller, loca
     plan,
     actions: [],
     answers,
+    answerCache: new Map(),
   }
 }
 
@@ -449,7 +452,7 @@ export function chatTools(state: TurnState) {
     record_answers: tool({
       description:
         "顧客の回答を表に入れる案を出す。items: [{key, field, answer} | {key, field, confirm:true}]。answer は顧客の答え（年月は「2024年4月」、工事場所は field=place で都道府県から市区町村まで、注文者・工事名・配置技術者は書いたまま）。" +
-        "記入用Excelの取り込みと同じ決まりで値にし（注文者・工事名は匿名化する）、JSON 文字列 {ok, applied, confirmed, same, invalid:[{key, field, answer, message}], needsCheck, report} を返す（読めない答えは入れず invalid で返す）。",
+        "記入用Excelの取り込みと同じ決まりで値にし（注文者・工事名は匿名化する）、JSON 文字列 {ok, applied, answered（問い合わせへの答え）, confirmed, corrected（聞いていない項目の訂正。送った項目だけ変える）, same, invalid:[{key, field, answer, message}], needsCheck, report} を返す（読めない答えは入れず invalid で返す）。返事では問い合わせへの答えと訂正を分けて職員に伝える。",
       inputSchema: z.strictObject({
         items: z
           .array(
@@ -474,7 +477,7 @@ export function chatTools(state: TurnState) {
         const report = await readAiAnswers(
           items.map((i) => ({ rowKey: i.key, field: i.field, ...(i.confirm ? { confirm: true as const } : { answer: i.answer! }) })),
           view().shown,
-          { ctx: { rounding: deps.rounding }, lookup: deps.lookup, cache: new Map(), callAi, fields: state.plan?.plan.fields ?? {} },
+          { ctx: { rounding: deps.rounding }, lookup: deps.lookup, cache: state.answerCache, callAi, fields: state.plan?.plan.fields ?? {} },
         )
         const changes = report.edits.map(([key, edit]): ChatChange => {
           const at = key.lastIndexOf(":")
@@ -594,15 +597,18 @@ export function chatTools(state: TurnState) {
   }
 }
 
-/** record_answers の結果（AI に返す）。顧客の答えはそのまま返さず、読めなかった答えだけを返す（AI が送ったもの） */
-function answerResult(r: AnswerReport) {
+/**
+ * record_answers の結果（AI に返す）。answered は問い合わせへの答え、corrected は聞いていない項目の訂正（職員にも分けて伝える）。
+ * 顧客の答えはそのまま返さず、読めなかった答えだけを返す（AI が送ったもの）
+ */
+function answerResult(r: AiAnswerReport) {
   const at = (q: { rowKey: string; field: KojiFieldId }) => ({ key: q.rowKey, field: q.field })
   return {
     answered: r.applied.map(at),
     confirmed: r.confirmed.map(at),
+    corrected: r.alsoChanged.map(at),
     same: r.alreadyApplied.length,
-    alsoChanged: r.alsoChanged.map(at),
-    invalid: r.invalid.slice(0, 50).map((i) => ({ ...at(i.inquiry), answer: i.answer, message: i.message })),
+    invalid: [...r.invalid.map((i) => ({ ...at(i.inquiry), answer: i.answer, message: i.message })), ...r.uncorrected.map((u) => ({ ...at(u), answer: u.answer, message: u.message }))].slice(0, 50),
     needsCheck: r.needsCheck.slice(0, 50).map((c) => ({ ...at(c), message: c.message })),
     heldBack: r.heldBack.map(at),
     unknownKeys: r.unknownKeys,
