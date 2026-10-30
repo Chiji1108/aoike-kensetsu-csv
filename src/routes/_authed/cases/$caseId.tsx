@@ -65,6 +65,7 @@ import type { UsdJpy } from "@/lib/fx"
 import { errorMessage } from "@/lib/errors"
 import { saveFile } from "@/lib/save-file"
 import { aiAnswerPrompt, collectInquiries, inquiryKey, mergeAnswers, outsideCells, readAnswers } from "@/lib/inquiry/inquiry"
+import { REVIEW_PROMPT } from "@/lib/chat/review"
 import { KOJI_KEIREKI, KOJI_PLAN_HINTS, type KojiFieldId } from "@/lib/spec/koji-keireki"
 import { cn } from "@/lib/utils"
 import { planWithAi, runAiBatch } from "@/server/ai"
@@ -101,6 +102,8 @@ const PREVIOUS_WAIT_MS = 3_000
 
 /** チャットを表の横に並べる画面の幅（これより狭い画面ではチャットを表の上に重ねて開く） */
 const WIDE_QUERY = "(min-width: 1280px)"
+/** チャットの案内のうち、案件を終えるときの振り返り（返ってきた記入用Excelの案内はファイルの id） */
+const REVIEW_SUGGESTION = "review"
 
 type PreviousCase = NonNullable<NonNullable<Awaited<ReturnType<typeof getCasePageFn>>>["previous"]>
 
@@ -237,6 +240,8 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
   const [editResult, setEditResult] = useState<EditImport | null>(null)
   /** 決まった欄で読めなかった記入のある、返ってきた記入用Excel（ファイルごとに AI に読ませるかをチャットに出す。保存しない） */
   const [answerHints, setAnswerHints] = useState<{ fileId: string; name: string }[]>([])
+  /** 案件を「完了」にしたので、チャットに振り返り（来年のための顧客ルールの案）を出せると案内するか（保存しない。完了から戻すか、送ったら消す） */
+  const [reviewHint, setReviewHint] = useState(false)
   const wide = useMediaQuery(WIDE_QUERY)
   /** 狭い画面でチャットを開いているか（広い画面ではいつも開いている） */
   const [chatShown, setChatShown] = useState(false)
@@ -441,6 +446,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
     setStatus(next)
     try {
       await updateCaseStatusFn({ data: { id: kase.id, status: next } })
+      if (id === statusChange.current) setReviewHint(next === "done")
     } catch (e) {
       if (id === statusChange.current) setStatus(previous)
       toast.error(errorMessage(e, "状態を変えられませんでした"))
@@ -648,6 +654,8 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
       sourceFileId: work.sourceFileId,
       plan: grid && work.plan ? { plan: work.plan.plan, shape: sheetShapeOf(grid) } : null,
       rounding: work.rounding,
+      // 振り返り（get_review）に使う変更案の状態と、どの承認を取り消したか（記録の中身は送らない）
+      review: { proposals: work.proposals, undo: work.undo.map((e) => ({ proposalId: e.proposalId, ...(e.undone ? { undone: true as const } : {}) })) },
     }
   }
 
@@ -1060,8 +1068,8 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
         onCaseCost={setCostUsd}
         location={locationSearch}
         onClose={() => setChatShown(false)}
-        suggestions={
-          leftInquiries > 0
+        suggestions={[
+          ...(leftInquiries > 0
             ? answerHints.map((h) => ({
                 id: h.fileId,
                 fileName: h.name,
@@ -1069,9 +1077,19 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
                 label: "AI で読む",
                 prompt: aiAnswerPrompt(h.name),
               }))
-            : []
-        }
-        onSuggestionSent={(id) => setAnswerHints((hs) => hs.filter((h) => h.fileId !== id))}
+            : []),
+          ...(reviewHint
+            ? [
+                {
+                  id: REVIEW_SUGGESTION,
+                  text: "案件を完了にしました。今年の指示・手直し・聞き返しの答えを AI が振り返り、来年のための顧客ルールの案（毎年の決まり）を出せます。今年だけの事情は分けて伝え、ルールには足しません。承認した項目だけ顧客ルールに足します。",
+                  label: "振り返って顧客ルールの案を出す",
+                  prompt: REVIEW_PROMPT,
+                },
+              ]
+            : []),
+        ]}
+        onSuggestionSent={(id) => (id === REVIEW_SUGGESTION ? setReviewHint(false) : setAnswerHints((hs) => hs.filter((h) => h.fileId !== id)))}
       />
     </Suspense>
   ) : null

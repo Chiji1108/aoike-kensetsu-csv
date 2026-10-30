@@ -6,13 +6,15 @@ import { getDb } from "@/db"
 import { containerName, contentTypeOf, type Case, type FileKind } from "@/lib/cases/types"
 import { fromWire, caseTableWireSchema } from "@/lib/chat/wire"
 import { ENDED_TEXT, type ChatHistory, type ChatMessage, type ChatMetadata } from "@/lib/chat/messages"
-import { approvedChatProposals, carryoverPrompt, cleanCarryoverCodes, codesFromUi, knownWords, namesForCarryover, type Carryover } from "@/lib/chat/carryover"
+import { approvedChatProposals, carryoverPrompt, cleanCarryoverCodes, codesFromUi, knownWords, namesForCarryover, namesOfCase, type Carryover } from "@/lib/chat/carryover"
+import { reviewTurnsFromUi } from "@/lib/chat/review"
 import { tryParseJson } from "@/lib/json"
 import { savedAiCacheSchema, savedWorkSchema } from "@/lib/cases/state"
 import { mappingPlanSchema } from "@/lib/convert/plan-schema"
 import { sheetShapeSchema } from "@/lib/convert/plan-patch"
 import { roundingSchema } from "@/lib/schemas"
-import { newProposal, proposalKey, proposalPrefix, proposalRecordSchema, type ProposalRecord } from "@/lib/chat/proposals"
+import { newProposal, proposalKey, proposalPrefix, proposalRecordSchema, proposalSchema, type ProposalRecord } from "@/lib/chat/proposals"
+import { MAX_UNDO_ENTRIES } from "@/lib/cases/undo"
 import { newTurnState, startTurn, systemPrompt, type ContainerFile, type TurnStep } from "@/lib/chat/turn"
 import { tokensOfAiSdk, usdOf } from "@/lib/cost"
 import { errorMessage } from "@/lib/errors"
@@ -59,6 +61,16 @@ const requestSchema = z.object({
   carryoverNames: z.array(z.string()).max(20_000).optional(),
   /** 去年と今年の元の Excel の見出し（去年のコードの文字列のうち、見出しの名前は伏せずに残す） */
   carryoverHeaders: z.array(z.string()).max(2_000).optional(),
+  /**
+   * 案件を終えるときの振り返り（get_review）に使う、画面の作業の変更案の状態と承認の取り消しの記録（どれを取り消したかだけ）。
+   * 保存の前の承認も入るよう、表と同じく画面が送る。この項目より前の画面は送らない（そのときは振り返りを使えない）
+   */
+  review: z
+    .object({
+      proposals: z.array(proposalSchema).max(5_000),
+      undo: z.array(z.object({ proposalId: z.string().max(64), undone: z.literal(true).optional() })).max(MAX_UNDO_ENTRIES),
+    })
+    .optional(),
 })
 
 /** AI のコンテナに渡す案件のファイルの種類（届いたファイルと、返ってきた記入用Excel。顧客の回答を AI が読む） */
@@ -225,6 +237,12 @@ async function runTurn(request: Request, caseId: string): Promise<Response> {
     },
     body.plan,
     { lookup: serverAddressLookup, rounding: body.rounding },
+    {
+      // 会話は、この指示を受けたときの画面の会話（会話を終えても残る）
+      turns: () => (body.review ? reviewTurnsFromUi(loaded.doc.ui, body.review.proposals, body.review.undo) : "画面が古いので振り返りの材料を送っていません。画面を開き直してください"),
+      names: () => caseNames(db, caseId),
+      rounding: body.rounding,
+    },
   )
   /** 履歴・作ったファイル・費用を書き終えたら resolve する。印がまだ自分のもの（画面の会話を書いて下ろしてよい）なら true */
   const recorded = Promise.withResolvers<boolean>()
@@ -337,6 +355,19 @@ async function carryoverOf(db: store.Db, prev: Case, from: Omit<Parameters<typeo
   const { ui } = (await loadChat(bucket(), prev.id)).doc
   const names = namesForCarryover({ ...from, previous: { work: work.data, aiCache: aiCache.data } })
   return { fiscalYear: prev.fiscalYear, codes: cleanCarryoverCodes(codesFromUi(ui, approvedChatProposals(work.data.proposals, work.data.undo)), names, words) }
+}
+
+/**
+ * 案件で分かっている個人名（保存した作業の手直し・置換と AI の結果。去年のコードと同じ集め方）。振り返りの材料と、ルールの案に入れない名前の確かめに使う。
+ * 作業がまだ無ければ空（表の人は呼ぶ側が足す）。読めない形なら投げる（名前を確かめられないまま案を出さない）
+ */
+async function caseNames(db: store.Db, caseId: string): Promise<Set<string>> {
+  const row = await store.getCaseState(db, caseId)
+  if (!row) return new Set()
+  const work = savedWorkSchema.safeParse(tryParseJson(row.json))
+  const aiCache = savedAiCacheSchema.safeParse(tryParseJson(row.aiCache))
+  if (!work.success || !aiCache.success) throw new Error("案件の作業を読めなかったので、個人名を確かめられません")
+  return namesOfCase(work.data, aiCache.data)
 }
 
 /**

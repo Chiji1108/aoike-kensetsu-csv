@@ -60,6 +60,8 @@ const TOOL_LABELS: Record<string, string> = {
   offer_action: "ボタンを出す",
   ask_staff: "聞き返し",
   propose_rule: "ルールの項目の案",
+  get_review: "今年の作業を振り返る",
+  propose_review: "顧客ルールの案（振り返り）",
   find_location: "工事場所を調べる",
   get_inquiries: "問い合わせを読む",
   record_answers: "顧客の回答の変更案",
@@ -102,10 +104,10 @@ export type ChatPanelProps = {
   /** 狭い画面で、閉じるボタンを出すか（広い画面ではチャットは閉じない） */
   closable: boolean
   /**
-   * AI に頼むとよいこと（返ってきた記入用Excelの、決まった欄で読めなかった記入。ファイルごと）。押すと prompt を送り、送れたら onSuggestionSent。
-   * 会話の最後に出す
+   * AI に頼むとよいこと（返ってきた記入用Excelの、決まった欄で読めなかった記入〔ファイルごと。fileName はそのファイル〕と、案件を完了にしたときの振り返り）。
+   * 押すと prompt を送り、送れたら onSuggestionSent。会話の最後に出す
    */
-  suggestions: readonly { id: string; fileName: string; text: string; label: string; prompt: string }[]
+  suggestions: readonly { id: string; fileName?: string; text: string; label: string; prompt: string }[]
   onSuggestionSent: (id: string) => void
 }
 
@@ -331,7 +333,7 @@ export function ChatPanel(props: ChatPanelProps) {
               )}
               {history === "loaded" &&
                 props.suggestions.map((sg) => (
-                  <div key={sg.id} className="grid gap-2 rounded-lg border bg-violet-50/60 px-3 py-2 text-xs dark:bg-violet-950/30" data-testid="chat-suggestion" data-file-name={sg.fileName}>
+                  <div key={sg.id} className="grid gap-2 rounded-lg border bg-violet-50/60 px-3 py-2 text-xs dark:bg-violet-950/30" data-testid="chat-suggestion" data-suggestion={sg.id} data-file-name={sg.fileName}>
                     <span className="text-muted-foreground">{sg.text}</span>
                     <Button
                       size="sm"

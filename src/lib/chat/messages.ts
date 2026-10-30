@@ -83,4 +83,6 @@ export type ChatRequest = {
   carryoverNames?: string[]
   /** 去年と今年の元の Excel の見出し（去年のコードの文字列のうち、見出しの名前は伏せない） */
   carryoverHeaders?: string[]
+  /** 振り返り（get_review）に使う変更案の状態と、承認を取り消した記録 */
+  review: { proposals: Proposal[]; undo: { proposalId: string; undone?: true }[] }
 }
