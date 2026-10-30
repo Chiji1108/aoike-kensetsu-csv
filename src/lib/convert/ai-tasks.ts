@@ -79,7 +79,7 @@ export const AI_TASKS = {
     label: "氏名の区切り",
     item: valueItem,
     instruction:
-      "人名の姓と名の間に全角スペースを1つ入れる（例: 世界次郎 → 世界　次郎）。文字の追加・削除・変更はしない。区切りに自信がないときは needsReview を true にする。",
+      "人名の姓と名の間に全角スペースを1つ入れる（例: 世界次郎 → 世界　次郎）。文字の追加・削除・変更はしない。needsReview を true にするのは、姓と名の境目がどこか迷ったときだけ（そのとき note に迷った点を短く書く）。同じ名前が何度も出る・同姓同名がありうる・珍しい字であることは needsReview にも note にもしない。迷わなければ note は空にする。",
   },
   anonymizeClient: {
     label: "注文者の匿名化",

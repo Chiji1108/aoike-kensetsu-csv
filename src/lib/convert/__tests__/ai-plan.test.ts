@@ -23,6 +23,7 @@ function aiPlan(overrides: Record<string, unknown> = {}) {
     skipRows: [10, 11],
     excludeColumns: [],
     amountUnit: "yen",
+    amountTax: "unknown",
     fields: {
       gyoshu: col(1, "rule.gyoshu"),
       client: col(3, "ai.anonymizeClient"),

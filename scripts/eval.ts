@@ -25,7 +25,7 @@ import Anthropic, { toFile } from "@anthropic-ai/sdk"
 import type { ModelMessage } from "ai"
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { newWork } from "../src/lib/cases/state"
+import { newWork, withPlanTax } from "../src/lib/cases/state"
 import { deriveTable, type CaseTable } from "../src/lib/cases/view"
 import { caseContext } from "../src/lib/chat/context"
 import { applyChanges, type ChatChange } from "../src/lib/chat/proposals"
@@ -136,6 +136,8 @@ async function baseline(): Promise<Baseline> {
   if (!accepted.ok) console.log(`AI の計画を使わない: ${accepted.message}`)
   const plan = accepted.ok ? accepted.plan : fallbackFor(sheetByNames(KOJI_KEIREKI, KOJI_PLAN_HINTS, sheets, def!.sheet)!)
   console.log(`計画のシート: ${plan.sheets.join("、")}（${plan.notes[0] ?? ""}）`)
+  console.log(`計画の税込・税抜: ${plan.amountTax ?? "unknown"}`)
+  console.log(`計画の notes ${plan.notes.length} 件:\n${plan.notes.map((n) => `  - ${n}`).join("\n")}`)
   const rows = await runConversion({
     lookup: fileAddressLookup,
     spec: KOJI_KEIREKI,
@@ -183,9 +185,10 @@ function previousPlanOf() {
   return previousPlanContext(KOJI_KEIREKI, { fiscalYear, grid: prevSheets.find((s) => s.name === last.plan.sheets[0])!, plan: last.plan, diff: lines })
 }
 
-const tableOf = (rows: RowResult<KojiFieldId>[]): CaseTable => {
-  const w = newWork()
-  return { rows, added: w.added, edits: w.edits, replacements: w.replacements, manual: w.manual, tax: w.tax, basis: w.basis, rule7Tax: w.rule7Tax, selection: w.selection, sorted: w.sorted, dismissed: w.dismissed, inquiryText: w.inquiryText }
+/** 画面と同じく、計画が税込・税抜を決めていれば案件の税の設定に入れる */
+const tableOf = ({ rows, plan }: Pick<Baseline, "rows" | "plan">): CaseTable => {
+  const w = withPlanTax(newWork(), plan)
+  return { rows, added: w.added, edits: w.edits, replacements: w.replacements, manual: w.manual, tax: w.tax, basis: w.basis, rule7Tax: w.rule7Tax, selection: w.selection, dismissed: w.dismissed, inquiryText: w.inquiryText }
 }
 
 /** 文字の2つ組の重なり（行の対応づけに使う。法人格と空白は除いて比べ、2文字に満たなければ 0） */
@@ -255,7 +258,7 @@ try {
   if (variant === "baseline" || !existsSync(basePath)) {
     base = await baseline()
     writeFileSync(basePath, JSON.stringify(base))
-    const c = compare(csvRows(tableOf(base.rows)))
+    const c = compare(csvRows(tableOf(base)))
     writeFileSync(join(OUT, `${caseId}-baseline-score.json`), JSON.stringify(c, null, 1))
     printScore(`baseline (${Math.round(base.ms / 1000)}s, $${base.usd.toFixed(3)})`, c)
     writeSummary("baseline", { status: "done", score: c, turns: 0, ms: base.ms, conversionUsd: base.usd, usd: 0 })
@@ -297,7 +300,7 @@ try {
     const turns = variant === "rules" || variant === "nextyear" ? [RULES_TURN] : variant === "plan" ? (def.planInstructions ?? []) : def.instructions
     if (!turns.length) throw new Error(`${variant} の指示が案件定義に無い`)
     const t00 = Date.now()
-    const run = await chatPhase({ turns, table: tableOf(base.rows), plan: base.plan, customerItems, carryText, previousFormat })
+    const run = await chatPhase({ turns, table: tableOf(base), plan: base.plan, customerItems, carryText, previousFormat })
     const final = compare(csvRows(run.table))
     writeFileSync(join(OUT, `${caseId}-${variant}.json`), JSON.stringify({ status: run.status, reason: run.reason, total: run.total, ms: Date.now() - t00, turns: run.log.length, log: run.log, final: csvRows(run.table), score: final, messages: run.messages }, null, 1))
     writeSummary(variant, { status: run.status, ...(run.reason ? { reason: run.reason } : {}), score: final, turns: run.log.length, ms: Date.now() - t00, conversionUsd: base.usd, usd: run.total })
@@ -471,7 +474,7 @@ async function reviewEval() {
     writeSummary("review", { status: run.status, reason: `${name}: ${run.reason}`, score: compare(csvRows(run.table)), turns: 0, ms: Date.now() - t00, conversionUsd: base.usd, usd: total })
     throw run.error ?? new Error(`${name} が終わらなかった: ${run.reason}`)
   }
-  const year = finish("year", await chatPhase({ turns: thisYear, table: tableOf(base.rows), plan: base.plan, customerItems: [] }))
+  const year = finish("year", await chatPhase({ turns: thisYear, table: tableOf(base), plan: base.plan, customerItems: [] }))
   // 照合では変更案をすべて承認したので、指示ごとに変更案の項目を全部承認した記録にする（聞き返しは「はい」）
   const turns: ReviewTurn[] = year.log.map((l) => ({
     instruction: l.text,
@@ -486,7 +489,7 @@ async function reviewEval() {
   const oneOff = review.log.flatMap((l) => l.oneOff)
   console.log(`\n振り返りの毎年の決まり ${reviewed.length} 項目:\n  ${reviewed.join("\n  ")}\n今年だけ ${oneOff.length} 件:\n  ${oneOff.join("\n  ")}`)
   if (!reviewed.length) throw new Error("振り返りで毎年の決まりが出なかった")
-  const next = finish("next", await chatPhase({ turns: [RULES_TURN], table: tableOf(base.rows), plan: base.plan, customerItems: reviewed }))
+  const next = finish("next", await chatPhase({ turns: [RULES_TURN], table: tableOf(base), plan: base.plan, customerItems: reviewed }))
   const total = year.total + review.total + next.total
   const final = compare(csvRows(next.table))
   writeFileSync(
@@ -521,7 +524,7 @@ async function locationEval() {
   await db.insert(schema.csvCustomers).values({ id: customerId, name: def!.customerName }).onConflictDoNothing()
   const kaseId = crypto.randomUUID()
   await db.insert(schema.csvCases).values({ id: kaseId, customerId, fiscalYear: 2026 })
-  let table = tableOf(base.rows)
+  let table = tableOf(base)
   const all = locationTargets(deriveTable(table))
   // EVAL_LOCATION_LIMIT で調べる現場を先頭から絞る（費用の上限に合わせた抜き取り。2回目も同じ現場になる）
   // 画面のサーバーと同じく、分かっている個人名を含む現場は送らない（照合には保存した作業が無いので、変換の結果の印の人で確かめる）
@@ -579,7 +582,7 @@ async function locationEval() {
     bySource.set(k, (bySource.get(k) ?? 0) + 1)
   }
   const score = compare(csvRows(table))
-  const baseScore = compare(csvRows(tableOf(base.rows)))
+  const baseScore = compare(csvRows(tableOf(base)))
   const field = (c: ReturnType<typeof compare>, f: KojiFieldId) => c.perField.find((x) => x.field === f)!
   const rate = (x: { ok: number; n: number }) => `${x.ok}/${x.n}（${((x.ok / Math.max(1, x.n)) * 100).toFixed(1)}%）`
   console.log(`\n# 工事場所の調査 ${Math.round(ms / 1000)}s searches ${run!.searches} $${run!.usd.toFixed(3)} 結果 ${JSON.stringify(Object.fromEntries(bySource))} 覚えた ${remembered}`)
@@ -607,7 +610,7 @@ async function answersEval() {
   const XLSX = await import("xlsx")
   const truth = def!.answerTruth
   if (!truth) throw new Error("answers には案件定義の answerTruth が要る")
-  let table: CaseTable = { ...tableOf(base.rows), selection: "all" }
+  let table: CaseTable = { ...tableOf(base), selection: "all" }
   const start = deriveTable(table)
   const asked = collectInquiries(start.output, { tax: table.tax }).flatMap((q) => (q.kind === "cell" ? [q] : []))
   const nameOf = new Map(start.shown.map((r) => [r.key, r.cells.workName.value]))
@@ -727,7 +730,7 @@ async function inquiryEval() {
   const { collectInquiries, inquiryKey } = await import("../src/lib/inquiry/inquiry")
   const { INQUIRY_TEXT_PROMPT, otherCustomerTest, questionGroups } = await import("../src/lib/inquiry/text")
   const { reviewGuard } = await import("../src/lib/chat/review")
-  const table = tableOf(base.rows)
+  const table = tableOf(base)
   const view = deriveTable(table)
   const inquiries = collectInquiries(view.output, { tax: table.tax })
   const others = [...new Set(Object.entries(CASES).flatMap(([id, c]) => (id === caseId || c.customerName === def!.customerName ? [] : [c.customerName])))]

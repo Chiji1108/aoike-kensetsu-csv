@@ -33,13 +33,17 @@ export type CaseWork = {
   dismissed: ReadonlySet<string>
   answers: AnswerReport | null
   tax: TaxMode
+  /**
+   * 計画の AI が見出し・注記から決めた税込・税抜（tax に入れた値）。tax がこの値のままなら計画が決めたもので、計画をやり直すと計画に合わせ直す。
+   * 職員が決めたら null。前の作業には無いので、読むときは null
+   */
+  planTax: "included" | "excluded" | null
   basis: Basis
   /** 7割の計算（基準額が税抜か税込か）。新しい案件は事務所の設定、この項目より前に保存した作業は税抜（前はいつも税抜） */
   rule7Tax: Rule7Tax
   /** 載せる工事の選び方（koji-selection.ts の SelectionMode） */
   selection: SelectionMode
   rounding: Rounding
-  sorted: boolean
   threshold: { on: boolean; yen: string }
   /** チャットの変更案の状態（中身は R2。lib/chat/proposals.ts）。この項目より前に保存した作業には無いので、読むときは空 */
   proposals: Proposal[]
@@ -51,6 +55,18 @@ export type CaseWork = {
   reportAnswers: Record<string, string>
   /** 問い合わせの文面（承認した AI の質問の文・職員が直した文、メールの件名・前置き。lib/inquiry/text.ts）。前の作業には無いので、読むときは空 */
   inquiryText: InquiryText
+}
+
+/**
+ * 計画の税込・税抜（plan.amountTax）を案件の税の設定に入れる。入れるのは、まだ決まっていない（分からない・聞き返しに答えていない）か、
+ * 前の計画が決めた値のままのときだけ（職員が決めた値は上書きしない）。計画が分からなければ、前の計画が決めた値を外して分からないに戻す
+ */
+export function withPlanTax(w: CaseWork, plan: MappingPlan<KojiFieldId>): CaseWork {
+  const byPlan = w.planTax !== null && w.tax === w.planTax
+  const open = byPlan || (w.tax === "unknown" && !w.reportAnswers.tax)
+  if (!open) return w.planTax === null ? w : { ...w, planTax: null }
+  if (plan.amountTax) return { ...w, tax: plan.amountTax, planTax: plan.amountTax }
+  return byPlan ? { ...w, tax: "unknown", planTax: null } : w
 }
 
 export type SavedPlan = { plan: MappingPlan<KojiFieldId>; source: "ai" | "rule"; notice?: string }
@@ -67,11 +83,11 @@ export const newWork = (sourceFileId: string | null = null, rule7Tax: Rule7Tax =
   dismissed: new Set(),
   answers: null,
   tax: "unknown",
+  planTax: null,
   basis: {},
   rule7Tax,
   selection: "rule7",
   rounding: "floor",
-  sorted: true,
   threshold: { on: false, yen: "" },
   proposals: [],
   added: [],
@@ -126,13 +142,13 @@ export const savedWorkSchema = z
   dismissed: z.array(z.string()),
   answers: answerReport.nullable(),
   tax: taxSchema,
+  planTax: z.enum(["included", "excluded"]).nullable().default(null),
   basis: basisSchema,
   rule7Tax: rule7TaxSchema.default("excluded"),
   selection: selectionSchema.optional(),
   /** 前の形（7割適用済み＝全行を載せる）。読むときに selection にそろえる */
   alreadyApplied: z.boolean().optional(),
   rounding: roundingSchema,
-  sorted: z.boolean(),
   threshold: z.object({ on: z.boolean(), yen: z.string() }),
   proposals: z.array(proposalSchema).default([]),
   added: z.array(addedRowSchema).max(MAX_ADDED_ROWS).default([]),
