@@ -557,7 +557,7 @@ async function answersEval() {
       if ("error" in report) throw new Error(report.error)
       const merged = mergeAnswers(report, start.shown, { rows: base.rows, replacements: table.replacements, edits: table.edits })
       table = { ...table, edits: merged.edits }
-      const outside = outsideCells(sheets)
+      const outside = outsideCells(sheets, start.shown)
       deterministic = { applied: report.applied.length, unanswered: report.unanswered.length, invalid: report.invalid.length, outside }
       console.log(`決まった欄の取り込み: 反映 ${report.applied.length} / 空欄 ${report.unanswered.length} / 読めない ${report.invalid.length} / 欄の外の記入 ${outside}`)
       const name = containerName(uploads.length, original)
