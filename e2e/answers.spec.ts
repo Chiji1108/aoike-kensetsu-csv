@@ -89,20 +89,31 @@ test("記入用Excelの色付きの欄の外に書いた答えは、チャット
   const texts: string[] = []
   await fakeChat(page, [{ kind: "cell", rowKey: answered.rowKey, field: answered.field as KojiFieldId, edit: { value: ANSWER[answered.field]!, by: "customer" } }], texts)
 
-  await test.step("返すと決まった欄を先に読み（答えは入らない）、チャットに「AI で読む」が出る", async () => {
-    await page.getByTestId("chat-file-input").setInputFiles({ name: "回答.xlsx", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buffer: answered.buffer })
+  const xlsx = (name: string) => ({ name, mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buffer: answered.buffer })
+  const suggestion = (name: string) => page.locator(`[data-testid="chat-suggestion"][data-file-name="${name}"]`)
+
+  await test.step("返すと決まった欄を先に読み（答えは入らない）、チャットにファイルごとの「AI で読む」と、取り込んだあとに残っている問い合わせの数が出る", async () => {
+    await page.getByTestId("chat-file-input").setInputFiles(xlsx("回答.xlsx"))
     await expect(page.getByTestId("answer-report")).toBeVisible()
     await expect(page.getByTestId("report-upload").last()).toContainText("AI で読む")
     await expect(page.locator('[data-testid="file-list"] [data-kind="answer"]')).toHaveCount(1)
-    await expect(page.getByTestId("chat-suggestion")).toContainText("回答.xlsx")
+    await expect(suggestion("回答.xlsx")).toBeVisible()
+    await page.getByTestId("chat-file-input").setInputFiles(xlsx("回答2.xlsx"))
+    await expect(page.locator('[data-testid="file-list"] [data-kind="answer"]')).toHaveCount(2)
+    await expect(suggestion("回答2.xlsx")).toBeVisible()
+    const left = await page.locator('[data-testid="inquiry-list"] tr[data-inquiry]:not([data-inquiry^="case:"])').count()
+    await expect(suggestion("回答.xlsx")).toContainText(`まだ答えの無い問い合わせが ${left} 件`)
   })
 
-  await test.step("押すと AI に読ませる指示を送り、顧客の回答の変更案を承認すると表に入る", async () => {
-    await page.getByTestId("chat-suggestion-send").click()
+  await test.step("押すと AI に読ませる指示を送り（書きかけの指示は残る。ほかのファイルの案内も残る）、顧客の回答の変更案を承認すると表に入る", async () => {
+    await page.getByTestId("chat-input").fill("書きかけ")
+    await suggestion("回答.xlsx").getByTestId("chat-suggestion-send").click()
     const proposal = page.getByTestId("proposal")
     await expect(proposal).toBeVisible()
     expect(texts).toEqual(["返ってきた記入用Excel「回答.xlsx」の、色付きの欄の外（別の列・メモ・別のシート）の記入と読めなかった記入を読んで、まだ聞いている項目の答えを変更案にして"])
-    await expect(page.getByTestId("chat-suggestion")).toHaveCount(0)
+    await expect(suggestion("回答.xlsx")).toHaveCount(0)
+    await expect(suggestion("回答2.xlsx")).toBeVisible()
+    await expect(page.getByTestId("chat-input")).toHaveValue("書きかけ")
     await proposal.getByTestId("proposal-open").click()
     await expect(page.getByTestId("proposal-dialog").getByTestId("proposal-item")).toContainText("（顧客の回答）")
     await page.keyboard.press("Escape")

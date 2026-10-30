@@ -64,7 +64,7 @@ import { CASE_COST_NOTICE_USD } from "@/lib/cost"
 import type { UsdJpy } from "@/lib/fx"
 import { errorMessage } from "@/lib/errors"
 import { saveFile } from "@/lib/save-file"
-import { aiAnswerPrompt, collectInquiries, mergeAnswers, outsideCells, readAnswers } from "@/lib/inquiry/inquiry"
+import { aiAnswerPrompt, collectInquiries, inquiryKey, mergeAnswers, outsideCells, readAnswers } from "@/lib/inquiry/inquiry"
 import { KOJI_KEIREKI, KOJI_PLAN_HINTS, type KojiFieldId } from "@/lib/spec/koji-keireki"
 import { cn } from "@/lib/utils"
 import { planWithAi, runAiBatch } from "@/server/ai"
@@ -235,8 +235,8 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
   const [filter, setFilter] = useState<RowFilter | null>(null)
   const [tab, setTab] = useState<Tab>("selection")
   const [editResult, setEditResult] = useState<EditImport | null>(null)
-  /** 返ってきた記入用Excelのうち、決まった欄で読めなかった記入（AI に読ませるかをチャットに出す。保存しない） */
-  const [answerHint, setAnswerHint] = useState<{ name: string; count: number } | null>(null)
+  /** 決まった欄で読めなかった記入のある、返ってきた記入用Excel（ファイルごとに AI に読ませるかをチャットに出す。保存しない） */
+  const [answerHints, setAnswerHints] = useState<{ fileId: string; name: string }[]>([])
   const wide = useMediaQuery(WIDE_QUERY)
   /** 狭い画面でチャットを開いているか（広い画面ではいつも開いている） */
   const [chatShown, setChatShown] = useState(false)
@@ -316,6 +316,8 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
     setConvertError(null)
     setPlanDraft({ plan: fallback, source: "rule" })
     setWork((w) => replanWork(w, src.fileId))
+    // 返ってきた記入用Excelの案内は前の元の行の問い合わせへのもの
+    setAnswerHints([])
     let next: SavedPlan
     try {
       const previousContext = await previousPlanFor(src, requiredSheet)
@@ -606,6 +608,8 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
   const counts = useMemo(() => (output ? countByStatus(output) : null), [output])
   const filterCounts = useMemo(() => (shown ? countRowFilters(shown, inclusion) : null), [shown, inclusion])
   const inquiries = useMemo(() => (output ? collectInquiries(output, { tax }) : []), [output, tax])
+  /** まだ答えの無いセルの問い合わせ（外したものは数えない）。「AI で読む」に出す */
+  const leftInquiries = inquiries.filter((q) => q.kind === "cell" && !dismissed.has(inquiryKey(q))).length
   const summary = useMemo(() => (edited && selected ? summarizeKoji(edited, selected, { tax, basis, rule7Tax }) : []), [edited, selected, tax, basis, rule7Tax])
   /** 表の絞り込み。職員が選ぶまでは、確かめる行があればその行だけ（無ければすべて） */
   const tableFilter: RowFilter = filter ?? (filterCounts && filterCounts.check.all > 0 ? "check" : "all")
@@ -857,11 +861,10 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
       const merged = mergeAnswers(report, against, { rows: baseRows({ rows: converted, added: w.added }), replacements: w.replacements, edits: w.edits })
       return { ...w, aiCache: new Map([...cache, ...w.aiCache]), edits: merged.edits, answers: merged.report }
     })
-    // 決まった欄の外（別の列・別のシート）に記入があるか、読めなかった記入があれば、まだ聞いている項目の答えを AI に読ませられる
-    const left = report.unanswered.length + report.invalid.length + report.unreadable.length
+    // 決まった欄の外（別の列・メモ・別のシート）に記入があるか、読めなかった記入があれば、このファイルを AI に読ませられる（残りの問い合わせは画面が今の表で数える）
     const readable = outsideCells(sheets, against) > 0 || report.invalid.length > 0 || report.unreadable.length > 0
-    const forAi = left > 0 && readable && (await saving) !== undefined ? left : 0
-    return { aiFailures: [...failures], forAi }
+    const saved = await saving
+    return { aiFailures: [...failures], forAi: readable && saved ? saved : null }
   }
 
   /** 記入された Excel を取り込む（問い合わせの欄・チャット欄・表の欄）。結果は報告と通知に出す */
@@ -876,11 +879,11 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
       const read = await readAnswerFile(f, against)
       if (!read) return
       if ("error" in read) return fail(read.error)
-      const forAi = read.forAi > 0 && chatEnabled
+      const forAi = chatEnabled ? read.forAi : null
       const text = `顧客の回答を取り込みました（結果は「問い合わせ」の欄）${forAi ? "。色付きの欄の外の記入は、チャットの「AI で読む」で読めます" : ""}`
       toast.success(text)
       note({ name: f.name, text })
-      setAnswerHint(forAi ? { name: f.name, count: read.forAi } : null)
+      if (forAi) setAnswerHints((hs) => [...hs.filter((h) => h.fileId !== forAi.id), { fileId: forAi.id, name: forAi.name }])
       if (read.aiFailures.length) toast.warning(`AI を使えず反映していない記入があります（${read.aiFailures.join(" / ")}）`)
     } catch (e) {
       fail(errorMessage(e, "回答のファイルを読み込めませんでした"))
@@ -1057,14 +1060,18 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
         onCaseCost={setCostUsd}
         location={locationSearch}
         onClose={() => setChatShown(false)}
-        suggestion={
-          answerHint && {
-            text: `返ってきた記入用Excel「${answerHint.name}」に、色付きの欄の外（別の列・別のシート）の記入や読めなかった記入があり、まだ答えの無い問い合わせが ${answerHint.count} 件あります。`,
-            label: "AI で読む",
-            prompt: aiAnswerPrompt(answerHint.name),
-          }
+        suggestions={
+          leftInquiries > 0
+            ? answerHints.map((h) => ({
+                id: h.fileId,
+                fileName: h.name,
+                text: `返ってきた記入用Excel「${h.name}」に、色付きの欄の外（別の列・メモ・別のシート）の記入や読めなかった記入があり、まだ答えの無い問い合わせが ${leftInquiries} 件あります。`,
+                label: "AI で読む",
+                prompt: aiAnswerPrompt(h.name),
+              }))
+            : []
         }
-        onSuggestionSent={() => setAnswerHint(null)}
+        onSuggestionSent={(id) => setAnswerHints((hs) => hs.filter((h) => h.fileId !== id))}
       />
     </Suspense>
   ) : null
