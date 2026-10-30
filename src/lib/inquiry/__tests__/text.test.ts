@@ -77,6 +77,12 @@ describe("質問の文のまとまり", () => {
     const place = editQuestion(aiText, groups[3]!, "工事の場所（市区町村まで）を教えてください。", "s1")
     expect(place.questions.at(-1)).toEqual({ id: "s1", text: "工事の場所（市区町村まで）を教えてください。", targets: [{ field: "prefecture", reason: "missing" }, { field: "place", reason: "missing" }], by: "staff" })
     expect(textsOf(place)[3]).toEqual(["staff", "工事の場所（市区町村まで）を教えてください。", ["s!5:prefecture", "s!5:place"]])
+    // 決まった文を直しても、ほかの質問の問い合わせは取らない（まとまりにある項目と理由だけ）
+    const prefOnly = addQuestions(EMPTY_INQUIRY_TEXT, [{ id: "pref", text: "都道府県を教えてください。", targets: [{ field: "prefecture" }], by: "ai" }])
+    const placeGroup = questionGroups(qs, prefOnly).groups.find((g) => g.id === "fixed:工事場所（都道府県・市区町村）:missing")!
+    const staffPlace = editQuestion(prefOnly, placeGroup, "市区町村を教えてください。", "s3")
+    expect(staffPlace.questions.at(-1)!.targets).toEqual([{ field: "place", reason: "missing" }])
+    expect(questionGroups(qs, staffPlace).groupOf.get("s!5:prefecture")!.text).toBe("都道府県を教えてください。")
     const tax = editQuestion(aiText, groups[0]!, "金額は税込ですか、税抜ですか。", "s2")
     expect(questionGroups(qs, tax).groupOf.get("case:tax")!.text).toBe("金額は税込ですか、税抜ですか。")
   })
@@ -118,6 +124,8 @@ describe("AI の質問の確かめ", () => {
     expect(has("サンプル 建設")).toBe(true)
     expect(has("ABの工事")).toBe(false)
     expect(has("この工事は引渡日を完成日としてよいですか。")).toBe(false)
+    // この案件の顧客の名前の中にほかの顧客の名前があっても断らない
+    expect(otherCustomerTest(["株式会社サンプル建設"], "サンプル建設工業")("サンプル建設工業様 工事経歴書のご確認")).toBe(false)
   })
 })
 
@@ -131,5 +139,7 @@ describe("ご質問の欄への書き足し", () => {
     const col = header.indexOf("ご質問")
     expect(outsideCells(grid((_, __, v) => v), rows)).toBe(0)
     expect(outsideCells(grid((r, c, v) => (r === 0 && c === col ? `${v}\nはい、引渡日で結構です` : v)), rows)).toBe(1)
+    // 今のデータに無い行の質問の欄は数えない（取り込みが知らない管理番号として出す）
+    expect(outsideCells(grid((_, __, v) => v), rows.slice(1))).toBe(0)
   })
 })

@@ -118,7 +118,8 @@ export function addQuestions(text: InquiryText, questions: readonly InquiryQuest
 
 /**
  * 職員が質問の文を直す。AI・職員の質問は文を変え（空にすると消して決まった文に戻す）、決まった文を直すと、
- * そのまとまりと同じ欄・同じ理由の問い合わせへの職員の質問にする
+ * そのまとまりにある項目と理由の問い合わせへの職員の質問にする（決まった文のまとまりは、どの質問も当てはまらなかった問い合わせなので、
+ * ほかの質問の問い合わせを取らない）
  */
 export function editQuestion(text: InquiryText, group: QuestionGroup, next: string, newId: string): InquiryText {
   const value = next.trim()
@@ -128,17 +129,21 @@ export function editQuestion(text: InquiryText, group: QuestionGroup, next: stri
     return { ...text, questions: text.questions.map((q) => (q.id === id ? { ...q, text: value, by: "staff" } : q)) }
   }
   if (!value || value === group.text) return text
-  const first = group.inquiries[0]!
-  const targets: QuestionTarget[] = first.kind === "case" ? [{ topic: first.topic }] : (columnOf(first.field)?.fields ?? [first.field]).map((field) => ({ field, reason: first.reason }))
-  return addQuestions(text, [{ id: newId, text: value, targets, by: "staff" }])
+  const targets = new Map<string, QuestionTarget>()
+  for (const q of group.inquiries) targets.set(q.kind === "case" ? `case:${q.topic}` : `${q.field}:${q.reason}`, q.kind === "case" ? { topic: q.topic } : { field: q.field, reason: q.reason })
+  return addQuestions(text, [{ id: newId, text: value, targets: [...targets.values()], by: "staff" }])
 }
 
-/** 文の中に、ほかの顧客の名前があるかを確かめる関数（会社の種類の語・空白・全角半角の違いは除いて比べる。3文字に満たない名前は見ない） */
-export function otherCustomerTest(names: Iterable<string>): (text: string) => boolean {
+/**
+ * 文の中に、ほかの顧客の名前があるかを確かめる関数（会社の種類の語・空白・全角半角の違いは除いて比べる。3文字に満たない名前は見ない）。
+ * own はこの案件の顧客の名前（文から先に除くので、ほかの顧客の名前を含む自分の名前で断らない）
+ */
+export function otherCustomerTest(names: Iterable<string>, own = ""): (text: string) => boolean {
   const core = (s: string) => removeSpaces(nfkc(s)).replace(/株式会社|有限会社|合同会社|合資会社|合名会社|\(株\)|\(有\)|㈱|㈲/g, "")
-  const list = [...new Set([...names].map(core))].filter((n) => [...n].length >= 3)
+  const self = core(own)
+  const list = [...new Set([...names].map(core))].filter((n) => [...n].length >= 3 && n !== self)
   return (text) => {
-    const t = core(text)
+    const t = self ? core(text).replaceAll(self, " ") : core(text)
     return list.some((n) => t.includes(n))
   }
 }
@@ -188,3 +193,65 @@ export function checkQuestions(questions: readonly { targets: readonly QuestionT
   if (tied.length) problems.push(`同じ問い合わせに2つの質問が当てはまります（${tied.slice(0, 5).join(", ")}${tied.length > 5 ? ` ほか${tied.length - 5}件` : ""}）。1つの問い合わせは1つの質問にしてください`)
   return { problems, covered, fallback: inquiries.length - covered }
 }
+
+/**
+ * 承認の取り消しの記録に残す文面の違い（文面そのものを前と後で2つ残さない）。questions は [id, 前, 後]（null は無かった）、
+ * subject・intro は変わったときだけ [前, 後]
+ */
+export type InquiryTextDiff = {
+  questions: [id: string, before: InquiryQuestion | null, after: InquiryQuestion | null][]
+  subject?: [string | null, string | null]
+  intro?: [string | null, string | null]
+}
+
+const sameQuestion = (a: InquiryQuestion | null, b: InquiryQuestion | null) => a === b || JSON.stringify(a) === JSON.stringify(b)
+
+export function diffInquiryText(before: InquiryText, after: InquiryText): InquiryTextDiff | null {
+  const was = new Map(before.questions.map((q) => [q.id, q]))
+  const now = new Map(after.questions.map((q) => [q.id, q]))
+  const questions: InquiryTextDiff["questions"] = []
+  for (const q of after.questions) if (!sameQuestion(was.get(q.id) ?? null, q)) questions.push([q.id, was.get(q.id) ?? null, q])
+  for (const q of before.questions) if (!now.has(q.id)) questions.push([q.id, q, null])
+  const diff: InquiryTextDiff = {
+    questions,
+    ...(before.subject !== after.subject ? { subject: [before.subject, after.subject] as [string | null, string | null] } : {}),
+    ...(before.intro !== after.intro ? { intro: [before.intro, after.intro] as [string | null, string | null] } : {}),
+  }
+  return questions.length || diff.subject || diff.intro ? diff : null
+}
+
+/** 記録の「後」のままのものだけを「前」に戻す（承認のあとに職員が直した文は残して kept に数える） */
+export function revertInquiryText(now: InquiryText, diff: InquiryTextDiff): { text: InquiryText; reverted: number; kept: number } {
+  let reverted = 0
+  let kept = 0
+  let questions = [...now.questions]
+  for (const [id, before, after] of diff.questions) {
+    const current = questions.find((q) => q.id === id) ?? null
+    if (!sameQuestion(current, after)) {
+      kept++
+      continue
+    }
+    reverted++
+    if (!before) questions = questions.filter((q) => q.id !== id)
+    else if (current) questions = questions.map((q) => (q.id === id ? before : q))
+    // 上限で捨てた質問は、古い方（前）に戻す
+    else questions = [before, ...questions]
+  }
+  const back = (pair: [string | null, string | null] | undefined, value: string | null) => {
+    if (!pair) return value
+    if (value !== pair[1]) {
+      kept++
+      return value
+    }
+    reverted++
+    return pair[0]
+  }
+  return { text: { subject: back(diff.subject, now.subject), intro: back(diff.intro, now.intro), questions }, reverted, kept }
+}
+
+const nullablePair = z.tuple([z.string().nullable(), z.string().nullable()])
+export const inquiryTextDiffSchema: z.ZodType<InquiryTextDiff> = z.object({
+  questions: z.array(z.tuple([z.string(), inquiryQuestionSchema.nullable(), inquiryQuestionSchema.nullable()])),
+  subject: nullablePair.optional(),
+  intro: nullablePair.optional(),
+})

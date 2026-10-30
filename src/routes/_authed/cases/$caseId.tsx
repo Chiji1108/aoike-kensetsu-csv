@@ -65,7 +65,7 @@ import type { UsdJpy } from "@/lib/fx"
 import { errorMessage } from "@/lib/errors"
 import { saveFile } from "@/lib/save-file"
 import { aiAnswerPrompt, collectInquiries, inquiryKey, mergeAnswers, outsideCells, readAnswers } from "@/lib/inquiry/inquiry"
-import { applyInquiryChanges, INQUIRY_TEXT_PROMPT, type InquiryTextChange } from "@/lib/inquiry/text"
+import { applyInquiryChanges, INQUIRY_TEXT_PROMPT } from "@/lib/inquiry/text"
 import { REVIEW_PROMPT } from "@/lib/chat/review"
 import { KOJI_KEIREKI, KOJI_PLAN_HINTS, type KojiFieldId } from "@/lib/spec/koji-keireki"
 import { cn } from "@/lib/utils"
@@ -244,10 +244,11 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
   const [answerHints, setAnswerHints] = useState<{ fileId: string; name: string }[]>([])
   /** 案件を「完了」にしたので、チャットに振り返り（来年のための顧客ルールの案）を出せると案内するか（保存しない。完了から戻すか、送ったら消す） */
   const [reviewHint, setReviewHint] = useState(false)
-  /** 問い合わせの欄を開いた（チャットに「AI で文面を作る」を出す。送ったら消す） */
+  /** 問い合わせの欄を開いた（チャットに「AI で文面を作る」を出す。一度送ったら、この画面では出さない） */
   const [inquiryHint, setInquiryHint] = useState(false)
+  const inquiryHintSent = useRef(false)
   useEffect(() => {
-    if (tab === "inquiry") setInquiryHint(true)
+    if (tab === "inquiry" && !inquiryHintSent.current) setInquiryHint(true)
   }, [tab])
   const wide = useMediaQuery(WIDE_QUERY)
   /** 狭い画面でチャットを開いているか（広い画面ではいつも開いている） */
@@ -728,11 +729,11 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
       setWork((w) => {
         const texts = indices.flatMap((i) => {
           const c = changes[i]!
-          return c.kind === "inquiry" || c.kind === "inquiryMail" ? [{ index: i, change: c as InquiryTextChange }] : []
+          return c.kind === "inquiry" || c.kind === "inquiryMail" ? [{ index: i, change: c }] : []
         })
         // 問い合わせの文面は表の変更ではないので、作業の文面に重ねる（取り消しの記録に入る）
-        const overlaid0 = applyChanges(w, edited, indices.map((i) => changes[i]!))
-        const overlaid = texts.length ? { ...overlaid0, inquiryText: applyInquiryChanges(w.inquiryText, id, texts) } : overlaid0
+        const applied = applyChanges(w, edited, indices.map((i) => changes[i]!))
+        const overlaid = texts.length ? { ...applied, inquiryText: applyInquiryChanges(w.inquiryText, id, texts) } : applied
         const replanned = nextPlan && indices.some((i) => changes[i]!.kind === "plan") && w.plan ? { ...overlaid, plan: { ...w.plan, plan: nextPlan }, converted: false } : overlaid
         const decided = { ...replanned, proposals: w.proposals.map((x) => (x.id === id ? decide(x, indices, "applied") : x)) }
         return withUndo(w, decided, id, indices, external)
@@ -1104,6 +1105,8 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
                   text: `問い合わせ ${activeInquiries} 件を、AI が顧客に伝わる質問の文とメールの下書きにできます（似た質問はまとめます）。承認した文を記入用Excelの「ご質問」の欄とメールに使います。`,
                   label: "AI で文面を作る",
                   prompt: INQUIRY_TEXT_PROMPT,
+                  // 会話にもう送っていれば出さない（開き直しても）
+                  once: true as const,
                 },
               ]
             : []),
@@ -1122,9 +1125,13 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
             : []),
         ]}
         beforeSend={settleSave}
-        onSuggestionSent={(id) =>
-          id === REVIEW_SUGGESTION ? setReviewHint(false) : id === INQUIRY_SUGGESTION ? setInquiryHint(false) : setAnswerHints((hs) => hs.filter((h) => h.fileId !== id))
-        }
+        onSuggestionSent={(id) => {
+          if (id === REVIEW_SUGGESTION) setReviewHint(false)
+          else if (id === INQUIRY_SUGGESTION) {
+            inquiryHintSent.current = true
+            setInquiryHint(false)
+          } else setAnswerHints((hs) => hs.filter((h) => h.fileId !== id))
+        }}
       />
     </Suspense>
   ) : null

@@ -406,7 +406,7 @@ describe("問い合わせの文面（propose_inquiry）", () => {
   asking[1]!.cells.endYm = { value: "202409", status: "warning", source: "J列", original: "", message: "引渡日から推定", guessed: true }
   const asked = { ...table, rows: asking, tax: "unknown" as const }
   const mail = { subject: "工事経歴書のご確認", intro: "資料ありがとうございました。いくつか教えてください。" }
-  const others = { otherCustomers: async () => ["株式会社サンプル建設"] }
+  const others = { customerName: "サンプル建設工業", otherCustomers: async () => ["株式会社サンプル建設"] }
 
   test("get_inquiries は理由の id と推定の根拠を返す", async () => {
     const out = await call(chatTools(newTurnState(asked)), "get_inquiries", {})
@@ -442,6 +442,9 @@ describe("問い合わせの文面（propose_inquiry）", () => {
     expect(await tryText({ questions: [{ text: "山田太郎様の工事の技術者を教えてください。", targets: [{ field: "engineer" }] }] })).toMatchObject({ ok: false, items: ["questions[0]"] })
     expect(await tryText({ intro: "〔Ａ〕邸の件でご連絡します。" })).toMatchObject({ ok: false, items: ["intro"] })
     expect(await tryText({ subject: "サンプル建設様と同じ件" })).toMatchObject({ ok: false, items: ["subject"] })
+    // この案件の顧客の名前（ほかの顧客の名前を含む）は書いてよい
+    const state = newTurnState(asked, undefined, undefined, null, null, null, others)
+    expect(await call(chatTools(state), "propose_inquiry", { ...mail, subject: "サンプル建設工業様 工事経歴書のご確認", questions: [{ text: "この工事の技術者を教えてください。", targets: [{ field: "engineer" }] }] })).toMatchObject({ ok: true })
     expect(await tryText({ questions: [{ text: "着工年月を教えてください。", targets: [{ field: "startYm" }] }] })).toMatchObject({ ok: false, problems: ["questions[0].targets[0]: 今の問い合わせに当てはまりません"] })
   })
 })

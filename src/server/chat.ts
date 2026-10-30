@@ -241,7 +241,7 @@ async function runTurn(request: Request, caseId: string): Promise<Response> {
       taken: () => takenRules(db, kase.customerId, caseId, saved),
       rounding: body.rounding,
     },
-    { otherCustomers: () => store.otherCustomerNames(db, kase.customerId) },
+    { customerName: customer?.name ?? "", otherCustomers: () => store.otherCustomerNames(db, kase.customerId) },
   )
   /** 履歴・作ったファイル・費用を書き終えたら resolve する。印がまだ自分のもの（画面の会話を書いて下ろしてよい）なら true */
   const recorded = Promise.withResolvers<boolean>()

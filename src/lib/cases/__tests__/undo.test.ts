@@ -138,8 +138,13 @@ describe("問い合わせの文面の承認の取り消し", () => {
     const w = reopen({ ...after, undo: [entry] })
     expect(w.inquiryText).toEqual(text)
     expect(undo(w, "u")!.work.inquiryText).toEqual(EMPTY_INQUIRY_TEXT)
-    const edited = { ...w, inquiryText: { ...text, subject: "職員の件名" } }
-    expect(undo(edited, "u")).toMatchObject({ kept: 1, reverted: 0 })
+    // 承認のあとに直したもの（件名）は残し、承認で足した質問だけを外す
+    const withMail = { ...after, inquiryText: { ...text, subject: "AI の件名" } }
+    const e2 = undoEntry(before, withMail, { id: "u2", proposalId: "p1", label: "p1", at: 0 })!
+    const edited = { ...withMail, undo: [e2], inquiryText: { ...withMail.inquiryText, subject: "職員の件名" } }
+    const r = undo(edited, "u2")!
+    expect(r).toMatchObject({ kept: 1, reverted: 1 })
+    expect(r.work.inquiryText).toEqual({ ...EMPTY_INQUIRY_TEXT, subject: "職員の件名" })
     const { inquiryText: _, ...old } = toSavedWork(newWork("f"))
     expect(savedWorkSchema.parse(old).inquiryText).toEqual(EMPTY_INQUIRY_TEXT)
   })

@@ -172,8 +172,8 @@ export type TurnState = {
   inquiry: InquiryDeps | null
 }
 
-/** 問い合わせの文面の確かめ。otherCustomers はこの案件の顧客のほかの顧客の名前（文に入れない） */
-export type InquiryDeps = { otherCustomers: () => Promise<readonly string[]> }
+/** 問い合わせの文面の確かめ。otherCustomers はほかの顧客の名前（文に入れない）、customerName はこの案件の顧客の名前（件名などに書いてよい） */
+export type InquiryDeps = { customerName: string; otherCustomers: () => Promise<readonly string[]> }
 
 /**
  * 振り返りに使うもの。turns はこの案件の会話の指示（サーバーは画面の会話と、保存した作業の変更案の状態・取り消しの記録から作る。作れなければ理由）、
@@ -707,8 +707,10 @@ export function chatTools(state: TurnState) {
             questionTargetsSchema.safeParse(q.targets.map((t): QuestionTarget => ("topic" in t ? t : { field: t.field, ...(t.reasonId ? { reason: t.reasonId } : {}), ...(t.keys ? { keys: [...new Set(t.keys)] } : {}) }))),
           )
           const keys = parsed.reduce((n, p) => n + (p.success ? p.data.reduce((k, t) => k + ("keys" in t && t.keys ? t.keys.length : 0), 0) : 0), 0)
-          if (parsed.some((p) => !p.success) || keys > MAX_TOTAL_KEYS)
-            return json({ ok: false, problems: [`keys は1つの質問で${MAX_QUESTION_KEYS}行・合わせて${MAX_TOTAL_KEYS}行までです。多くの行に同じ聞き方をするときは、keys を省いて項目と理由で選んでください`] })
+          const invalid = parsed.flatMap((p, i) => (p.success ? [] : p.error.issues.map((x) => `questions[${i}].targets: ${x.message}`)))
+          if (invalid.length) return json({ ok: false, problems: invalid.slice(0, 20) })
+          if (keys > MAX_TOTAL_KEYS)
+            return json({ ok: false, problems: [`keys は合わせて${MAX_TOTAL_KEYS}行（1つの質問で${MAX_QUESTION_KEYS}行）までです。多くの行に同じ聞き方をするときは、keys を省いて項目と理由で選んでください`] })
           const read = questions.map((q, i) => ({ text: q.text, targets: parsed[i]!.data! }))
           const v = view()
           const check = checkQuestions(read, collectInquiries(v.output, { tax: state.current.tax }))
@@ -716,7 +718,7 @@ export function chatTools(state: TurnState) {
           const texts = [subject, intro, ...read.map((q) => q.text)]
           const named = await personal(texts)
           if (named.length) return json({ ok: false, error: "個人名か表の記号（〔Ａ〕〔個人名〕など）が入っている文があります。何も出していません。名前を書かず「この工事」のように書き直してください。", items: named.map(textName) })
-          const others = otherCustomerTest(state.inquiry ? await state.inquiry.otherCustomers() : [])
+          const others = otherCustomerTest(state.inquiry ? await state.inquiry.otherCustomers() : [], state.inquiry?.customerName)
           const leaked = texts.flatMap((t, i) => (others(t) ? [i] : []))
           if (leaked.length) return json({ ok: false, error: "ほかの顧客の名前が入っている文があります。何も出していません。", items: leaked.map(textName) })
           state.pending.push(...read.map((q): ChatChange => ({ kind: "inquiry", text: q.text, targets: q.targets })), { kind: "inquiryMail", subject, intro })

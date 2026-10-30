@@ -12,7 +12,7 @@ import { withNames } from "@/lib/convert/persons"
 import { errorMessage } from "@/lib/errors"
 import { saveFile } from "@/lib/save-file"
 import { DEFAULT_INTRO, DEFAULT_SUBJECT, inquiryEmail } from "@/lib/inquiry/email"
-import { editQuestion, groupCount, questionGroups, type InquiryText, type QuestionGroup } from "@/lib/inquiry/text"
+import { editQuestion, groupCount, MAX_INTRO_LENGTH, MAX_QUESTION_LENGTH, MAX_SUBJECT_LENGTH, questionGroups, type InquiryText, type QuestionGroup } from "@/lib/inquiry/text"
 import {
   CASE_TOPICS,
   fieldLabel,
@@ -165,9 +165,13 @@ export function InquiryPanel({
                 aria-label="質問の文"
                 className="min-h-0 text-sm"
                 rows={2}
+                maxLength={MAX_QUESTION_LENGTH}
                 defaultValue={g.text}
                 onBlur={(e) => {
-                  if (e.target.value.trim() !== g.text) editGroup(g, e.target.value)
+                  const v = e.target.value.trim()
+                  // 決まった文を空にしても決まった文のまま（欄にも戻す）
+                  if (!v && g.by === "fixed") e.target.value = g.text
+                  else if (v !== g.text) editGroup(g, v)
                 }}
               />
               <div className="grid shrink-0 justify-items-end gap-1 pt-1 text-xs text-muted-foreground">
@@ -187,9 +191,11 @@ export function InquiryPanel({
             aria-label="件名"
             title="件名"
             defaultValue={email.subject}
-            placeholder={DEFAULT_SUBJECT}
+            maxLength={MAX_SUBJECT_LENGTH}
             onBlur={(e) => {
-              if (e.target.value.trim() !== email.subject) editMail("subject", e.target.value)
+              const v = e.target.value.trim()
+              if (!v && text.subject === null) e.target.value = DEFAULT_SUBJECT
+              else if (v !== email.subject) editMail("subject", v)
             }}
             data-testid="inquiry-subject"
           />
@@ -199,9 +205,12 @@ export function InquiryPanel({
             title="前置き"
             className="min-h-0 text-sm"
             rows={2}
+            maxLength={MAX_INTRO_LENGTH}
             defaultValue={text.intro ?? DEFAULT_INTRO}
             onBlur={(e) => {
-              if (e.target.value.trim() !== (text.intro ?? DEFAULT_INTRO)) editMail("intro", e.target.value)
+              const v = e.target.value.trim()
+              if (!v && text.intro === null) e.target.value = DEFAULT_INTRO
+              else if (v !== (text.intro ?? DEFAULT_INTRO)) editMail("intro", v)
             }}
             data-testid="inquiry-intro"
           />

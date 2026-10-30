@@ -732,7 +732,7 @@ async function inquiryEval() {
   const inquiries = collectInquiries(view.output, { tax: table.tax })
   const others = [...new Set(Object.entries(CASES).flatMap(([id, c]) => (id === caseId || c.customerName === def!.customerName ? [] : [c.customerName])))]
   const t00 = Date.now()
-  const run = await chatPhase({ turns: [INQUIRY_TEXT_PROMPT], table, plan: base.plan, customerItems: def!.customerRules.split("\n").map((t) => t.trim()).filter(Boolean), inquiry: { otherCustomers: async () => others } })
+  const run = await chatPhase({ turns: [INQUIRY_TEXT_PROMPT], table, plan: base.plan, customerItems: def!.customerRules.split("\n").map((t) => t.trim()).filter(Boolean), inquiry: { customerName: def!.customerName, otherCustomers: async () => others } })
   const pending = run.log.flatMap((l) => l.pending)
   const changes = pending.flatMap((c, index) => (c.kind === "inquiry" || c.kind === "inquiryMail" ? [{ index, change: c }] : []))
   const text = applyInquiryChanges(EMPTY_INQUIRY_TEXT, "eval", changes)
@@ -740,7 +740,7 @@ async function inquiryEval() {
   const byAi = groups.filter((g) => g.by === "ai")
   const texts = [text.subject ?? "", text.intro ?? "", ...text.questions.map((q) => q.text)].filter(Boolean)
   const guard = reviewGuard(table)
-  const otherNames = otherCustomerTest(others)
+  const otherNames = otherCustomerTest(others, def!.customerName)
   const values = [...new Set(view.output.flatMap((r) => [r.cells.workName.value, r.cells.client.value]).filter((v) => [...v].length >= 4 && !v.includes("〔")))]
   const FIXED_WORDS = ["データに無い", "推定に自信", "AI", "CSV", "変換", "列"]
   const check = {
