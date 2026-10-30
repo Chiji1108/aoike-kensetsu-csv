@@ -15,9 +15,6 @@ import { basisSchema, fieldIdSchema, selectionSchema, taxSchema } from "../schem
 import { KOJI_ANONYMIZE, KOJI_KEIREKI, type KojiFieldId } from "../spec/koji-keireki"
 import { applyChanges, type ChatChange } from "./proposals"
 import { MAX_RULE_ITEM_LENGTH, RULE7_TAX_LABELS, type Rule7Tax } from "./rules"
-
-/** 1回の propose_rule で出せる項目の数 */
-const MAX_RULE_PROPOSALS = 10
 import { CHAT_ACTIONS, type ChatAction } from "./messages"
 import { outcomeChanges } from "../location/changes"
 import { askReason, estimateUsd, MAX_SITES_PER_RUN, runSitesOf, siteOfRow, SOURCE_LABELS, type Outcome, type Site } from "../location/sites"
@@ -32,6 +29,8 @@ export const MODEL = "claude-opus-5-5"
 export const MAX_TOOL_CALLS = 20
 /** 1回の指示の往復の上限（安全装置。道具の回数の上限で先に止まる） */
 const MAX_STEPS = 40
+/** 1回の propose_rule で出せる項目の数 */
+const MAX_RULE_PROPOSALS = 10
 
 const FIELD_IDS = fieldIdSchema.options
 /**
