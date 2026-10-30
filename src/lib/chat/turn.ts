@@ -8,7 +8,7 @@ import { editText, staffEdit, type CellEdit } from "../convert/convert"
 import { withNames, type PersonLetters } from "../convert/persons"
 import { getTransform, transformsFor, type TransformId } from "../convert/transforms"
 import type { MappingPlan } from "../convert/plan"
-import { applyPlanPatch, describePlanPatch, patchFromInput, planPatchInputSchema, type PlanPatchInput, type SheetShape } from "../convert/plan-patch"
+import { applyPlanPatch, beforeOf, describePlanPatch, patchFromInput, planPatchInputSchema, type PlanPatchInput, type SheetShape } from "../convert/plan-patch"
 import { CODE_SETS } from "../spec/code-sets"
 import type { Basis, SelectionMode, TaxMode } from "../convert/koji-selection"
 import { basisSchema, fieldIdSchema, selectionSchema, taxSchema } from "../schemas"
@@ -466,7 +466,7 @@ export function chatTools(state: TurnState) {
     set_plan: tool({
       description:
         "列の対応（計画）を変える案を出す。変える項目だけを書く（差分）。fields: {項目: {kind:'column', column:'J', transform} | {kind:'columns', columns:['B','C'], transform} | {kind:'flagColumns', columns:[{column:'F', code:'8'}]} | {kind:'constant', value, reason} | {kind:'missing'}}。" +
-        "列は Excel の列記号、行（headerRow・dataStart・skipRows）は Excel の行番号。skipRows・excludeColumns は送ると今のものと入れ替える。reason に職員向けの理由。ai.freeform のときだけ instruction に指示文。" +
+        "列は Excel の列記号、行（headerRow・dataStart・dataEnd・skipRows）は Excel の行番号。excludeHidden は隠れた行を出さないか。skipRows・excludeColumns は送ると今のものと入れ替える。reason に職員向けの理由。ai.freeform のときだけ instruction に指示文。" +
         "個人名の項目（注文者・工事名・配置技術者）は匿名化する変換しか使えず、注文者・工事名に定数は書けない。項目ごとに使える変換:\n" +
         planToolDoc() +
         "\nJSON 文字列 {ok, changes} を返す（合わない項目があれば ok:false と problems で、何も変えない）。承認すると変換し直す。",
@@ -476,8 +476,9 @@ export function chatTools(state: TurnState) {
         const patch = patchFromInput(input)
         const applied = applyPlanPatch(KOJI_KEIREKI, state.plan.plan, patch, state.plan.shape)
         if (!applied.ok) return json({ ok: false, problems: applied.problems })
-        const changes = describePlanPatch(patch, state.plan.plan)
-        state.pending.push({ kind: "plan", patch })
+        const before = beforeOf(state.plan.plan, patch)
+        const changes = describePlanPatch(patch, before)
+        state.pending.push({ kind: "plan", patch, before })
         state.plan = { ...state.plan, plan: applied.plan }
         state.log.push({ tool: "set_plan", summary: changes.join(" / ") })
         return json({ ok: true, changes, note: "承認すると変換し直します。この指示の表（get_table）は変わりません。" })

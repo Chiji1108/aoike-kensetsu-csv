@@ -3,7 +3,7 @@ import { INCLUSION_LABELS, SELECTION_LABELS, TAX_LABELS } from "../convert/koji-
 import { personKey, withNames, type PersonLetters } from "../convert/persons"
 import { KOJI_KEIREKI, type KojiFieldId } from "../spec/koji-keireki"
 import type { MappingPlan } from "../convert/plan"
-import { describePlanPatch } from "../convert/plan-patch"
+import { beforeOf, describePlanPatch } from "../convert/plan-patch"
 import { SOURCE_LABELS } from "../location/sites"
 import type { ChatChange } from "./proposals"
 
@@ -50,7 +50,7 @@ export function describeChange(c: ChatChange, view: TableView, byKey: ReadonlyMa
     case "rule":
       return { where: c.scope === "global" ? "全体ルール" : "顧客ルール", what: "追記", from: "", to: c.text }
     case "plan":
-      return { where: "列の対応", what: "変換し直す", from: "", to: [...describePlanPatch(c.patch, plan ?? undefined), `理由: ${c.patch.reason}`].join(" / ") }
+      return { where: "列の対応", what: "変換し直す", from: "", to: [...describePlanPatch(c.patch, c.before ?? (plan ? beforeOf(plan, c.patch) : undefined)), `理由: ${c.patch.reason}`].join(" / ") }
     case "location": {
       const first = byKey.get(c.rowKeys[0]!)
       const now = first ? [first.cells.prefecture.value, first.cells.place.value].filter(Boolean).join(" ") : ""

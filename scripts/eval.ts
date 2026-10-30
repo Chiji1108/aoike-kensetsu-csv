@@ -342,7 +342,7 @@ try {
         // 列の対応の変更案は、画面の承認と同じく今の計画に重ねて変換し直す（確かめは同じ applyPlanPatch）。手直しはその上に重なる
         const planChanges = state.pending.flatMap((c) => (c.kind === "plan" ? [c.patch] : []))
         for (const patch of planChanges) {
-          const applied = applyPlanPatch(KOJI_KEIREKI, plan, patch, sheetShapeOf(gridOf(plan)))
+          const applied = applyPlanPatch(KOJI_KEIREKI, plan, patch, sheetShapeOf(gridOf(plan)), sheets)
           if (applied.ok) plan = applied.plan
           else console.log("  set_plan を重ねられない:", applied.problems.join(" / "))
         }

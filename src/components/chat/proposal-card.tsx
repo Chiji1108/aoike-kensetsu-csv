@@ -9,7 +9,7 @@ import { describeChange } from "@/lib/chat/describe"
 import { decisionOf, isAnswered, pendingOf, type ChatChange, type OpenProposal, type Proposal } from "@/lib/chat/proposals"
 import { cn } from "@/lib/utils"
 import type { MappingPlan } from "@/lib/convert/plan"
-import { describePlanPatch } from "@/lib/convert/plan-patch"
+import { beforeOf, describePlanPatch } from "@/lib/convert/plan-patch"
 import type { KojiFieldId } from "@/lib/spec/koji-keireki"
 
 /** 変更案の承認を取り消せるか（cases/undo.ts の記録から）。can は戻せる記録がある、undone は取り消した、external は戻さない外への書き込み */
@@ -81,7 +81,7 @@ export function ProposalCard({
       )}
       {changes.some((c) => c.kind === "plan") && (
         <ul className="list-disc space-y-0.5 rounded-lg border bg-muted/20 py-1.5 pr-2 pl-6 text-xs" data-testid="proposal-plan">
-          {changes.flatMap((c) => (c.kind === "plan" ? describePlanPatch(c.patch, plan ?? undefined) : [])).map((l, i) => (
+          {changes.flatMap((c) => (c.kind === "plan" ? describePlanPatch(c.patch, c.before ?? (plan ? beforeOf(plan, c.patch) : undefined)) : [])).map((l, i) => (
             <li key={i}>{l}</li>
           ))}
           <li className="list-none text-muted-foreground">承認すると変換し直します（手直しはそのまま重なります）。</li>

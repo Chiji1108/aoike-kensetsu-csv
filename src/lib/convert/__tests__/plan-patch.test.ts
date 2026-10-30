@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { KOJI_KEIREKI, KOJI_PLAN_HINTS } from "../../spec/koji-keireki"
 import { heuristicPlan } from "../heuristic-plan"
-import { applyPlanPatch, columnIndex, describePlanPatch, patchFromInput, planPatchInputSchema, sheetShapeOf } from "../plan-patch"
+import { applyPlanPatch, beforeOf, columnIndex, describePlanPatch, patchFromInput, planPatchInputSchema, sheetShapeOf } from "../plan-patch"
 import { readWorkbook } from "../workbook"
 import { fixture } from "./helpers"
 
@@ -68,13 +68,38 @@ describe("チャットの計画の差分（set_plan）", () => {
     expect(applyPlanPatch(KOJI_KEIREKI, plan, patch({ fields: { gyoshu: { kind: "constant", value: "19", reason: "全部内装" } }, reason: "x" }), shape).ok).toBe(true)
   })
 
+  test("データの最後の行と、隠れた行を出すかも変えられる（シートの中だけ）", () => {
+    const r = applyPlanPatch(KOJI_KEIREKI, plan, patch({ dataEnd: plan.dataRows.end, excludeHidden: false, reason: "x" }), shape)
+    expect(r.ok && r.plan.rowFilter.excludeHidden).toBe(false)
+    const shorter = applyPlanPatch(KOJI_KEIREKI, plan, patch({ dataEnd: plan.dataRows.start + 2, reason: "x" }), shape)
+    expect(shorter.ok && shorter.plan.dataRows.end).toBe(plan.dataRows.start + 1)
+    expect(applyPlanPatch(KOJI_KEIREKI, plan, patch({ dataEnd: 9999, reason: "x" }), shape).ok).toBe(false)
+    expect(applyPlanPatch(KOJI_KEIREKI, plan, patch({ dataEnd: plan.dataRows.start, reason: "x" }), shape).ok).toBe(false)
+  })
+
+  test("ブックを渡すと、見出しの行を変えたあとも2枚目以降のシートの見出しが同じか確かめ直す（AI の計画の取り込みと同じ決まり）", () => {
+    const g = grid!
+    const copy = { ...g, name: "別の年", rows: g.rows.map((r, i) => (i > plan.headerRow ? r.map((c, j) => (j === 0 ? `X${c}` : c)) : r)) }
+    const book = [g, copy]
+    const two = { ...plan, sheets: [g.name, copy.name] }
+    expect(applyPlanPatch(KOJI_KEIREKI, two, patch({ fields: { jv: { kind: "missing" } }, reason: "x" }), shape, book).ok).toBe(true)
+    const moved = applyPlanPatch(KOJI_KEIREKI, two, patch({ headerRow: plan.headerRow + 2, dataStart: plan.headerRow + 3, reason: "x" }), shape, book)
+    expect(moved.ok).toBe(false)
+    if (!moved.ok) expect(moved.problems.join()).toContain("別の年")
+  })
+
   test("知らない引数は断る（strict）", () => {
     expect(planPatchInputSchema.safeParse({ sheets: ["x"], reason: "x" }).success).toBe(false)
     expect(planPatchInputSchema.safeParse({ fields: { amount: { kind: "column", column: 3, transform: "rule.yenToThousand" } }, reason: "x" }).success).toBe(false)
   })
 
   test("職員向けの説明は「今 → 案」で出す", () => {
-    const lines = describePlanPatch(patch({ fields: { amount: { kind: "column", column: "H", transform: "rule.yenToThousand" } }, reason: "x" }), plan)
-    expect(lines[0]).toMatch(/^請負代金（千円）: .+ → H列（/)
+    const p = patch({ fields: { amount: { kind: "column", column: "H", transform: "rule.yenToThousand" } }, reason: "x" })
+    const before = beforeOf(plan, p)
+    expect(describePlanPatch(p, before)[0]).toMatch(/^請負代金（千円）: G列.+ → H列（/)
+    // 承認して計画が変わっても、変更案に残した「前」で出す（「H列 → H列」にしない）
+    const approved = applyPlanPatch(KOJI_KEIREKI, plan, p, shape)
+    expect(approved.ok && describePlanPatch(p, beforeOf(approved.plan, p))[0]).toMatch(/H列.+ → H列/)
+    expect(describePlanPatch(p, before)[0]).not.toMatch(/H列.+ → H列/)
   })
 })

@@ -656,7 +656,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
     // 列の対応の変更は、今の計画と計画の元のシートで確かめ直す（AI の計画の取り込みと同じ決まり）。合わなければ承認しない
     let nextPlan: Plan | null = null
     if (planned.length) {
-      if (!work.plan || !grid) {
+      if (!work.plan || !grid || !source) {
         toast.error("変換の元のファイルを読んでいます。読み終えてから承認してください")
         return
       }
@@ -664,7 +664,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
       for (const i of planned) {
         const c = changes[i]!
         if (c.kind !== "plan") continue
-        const r = applyPlanPatch(SPEC, p0, c.patch, sheetShapeOf(grid))
+        const r = applyPlanPatch(SPEC, p0, c.patch, sheetShapeOf(grid), source.sheets)
         if (!r.ok) {
           toast.error(`列の対応を変えられません（承認していません）: ${r.problems.join(" / ")}`)
           return

@@ -30,9 +30,9 @@ export type ChatChange =
   | { kind: "rule"; scope: RuleScope; text: string }
   /**
    * 列の対応（計画）の差分（convert/plan-patch.ts）。承認すると、そのときの計画に重ねて変換し直す（表の値は変換し直した値になり、手直しはその上に重なる）。
-   * 表の変更ではないので、ここ（applyChanges）では何もしない
+   * 表の変更ではないので、ここ（applyChanges）では何もしない。before は変更案を作ったときの同じ項目の値（「前 → 後」で見せる。前の変更案には無い）
    */
-  | { kind: "plan"; patch: PlanPatch }
+  | { kind: "plan"; patch: PlanPatch; before?: PlanPatch }
   /**
    * 調べた工事場所（lib/location）。同じ現場（工事名・注文者）の行の都道府県・場所名をまとめて変える。承認すると要確認の値として入り、
    * 顧客の覚えた結果に足す（server/location.ts の rememberLocations。site は外に送ってよい値だけ）
@@ -200,7 +200,7 @@ export const chatChangeSchema: z.ZodType<ChatChange> = z.discriminatedUnion("kin
       return { ...c, ...(s ? { selection: s } : {}) }
     }),
   z.object({ kind: z.literal("rule"), scope: z.enum(["global", "customer"]), text: z.string() }),
-  z.object({ kind: z.literal("plan"), patch: planPatchSchema }),
+  z.object({ kind: z.literal("plan"), patch: planPatchSchema, before: planPatchSchema.optional() }),
   foundSchema.extend({
     kind: z.literal("location"),
     site: siteRefSchema,

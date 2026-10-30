@@ -134,25 +134,13 @@ export function acceptAiPlan<F extends string>(
   const dataRows = rowsOk ? { start: wire.dataStart, end } : fallback.dataRows
 
   const sheets = [grid.name]
-  // 写しのシートを足すと同じ工事が二重に出る（CSV の誤り）ので、AI が足しても決まった処理で外す
-  const copyReason = (s: SheetGrid) => {
-    const copy = copiedFrom(s, sheets.map((n) => workbook.find((x) => x.name === n)!), headerRow)
-    return copy ? `データの行の${Math.floor(copy.ratio * 100)}%が「${copy.sheet}」にもある写しの` : undefined
-  }
   for (const i of extraIndexes) {
     const s = sent(i)
     const name = s?.name ?? `番号 ${i}`
-    const reason = !s
-      ? "送ったシートに無い"
-      : sheets.includes(name)
-        ? undefined
-        : s.rows.every(rowIsBlank)
-          ? "空の"
-          : !sameHeader(s, grid, headerRow)
-            ? `見出しが「${grid.name}」と違う`
-            : copyReason(s)
+    if (s && sheets.includes(name)) continue
+    const reason = s ? extraSheetReason(workbook, grid, sheets, s, headerRow) : "送ったシートに無い"
     if (reason) problems.push(`AI が足したシート「${name}」は${reason}ため外しました`)
-    else if (!sheets.includes(name)) sheets.push(name)
+    else sheets.push(name)
   }
 
   const wireFields: Record<string, z.infer<typeof fieldPlanWire>> = wire.fields
@@ -191,6 +179,21 @@ export function acceptAiPlan<F extends string>(
       notes: [...sheetNote, ...wire.notes, ...problems],
     },
   }
+}
+
+/**
+ * 計画の元のシート（primary）に、2枚目以降として足すシート s を使えない理由（使えれば undefined）。空・見出しが計画の元と違う・
+ * もう使うシート（kept）の写し（写しを足すと同じ工事が二重に出る）。AI の計画の取り込みとチャットの計画の変更で同じ決まり
+ */
+export function extraSheetReason(workbook: readonly SheetGrid[], primary: SheetGrid, kept: readonly string[], s: SheetGrid, headerRow: number): string | undefined {
+  if (s.rows.every(rowIsBlank)) return "空の"
+  if (!sameHeader(s, primary, headerRow)) return `見出しが「${primary.name}」と違う`
+  const copy = copiedFrom(
+    s,
+    kept.flatMap((n) => workbook.find((x) => x.name === n) ?? []),
+    headerRow,
+  )
+  return copy ? `データの行の${Math.floor(copy.ratio * 100)}%が「${copy.sheet}」にもある写しの` : undefined
 }
 
 /** 項目の計画1つが項目の型とシートの幅に合わない理由（合えば undefined）。AI の計画の取り込みとチャットの計画の変更で同じ決まり */
