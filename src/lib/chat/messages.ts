@@ -26,15 +26,22 @@ export type ChatDataParts = {
   carryover: { fiscalYear: number; codes: number; skipped?: string }
   /** 工事場所の一括調査を始めるボタン（チャットの find_location。件数と費用の目安。始めるのは職員） */
   "location-offer": { sites: number; memorized: number; usd: number }
-  /** 画面の決まった処理を始めるボタン（チャットの offer_action） */
-  action: { action: ChatAction }
+  /** 画面の決まった処理を始めるボタン（チャットの offer_action。保存した会話には前の edit_excel もある） */
+  action: { action: SavedChatAction }
 }
 
 export type ChatMessage = UIMessage<ChatMetadata, ChatDataParts>
 
-/** 返事に付けるボタン（画面の決まった処理を始める）。export: 書き出す前の確認、inquiry_excel: 問い合わせの Excel、edit_excel: 編集用の Excel */
-export const CHAT_ACTIONS = ["export", "inquiry_excel", "edit_excel"] as const
+/** 返事に付けるボタン（画面の決まった処理を始める）。export: 書き出す前の確認（最後の Excel・CSV）、inquiry_excel: 問い合わせの Excel */
+export const CHAT_ACTIONS = ["export", "inquiry_excel"] as const
 export type ChatAction = (typeof CHAT_ACTIONS)[number]
+/**
+ * 保存した会話のボタン。edit_excel は前の「編集用の Excel を落とす」（編集用の Excel は最後の Excel に1つにしたので、書き出す前の確認を開く）。
+ * 保存した会話を読めなくしないよう、読むときだけ受け付ける
+ */
+export const SAVED_CHAT_ACTIONS = [...CHAT_ACTIONS, "edit_excel"] as const
+export type SavedChatAction = (typeof SAVED_CHAT_ACTIONS)[number]
+export const currentAction = (a: SavedChatAction): ChatAction => (a === "edit_excel" ? "export" : a)
 
 /** 保存した会話を読むときの形の確かめ（AI SDK の validateUIMessages に渡す） */
 export const chatMetadataSchema: z.ZodType<ChatMetadata> = z.object({
@@ -51,7 +58,7 @@ export const chatDataSchemas = {
   "proposal-content": z.object({ proposal: proposalSchema, changes: z.array(chatChangeSchema) }),
   carryover: z.object({ fiscalYear: z.number().int(), codes: z.number().int().min(0), skipped: z.string().optional() }),
   "location-offer": z.object({ sites: z.number().int().min(0), memorized: z.number().int().min(0), usd: z.number().min(0) }),
-  action: z.object({ action: z.enum(CHAT_ACTIONS) }),
+  action: z.object({ action: z.enum(SAVED_CHAT_ACTIONS) }),
 }
 
 /** 会話を終えた印（画面にだけ出す。AI の履歴には入らない） */

@@ -131,7 +131,7 @@ const QUESTION_ANSWERS = { yes: "はい", no: "いいえ" } as const
 
 const FIELD_LABEL = new Map(KOJI_KEIREKI.fields.map((f) => [f.id, f.label]))
 /** 手直しの出どころの言葉 */
-const BY_LABELS: Record<CellEdit["by"], string> = { staff: "職員", excel: "職員（編集用の Excel）", chat: "チャット（承認）", customer: "顧客の回答", confirmed: "顧客が確認", location: "工事場所の調査" }
+const BY_LABELS: Record<CellEdit["by"], string> = { staff: "職員", excel: "職員（直した Excel）", chat: "チャット（承認）", customer: "顧客の回答", confirmed: "顧客が確認", location: "工事場所の調査" }
 /** 例に先に出す出どころ（決まりになりやすい職員・チャットの直しを先に、顧客の回答・調査は後に） */
 const BY_ORDER: CellEdit["by"][] = ["staff", "excel", "chat", "customer", "confirmed", "location"]
 

@@ -6,7 +6,7 @@ import { kojiRow } from "../../convert/__tests__/helpers"
 import { toCsvText } from "../../convert/csv"
 import { personToken } from "../../convert/persons"
 import { KOJI_KEIREKI } from "../../spec/koji-keireki"
-import { FINAL_SHEET_NAME, finalSheetRows } from "../final-sheet"
+import { CHECK_MARK, CHECK_SHEET_NAME, FINAL_SHEET_NAME, finalSheet } from "../final-sheet"
 import { finalXlsx } from "../final-xlsx"
 
 const yamada = personToken("山田太郎")
@@ -18,21 +18,27 @@ const rows = [
   kojiRow({ ...base, client: "㈱サンプル", workName: "サンプル倉庫改修", place: "1234", amount: "1000", startYm: "" }, 3),
 ]
 const table: CaseTable = { rows, added: [], edits: new Map(), replacements: {}, manual: new Map(), tax: "excluded", basis: {}, rule7Tax: "excluded" as const, selection: "all", dismissed: new Set<string>(), inquiryText: EMPTY_INQUIRY_TEXT }
-const output = deriveTable(table).output
+const view = deriveTable(table)
+const output = view.output
 
-/** 取り込み用の Excel を書き、SheetJS で読む（職員が Excel で開いたとき） */
+/** 最後の Excel を書き、SheetJS で読む（職員が Excel で開いたとき） */
 async function written() {
-  const book = XLSX.read(await finalXlsx(finalSheetRows(output)), { type: "array" })
+  const book = XLSX.read(await finalXlsx(await finalSheet(view, { caseId: "case-1", sourceFileId: "file-1" })), { type: "array" })
   return { book, ws: book.Sheets[book.SheetNames[0]!]! }
 }
+
+/** 開いているシート（SheetJS は読むが、型に無い） */
+const activeTab = (book: XLSX.WorkBook) => (book.Workbook as { WBView?: { activeTab?: number }[] } | undefined)?.WBView?.[0]?.activeTab
 
 /** CSV の文字列を、セルの値の並びにする（文字コードと改行は Excel 側の話なので、値で比べる） */
 const csvValues = (text: string) => XLSX.utils.sheet_to_json<string[]>(XLSX.read(text, { type: "string", raw: true }).Sheets.Sheet1!, { header: 1, raw: false, defval: "", blankrows: false })
 
-describe("取り込み用の Excel", () => {
-  test("シート1枚・見出しの行なし・14列で、1行目からデータ", async () => {
+describe("最後の Excel", () => {
+  test("データのシートが最初で開いているシート・見出しの行なし・14列で、1行目からデータ。照合用のシートは隠す", async () => {
     const { book, ws } = await written()
-    expect(book.SheetNames).toEqual([FINAL_SHEET_NAME])
+    expect(book.SheetNames).toEqual([FINAL_SHEET_NAME, CHECK_SHEET_NAME])
+    expect(book.Workbook?.Sheets?.map((s) => s.Hidden)).toEqual([0, 2])
+    expect(activeTab(book)).toBe(0)
     expect(ws["!ref"]).toBe(`A1:N${output.length}`)
     expect(ws.A1?.v).toBe(Number(output[0]!.cells.gyoshu.value))
   })
@@ -54,13 +60,28 @@ describe("取り込み用の Excel", () => {
     })
   })
 
-  test("Excel の「CSV で保存」の代わりに SheetJS で CSV にすると、今の CSV と同じ値になる", async () => {
-    const { ws } = await written()
-    const fromExcel = csvValues(XLSX.utils.sheet_to_csv(ws, { blankrows: false }))
+  test("Excel の「CSV で保存」（開いているシートだけ）の代わりに SheetJS で CSV にすると、今の CSV と同じ値で、照合用のシートの中身は入らない", async () => {
+    const { book, ws } = await written()
+    const active = book.SheetNames[activeTab(book) ?? -1]
+    expect(active).toBe(FINAL_SHEET_NAME)
+    const text = XLSX.utils.sheet_to_csv(ws, { blankrows: false })
+    const fromExcel = csvValues(text)
     const ours = csvValues(toCsvText(KOJI_KEIREKI, output))
     expect(fromExcel).toEqual(ours)
     expect(ours).toHaveLength(output.length)
-    // 匿名化のあとの値（個人名は記号）
+    // 匿名化のあとの値（個人名は記号）。照合用の印・行の key は入らない
     expect(JSON.stringify(fromExcel)).not.toContain("山田")
+    expect(text).not.toContain(CHECK_MARK)
+    expect(text).not.toContain("s!1")
+  })
+
+  test("照合用のシートは行の key と落としたときの値（記号の人は「〔Ａ〕」）を持ち、個人名は書かない", async () => {
+    const { book } = await written()
+    const rows = XLSX.utils.sheet_to_json<string[]>(book.Sheets[CHECK_SHEET_NAME]!, { header: 1, raw: false, defval: "" })
+    expect(rows[0]!.slice(0, 2)).toEqual([CHECK_MARK, "1"])
+    expect(rows.filter((r) => r[0] === "row").map((r) => r[1])).toEqual(output.map((r) => r.key))
+    expect(rows.find((r) => r[1] === "s!1")).toContain("〔Ａ〕邸新築工事")
+    expect(rows.filter((r) => r[0] === "person").map((r) => r[1])).toEqual(["Ａ"])
+    expect(JSON.stringify(rows)).not.toContain("山田")
   })
 })
