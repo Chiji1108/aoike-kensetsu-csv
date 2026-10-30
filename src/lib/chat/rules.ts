@@ -19,8 +19,10 @@ export const RULE_SOURCES = ["staff", "chat", "review"] as const
 export type RuleScope = (typeof RULE_SCOPES)[number]
 export type RuleSource = (typeof RULE_SOURCES)[number]
 export const ruleScopeSchema = z.enum(RULE_SCOPES)
+/** 由来（D1 から読むときに確かめる） */
+export const ruleSourceSchema = z.enum(RULE_SOURCES)
 /** 変更案から足す項目の由来（職員が画面で足す項目は変更案を通らない） */
-export const proposedRuleSourceSchema = z.enum(RULE_SOURCES).exclude(["staff"])
+export const proposedRuleSourceSchema = ruleSourceSchema.exclude(["staff"])
 export type ProposedRuleSource = z.infer<typeof proposedRuleSourceSchema>
 /** どの一覧か（顧客ルールは顧客ごと） */
 export type RuleTarget = { scope: "global" } | { scope: "customer"; customerId: string }

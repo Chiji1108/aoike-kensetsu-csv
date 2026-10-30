@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { DEFAULT_GLOBAL_RULE_ITEMS, MAX_RULE_ITEM_LENGTH, MAX_RULE_ITEMS, MAX_RULES_TOTAL, originLabel, rulesText, ruleTextSchema } from "@/lib/chat/rules"
 import {
+  UnknownRuleSourceError,
   addRuleItem,
   appendRuleOnce,
   createCase,
@@ -171,6 +172,14 @@ describe("ルールの項目", () => {
     expect(originLabel(item!, true)).toBe("合成建設 2026年度の案件の振り返りから")
     await deleteCase(db, bucket, c.id)
     expect(originLabel((await listRuleItems(db, t))[0]!, false)).toBe("振り返りから（案件は削除済み）")
+  })
+
+  test("D1 の由来が知らない値なら、別の由来にせず、どの項目かを知らせて止める", async () => {
+    const customer = await createCustomer(db, "合成建設")
+    const t: RuleTarget = { scope: "customer", customerId: customer.id }
+    await addRuleItem(db, t, "A")
+    sqlite.run("update csv_rule_items set source = 'mystery' where scope = 'customer'")
+    await expect(listRuleItems(db, t)).rejects.toBeInstanceOf(UnknownRuleSourceError)
   })
 
   test("承認で上限を超えるなら、足さずに知らせる（印も付けない）", async () => {
