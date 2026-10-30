@@ -7,6 +7,7 @@ import type { KojiFieldId } from "../spec/koji-keireki"
 import { foundSchema, siteRefSchema, SOURCE_LABELS, type Found } from "../location/sites"
 import { planPatchSchema, type PlanPatch } from "../convert/plan-patch"
 import { proposedRuleSourceSchema, ruleScopeSchema, type ProposedRuleSource, type RuleScope } from "./rules"
+import { introSchema, questionTargetsSchema, questionTextSchema, subjectSchema, type QuestionTarget } from "../inquiry/text"
 
 /**
  * 変更案。AI（チャット）や返ってきた Excel が出した変更は、すぐには表に入れず、職員が項目ごとかまとめて承認したものだけを
@@ -39,6 +40,13 @@ export type ChatChange =
    * 顧客の覚えた結果に足す（server/location.ts の rememberLocations。site は外に送ってよい値だけ）
    */
   | ({ kind: "location"; site: { key: string; workName: string; client: string }; rowKeys: string[] } & Found)
+  /**
+   * 顧客への問い合わせの質問の文（lib/inquiry/text.ts）。targets の問い合わせをこの文で聞く。承認すると案件の作業の問い合わせの文面に足す
+   * （表の変更ではないので、ここ〔applyChanges〕では何もしない）
+   */
+  | { kind: "inquiry"; text: string; targets: QuestionTarget[] }
+  /** 問い合わせのメールの件名と前置き（承認すると案件の作業の問い合わせの文面にする） */
+  | { kind: "inquiryMail"; subject: string; intro: string }
 
 export type Decision = "pending" | "applied" | "rejected"
 
@@ -173,6 +181,8 @@ export function applyChanges<T extends Overlay>(target: T, edited: readonly RowR
       }
       case "rule":
       case "plan":
+      case "inquiry":
+      case "inquiryMail":
         break
       default:
         c satisfies never
@@ -208,6 +218,8 @@ export const chatChangeSchema: z.ZodType<ChatChange> = z.discriminatedUnion("kin
     site: siteRefSchema,
     rowKeys: z.array(z.string()).min(1).max(20_000),
   }),
+  z.object({ kind: z.literal("inquiry"), text: questionTextSchema, targets: questionTargetsSchema }),
+  z.object({ kind: z.literal("inquiryMail"), subject: subjectSchema, intro: introSchema }),
 ])
 
 export const proposalSchema: z.ZodType<Proposal> = (() => {

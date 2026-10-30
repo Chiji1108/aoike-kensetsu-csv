@@ -4,7 +4,8 @@ import { personToken } from "../../convert/persons"
 import { fromSaved, MAX_STATE_BYTES, newWork, savedWorkSchema, toSavedWork } from "../../cases/state"
 import { deriveTable } from "../../cases/view"
 import { collectInquiries } from "../../inquiry/inquiry"
-import { addedCountAfter, answer, applyChanges, decide, decisionOf, discard, newProposal, proposalRecordSchema, withRecorded, type ChatChange } from "../proposals"
+import { z } from "zod"
+import { addedCountAfter, answer, applyChanges, chatChangeSchema, decide, decisionOf, discard, newProposal, proposalRecordSchema, withRecorded, type ChatChange } from "../proposals"
 import { MAX_ADDED_ROWS } from "../../cases/added"
 
 const yamada = personToken("山田太郎")
@@ -134,5 +135,18 @@ describe("足した行の上限", () => {
     const add = (rowKey: string): ChatChange => ({ kind: "add", rowKey, by: "excel", cells: {} })
     expect(addedCountAfter([{ key: "add-1", by: "excel" }], [add("add-1"), add("add-2"), add("add-2")])).toBe(2)
     expect(MAX_ADDED_ROWS).toBe(5_000)
+  })
+})
+
+describe("問い合わせの文面の変更案", () => {
+  test("保存の形で読み直せる。表は変えない", () => {
+    const changes: ChatChange[] = [
+      { kind: "inquiry", text: "この工事は引渡日を完成日としてよいですか。", targets: [{ field: "endYm", reason: "needsReview", keys: ["s!2"] }, { topic: "tax" }] },
+      { kind: "inquiryMail", subject: "件名", intro: "前置き" },
+    ]
+    expect(z.array(chatChangeSchema).parse(JSON.parse(JSON.stringify(changes)))).toEqual(changes)
+    expect(chatChangeSchema.safeParse({ kind: "inquiry", text: "", targets: [{ field: "endYm" }] }).success).toBe(false)
+    const target = { edits: new Map(), manual: new Map(), tax: "unknown" as const, basis: {}, selection: "rule7" as const, added: [] }
+    expect(applyChanges(target, [], changes)).toEqual(target)
   })
 })

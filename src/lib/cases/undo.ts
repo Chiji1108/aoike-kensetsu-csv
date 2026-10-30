@@ -6,6 +6,7 @@ import { basisSchema, cellEditSchema, selectionSchema, taxSchema } from "../sche
 import type { AddedRow } from "./added"
 import { addedRowSchema } from "./added"
 import type { SavedPlan } from "./state"
+import { inquiryTextSchema, type InquiryText } from "../inquiry/text"
 
 /**
  * 承認の取り消し。変更案を承認するたびに、承認で変わった値の前と後を1件の記録にして案件の作業に残す（保存・2つのタブの食い違いは作業と同じ仕組み）。
@@ -23,6 +24,7 @@ export type Undoable = {
   selection: SelectionMode
   basis: Basis
   plan: SavedPlan | null
+  inquiryText: InquiryText
 }
 
 type Pair<T> = [before: T, after: T]
@@ -44,6 +46,8 @@ export type UndoEntry = {
   selection?: Pair<SelectionMode>
   basis?: Pair<Basis>
   plan?: Pair<SavedPlan | null>
+  /** 問い合わせの文面（この項目より前の記録には無い） */
+  inquiryText?: Pair<InquiryText>
   /** 戻さない外への書き込み */
   external: ("rule" | "location")[]
   /** 記録が大きすぎて中身を残さなかった（取り消せない） */
@@ -80,8 +84,9 @@ export function undoEntry(
     ...(before.selection !== after.selection ? { selection: [before.selection, after.selection] as Pair<SelectionMode> } : {}),
     ...(!same(before.basis, after.basis) ? { basis: [before.basis, after.basis] as Pair<Basis> } : {}),
     ...(before.plan !== after.plan && !same(before.plan, after.plan) ? { plan: [before.plan, after.plan] as Pair<SavedPlan | null> } : {}),
+    ...(before.inquiryText !== after.inquiryText && !same(before.inquiryText, after.inquiryText) ? { inquiryText: [before.inquiryText, after.inquiryText] as Pair<InquiryText> } : {}),
   }
-  const changed = edits.length || manual.length || added.length || entry.tax || entry.selection || entry.basis || entry.plan
+  const changed = edits.length || manual.length || added.length || entry.tax || entry.selection || entry.basis || entry.plan || entry.inquiryText
   if (!changed && !entry.external.length) return null
   return entry
 }
@@ -102,7 +107,8 @@ export function pushUndo(list: readonly UndoEntry[], entry: UndoEntry): UndoEntr
 }
 
 /** 取り消せる記録か（取り消した・中身が無い・戻す値が無いものは取り消せない） */
-export const canUndo = (e: UndoEntry) => !e.undone && !e.tooLarge && (e.edits.length > 0 || e.manual.length > 0 || e.added.length > 0 || !!e.tax || !!e.selection || !!e.basis || !!e.plan)
+export const canUndo = (e: UndoEntry) =>
+  !e.undone && !e.tooLarge && (e.edits.length > 0 || e.manual.length > 0 || e.added.length > 0 || !!e.tax || !!e.selection || !!e.basis || !!e.plan || !!e.inquiryText)
 
 export type UndoResult<W> = { work: W; reverted: number; kept: number; planChanged: boolean }
 
@@ -166,6 +172,7 @@ export function undo<W extends Undoable & { undo: readonly UndoEntry[] }>(work: 
     selection: revert(entry.selection, work.selection),
     basis: revert(entry.basis, work.basis),
     plan,
+    inquiryText: revert(entry.inquiryText, work.inquiryText),
     undo: work.undo.map((e) => (e.id === entryId ? { ...e, undone: true as const } : e)),
   }
   return { work: next, reverted, kept, planChanged: plan !== work.plan }
@@ -186,6 +193,7 @@ export const undoEntrySchema: z.ZodType<UndoEntry> = z.object({
   selection: pair(selectionSchema).optional(),
   basis: pair(basisSchema).optional(),
   plan: pair(savedPlanSchema.nullable()).optional(),
+  inquiryText: pair(inquiryTextSchema).optional(),
   external: z.array(z.enum(["rule", "location"])),
   tooLarge: z.literal(true).optional(),
   undone: z.literal(true).optional(),

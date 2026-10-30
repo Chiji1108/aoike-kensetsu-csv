@@ -1,6 +1,6 @@
 import ExcelJS from "exceljs"
 import { OFFICE_NAME } from "../constants"
-import type { InquirySheet } from "./inquiry"
+import { QUESTION_HEADER, type InquirySheet } from "./inquiry"
 
 /**
  * 記入用Excel。記入してほしいセルだけ塗り、他は灰色の文字にする。
@@ -24,7 +24,7 @@ export async function inquiryXlsx(sheet: InquirySheet, customer: string): Promis
 
   const notes = [
     `${customer ? `${customer} 様　` : ""}工事経歴書の確認のお願い（${OFFICE_NAME}）`,
-    `色付きの欄（${sheet.askCount}件）にご記入ください。灰色の文字の欄は確認のためのもので、記入は不要です。`,
+    `色付きの欄（${sheet.askCount}件）にご記入ください。行ごとの質問は「${QUESTION_HEADER}」の欄にあります。灰色の文字の欄は確認のためのもので、記入は不要です。`,
     ...sheet.hints,
     "「管理番号」の列は照合に使いますので、消したり書き換えたりしないでください。分からない欄は空欄のままで構いません。",
   ]
@@ -55,7 +55,7 @@ export async function inquiryXlsx(sheet: InquirySheet, customer: string): Promis
       cell.alignment = { vertical: "top", wrapText: true }
       if (c.note) cell.note = c.note
       if (c.ask) cell.fill = ASK_FILL
-      else cell.font = { color: GRAY }
+      else if (!c.question) cell.font = { color: GRAY }
     })
   })
   ws.views = [{ state: "frozen", ySplit: headerRow, xSplit: 1 }]
