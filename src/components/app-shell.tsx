@@ -30,7 +30,7 @@ export function AppShell({ children, aside, asideOpen = false, wide = false }: {
   }
 
   return (
-    <div className="min-h-dvh [--aside-width:440px]">
+    <div className="min-h-dvh [--aside-width:400px] 2xl:[--aside-width:440px]">
       <header className="no-print sticky top-0 z-30 border-b bg-background/85 backdrop-blur supports-[backdrop-filter]:bg-background/70">
         <div className="mx-auto flex h-14 max-w-7xl items-center gap-2 px-4 sm:gap-6 sm:px-6">
           <Link to="/" className="flex items-center gap-2.5">
