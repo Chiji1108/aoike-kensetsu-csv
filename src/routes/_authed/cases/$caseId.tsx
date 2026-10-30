@@ -576,8 +576,10 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
   const letters = view?.letters ?? NO_LETTERS
   const output = view?.output ?? null
   const openProposals = work.proposals.filter((p) => p.state === "open" && p.origin.kind === "chat").length
-  const excelProposals = work.proposals.filter((p) => p.state === "open" && p.origin.kind === "excel")
-  const locationProposals = work.proposals.filter((p) => p.state === "open" && p.origin.kind === "location")
+  /** 欄に出す変更案: 開いているものと、承認を取り消せるもの（決め終わっても、取り消すまで欄に残す） */
+  const shownInPanel = (p: Proposal) => p.state === "open" || work.undo.some((e) => e.proposalId === p.id && canUndo(e))
+  const excelProposals = work.proposals.filter((p) => p.origin.kind === "excel" && shownInPanel(p))
+  const locationProposals = work.proposals.filter((p) => p.origin.kind === "location" && shownInPanel(p))
   const counts = useMemo(() => (output ? countByStatus(output) : null), [output])
   const filterCounts = useMemo(() => (shown ? countRowFilters(shown, inclusion) : null), [shown, inclusion])
   const inquiries = useMemo(() => (output ? collectInquiries(output, { tax }) : []), [output, tax])
@@ -1171,7 +1173,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
             <div ref={tabsRef} className="scroll-mt-20 pt-4">
               <div className="flex flex-wrap gap-1 border-b" role="tablist" aria-label="表のほかの作業">
                 {TABS.map((t) => {
-                  const badge = t.id === "inquiry" ? inquiries.length : t.id === "excel" ? excelProposals.length : t.id === "location" ? locationProposals.length : 0
+                  const badge = t.id === "inquiry" ? inquiries.length : t.id === "excel" ? excelProposals.filter((p) => p.state === "open").length : t.id === "location" ? locationProposals.filter((p) => p.state === "open").length : 0
                   return (
                     <button
                       key={t.id}

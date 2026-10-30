@@ -71,6 +71,13 @@ test("編集用の Excel を落とし、値を1つ直して行を1つ消して�
   await showAllRows(page)
   await expect(page.locator(`${ROWS}[data-row-key="${changedKey}"]`)).toContainText(newAmount, { timeout: 60_000 })
   await expect(page.locator(`${ROWS}[data-row-key="${deletedKey}"]`)).toHaveAttribute("data-included", "0")
+
+  // 開き直しても承認を取り消せる（取り消すまで Excel の欄に残る）。取り消すと値も載せるかも戻る
+  await openTab(page, "excel")
+  await page.getByTestId("edit-excel").getByTestId("proposal-undo").click()
+  await expect(page.locator(`${ROWS}[data-row-key="${changedKey}"]`)).not.toContainText(newAmount)
+  await expect(page.locator(`${ROWS}[data-row-key="${deletedKey}"]`)).toHaveAttribute("data-included", "1")
+  expect(await downloadCsv(page)).not.toContain(`,${newAmount},`)
 })
 
 test("壊れた照合用・読めない値は取り込まずに一覧で知らせる", async ({ page }) => {
