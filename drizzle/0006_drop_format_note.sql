@@ -1,0 +1,1 @@
+ALTER TABLE `csv_customers` DROP COLUMN `format_note`;

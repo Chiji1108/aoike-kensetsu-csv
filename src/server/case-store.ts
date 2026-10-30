@@ -61,7 +61,7 @@ export async function createCustomer(db: Db, name: string): Promise<Customer> {
   return toCustomer(row!)
 }
 
-export async function updateCustomer(db: Db, id: string, patch: Partial<Pick<Customer, "name" | "formatNote">>) {
+export async function updateCustomer(db: Db, id: string, patch: Partial<Pick<Customer, "name">>) {
   await db.update(csvCustomers).set({ ...patch, updatedAt: new Date() }).where(eq(csvCustomers.id, id))
 }
 

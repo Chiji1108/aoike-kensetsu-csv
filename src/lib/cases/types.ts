@@ -11,7 +11,7 @@ export const FILE_KIND_LABELS: Record<FileKind, string> = { source: "届いた�
 
 export const FILE_STATUSES = ["pending", "ready"] as const
 
-export type Customer = { id: string; name: string; formatNote: string; createdAt: number; updatedAt: number }
+export type Customer = { id: string; name: string; createdAt: number; updatedAt: number }
 export type CustomerSummary = Customer & { caseCount: number }
 
 /** deleting: 削除の途中（前の削除が途中で失敗した。もう一度削除すると消し切れる） */

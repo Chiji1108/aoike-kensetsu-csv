@@ -14,8 +14,6 @@ import { authMiddleware } from "./middleware"
 
 const id = z.string().min(1).max(64)
 const name = z.string().trim().min(1).max(100)
-/** 元データの形式のメモの長さの上限 */
-const longText = z.string().max(20_000)
 
 export const listCustomersFn = createServerFn({ method: "GET" })
   .middleware([authMiddleware])
@@ -28,7 +26,7 @@ export const createCustomerFn = createServerFn({ method: "POST" })
 
 export const updateCustomerFn = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator(z.object({ id, name: name.optional(), formatNote: longText.optional() }))
+  .validator(z.object({ id, name: name.optional(), }))
   .handler(async ({ data: { id, ...patch } }) => {
     await store.updateCustomer(getDb(), id, patch)
   })
