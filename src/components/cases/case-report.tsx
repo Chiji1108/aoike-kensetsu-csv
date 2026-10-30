@@ -1,15 +1,14 @@
-import { CircleHelp, FileSpreadsheet, FileUp, Loader2, MapPin, MessageSquareText, RotateCcw, Sparkles } from "lucide-react"
+import { CircleHelp, FileUp, Loader2, MapPin, RotateCcw, Sparkles } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Item, ItemContent, ItemDescription, ItemMedia, ItemTitle } from "@/components/ui/item"
 import { Message, MessageContent, MessageHeader } from "@/components/ui/message"
-import type { RowFilter } from "@/components/convert/status"
 import { cn } from "@/lib/utils"
 import type { ReportPhase } from "@/lib/cases/phase"
 
 /**
- * 変換の報告（チャットの最初の返事）。ファイルを読む → 列の対応を考える → 変換する の進み具合と、変換のあとの注意書き
- * （計画の AI のメモ・見出しから推定した理由・まとめた行・去年との違い）、確かめる行の件数（押すと表を絞る）、職員に聞くこと（Confirmation）、
- * 次にできること（書き出す・問い合わせ・工事場所）を出す。案件の作業から作るので保存しない（変われば書き直る）
+ * 変換の報告（チャットの最初の返事）。ファイルを読む → 列の対応を考える → 変換する の進み具合と、変換のあとの職員が判断・確認すること
+ * （計画の AI のメモ・見出しから推定した理由・まとめた行・去年との違い）、職員に聞くこと（Confirmation）、費用のかかる工事場所の調査を出す。
+ * 確かめる行の件数・書き出す・問い合わせは表と見出しにあるので出さない。案件の作業から作るので保存しない（変われば書き直る）
  */
 
 export type { ReportPhase }
@@ -25,7 +24,7 @@ export type ReportQuestion = {
   answered: string | null
 }
 
-export type ReportCounts = { rows: number; csv: number } & Partial<Record<RowFilter, number>>
+export type ReportCounts = { rows: number; csv: number }
 
 export type ReportProps = {
   phase: ReportPhase
@@ -35,13 +34,12 @@ export type ReportProps = {
   /** 注意書き（計画の AI のメモなど）。tone は目立たせるか */
   notes: { text: string; tone?: "warning"; testId?: string }[]
   counts: ReportCounts | null
-  onFilter: (f: RowFilter) => void
   questions: ReportQuestion[]
   onAnswer: (id: string, value: string) => void
   /** 去年の案件との違い（無ければ null） */
   previous: { fiscalYear: number; lines: string[] | null; error: string | null; changed: boolean } | null
-  /** 次にできること */
-  next: { export: () => void; inquiry: (() => void) | null; location: (() => void) | null; locationSites: number }
+  /** 工事場所の調査（調べられる現場があるときだけ。費用がかかるので職員が押して始める） */
+  location: { open: () => void; sites: number } | null
   onRetry: (() => void) | null
   uploads: UploadNote[]
 }
@@ -51,14 +49,6 @@ const PHASE_TEXT = {
   planning: "AI が列の対応を考えています…",
   converting: "変換しています…",
 } as const
-
-/** 件数の印（押すと表をその行に絞る） */
-const CHIPS: { filter: RowFilter; label: string; tone: string }[] = [
-  { filter: "ask", label: "問い合わせが要る", tone: "border-amber-300 bg-amber-50 text-amber-900" },
-  { filter: "guessed", label: "AI の推定", tone: "border-violet-300 bg-violet-50 text-violet-900" },
-  { filter: "error", label: "エラー", tone: "border-red-300 bg-red-50 text-red-900" },
-  { filter: "review", label: "要確認", tone: "border-amber-200 bg-amber-50/60 text-amber-900" },
-]
 
 export function CaseReport(p: ReportProps) {
   return (
@@ -131,23 +121,6 @@ function Body(p: ReportProps) {
           )}
         </p>
       )}
-      {c && (
-        <div className="flex flex-wrap gap-1.5" data-testid="report-counts">
-          {CHIPS.filter((x) => (c[x.filter] ?? 0) > 0).map((x) => (
-            <button
-              key={x.filter}
-              type="button"
-              className={cn("rounded-full border px-2.5 py-0.5 text-xs font-medium hover:brightness-95", x.tone)}
-              onClick={() => p.onFilter(x.filter)}
-              data-testid="report-count"
-              data-filter={x.filter}
-            >
-              {x.label} <span className="num">{c[x.filter]}</span> 件
-            </button>
-          ))}
-          {CHIPS.every((x) => !c[x.filter]) && <span className="text-xs text-emerald-700">確かめる行はありません</span>}
-        </div>
-      )}
       {p.notes.length > 0 && (
         <ul className="grid gap-1 text-[13px]" data-testid="report-notes">
           {p.notes.map((n, i) => (
@@ -192,21 +165,11 @@ function Body(p: ReportProps) {
           </ItemContent>
         </Item>
       ))}
-      <div className="flex flex-wrap gap-1.5" data-testid="report-next">
-        {p.next.location && (
-          <Button size="sm" variant="outline" onClick={p.next.location} data-testid="report-location">
-            <MapPin /> 工事場所を調べる（{p.next.locationSites}現場）
-          </Button>
-        )}
-        {p.next.inquiry && (
-          <Button size="sm" variant="outline" onClick={p.next.inquiry} data-testid="report-inquiry">
-            <MessageSquareText /> 問い合わせ
-          </Button>
-        )}
-        <Button size="sm" variant="outline" onClick={p.next.export} data-testid="report-export">
-          <FileSpreadsheet /> 書き出す
+      {p.location && (
+        <Button size="sm" variant="outline" className="w-fit" onClick={p.location.open} data-testid="report-location">
+          <MapPin /> 工事場所を調べる（{p.location.sites}現場）
         </Button>
-      </div>
+      )}
     </div>
   )
 }

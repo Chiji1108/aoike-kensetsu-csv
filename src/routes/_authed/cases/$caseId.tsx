@@ -1,17 +1,17 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react"
 import { Link, createFileRoute, notFound, useRouter } from "@tanstack/react-router"
-import { FileSpreadsheet, FileText, FileUp, Loader2, MessageSquare, TriangleAlert } from "lucide-react"
+import { Ellipsis, FileSpreadsheet, FileText, FileUp, Loader2, MessageSquare, Trash2, TriangleAlert } from "lucide-react"
 import { toast } from "sonner"
 import { AppShell, PageHeader } from "@/components/app-shell"
 import { CaseReport, type ReportProps, type ReportQuestion, type UploadNote } from "@/components/cases/case-report"
 import { reportPhase } from "@/lib/cases/phase"
-import { DeleteButton } from "@/components/cases/delete-dialog"
+import { DeleteDialog } from "@/components/cases/delete-dialog"
 import { useCaseAutosave, type SaveStatus } from "@/components/cases/use-case-autosave"
 import { EditExcelPanel, type EditImport } from "@/components/convert/edit-excel-panel"
 import { ExportDialog } from "@/components/convert/export-dialog"
 import { InquiryPanel } from "@/components/convert/inquiry-panel"
 import { LocationPanel, useLocationSearch } from "@/components/convert/location-panel"
-import { PreviewTable, StatusLegend } from "@/components/convert/preview-table"
+import { PreviewTable } from "@/components/convert/preview-table"
 import { ReplacePanel } from "@/components/convert/replace-panel"
 import { countRowFilters, type RowFilter } from "@/components/convert/status"
 import { GyoshuSummaryTable, RoundingNote } from "@/components/convert/summary-panel"
@@ -29,11 +29,11 @@ import {
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { NativeSelect } from "@/components/ui/native-select"
-import { Switch } from "@/components/ui/switch"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Segmented } from "@/components/segmented"
 import { MAX_ADDED_ROWS } from "@/lib/cases/added"
 import { fetchCaseFile, uploadCaseFile } from "@/lib/cases/files-client"
-import { fromSaved, newWork, type CaseWork, type SavedPlan } from "@/lib/cases/state"
+import { fromSaved, newWork, withPlanTax, type CaseWork, type SavedPlan } from "@/lib/cases/state"
 import { ATTACH_ACCEPT, CASE_STATUSES, CASE_STATUS_LABELS, contentTypeOf, FILE_KIND_LABELS, fileUrl, isSheetFile, onlyNonSheetSources, type CaseFile, type CaseStatus, type FileKind } from "@/lib/cases/types"
 import { canUndo, pushUndo, undo, undoEntry, type UndoEntry } from "@/lib/cases/undo"
 import { uploadKind } from "@/lib/cases/upload-kind"
@@ -135,11 +135,11 @@ function previousSideOf(previous: PreviousCase, sheets: SheetGrid[]) {
 const replanWork = (w: CaseWork, sourceFileId: string): CaseWork => ({
   ...newWork(sourceFileId),
   tax: w.tax,
+  planTax: w.planTax,
   basis: w.basis,
   rule7Tax: w.rule7Tax,
   selection: w.selection,
   rounding: w.rounding,
-  sorted: w.sorted,
   threshold: w.threshold,
   reportAnswers: w.reportAnswers,
   // 件名・前置きと項目と理由で選んだ質問は行に依らないので引き継ぐ（行の key で選んだものは前の元の行を指すので外す）
@@ -220,7 +220,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
     const w = state ? fromSaved(state.work, state.aiCache) : newWork(null, settings.rule7Tax)
     return { ...reviewSavedPlan(w), proposals: withRecorded(w.proposals, recordedProposals) }
   })
-  const { edits, replacements, manual, dismissed, answers, tax, basis, rule7Tax, selection: selectionMode, rounding, sorted, threshold: thresholdInput, aiNotice } = work
+  const { edits, replacements, manual, dismissed, answers, tax, basis, rule7Tax, selection: selectionMode, rounding, threshold: thresholdInput, aiNotice } = work
   const update = <K extends keyof CaseWork>(key: K, next: (prev: CaseWork[K]) => CaseWork[K]) => setWork((w) => ({ ...w, [key]: next(w[key]) }))
   /** 値をその場で読んでから入れる（イベントの値を updater の中で読まない） */
   const set = <K extends keyof CaseWork>(key: K, value: CaseWork[K]) => update(key, () => value)
@@ -238,6 +238,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
   /** 自動の変換が失敗したときの理由と、その計画（同じ計画で何度も変換し直さない） */
   const [convertError, setConvertError] = useState<{ message: string; plan: SavedPlan | null } | null>(null)
   const [exportOpen, setExportOpen] = useState(false)
+  const [deleteOpen, setDeleteOpen] = useState(false)
   const [pendingSource, setPendingSource] = useState<CaseFile | null>(null)
   const [filter, setFilter] = useState<RowFilter | null>(null)
   const [tab, setTab] = useState<Tab>("selection")
@@ -355,7 +356,8 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
       next = { plan: fallback, source: "rule", notice: `${errorMessage(e, "AI の計画に失敗しました")}。見出しから列を推定しました。` }
     }
     if (id !== caseGeneration.current) return
-    set("plan", next)
+    // 計画が見出し・注記から税込・税抜を決めたら、案件の税の設定に入れる（職員が決めた値は上書きしない）
+    setWork((w) => withPlanTax({ ...w, plan: next }, next.plan))
     setPlanDraft(null)
   }
 
@@ -606,8 +608,8 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
     [edited, manual, tax, basis, rule7Tax, selectionMode, threshold],
   )
   const view = useMemo(
-    () => (rows && edited && selected ? orderAndFinalize({ rows, added, replacements, sorted }, edited, selected) : null),
-    [rows, added, edited, selected, replacements, sorted],
+    () => (rows && edited && selected ? orderAndFinalize({ rows, added, replacements }, edited, selected) : null),
+    [rows, added, edited, selected, replacements],
   )
   const shown = view?.shown ?? null
   const inclusion = view?.inclusion ?? NO_INCLUSION
@@ -621,7 +623,8 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
   const shownInPanel = (p: Proposal) => p.state === "open" || work.undo.some((e) => e.proposalId === p.id && canUndo(e))
   const excelProposals = work.proposals.filter((p) => p.origin.kind === "excel" && shownInPanel(p))
   const locationProposals = work.proposals.filter((p) => p.origin.kind === "location" && shownInPanel(p))
-  const counts = useMemo(() => (output ? countByStatus(output) : null), [output])
+  /** CSV に載せる行のエラーのセルの数（書き出すボタンに印を出す） */
+  const errorCells = useMemo(() => (output ? countByStatus(output).error : 0), [output])
   const filterCounts = useMemo(() => (shown ? countRowFilters(shown, inclusion) : null), [shown, inclusion])
   const inquiries = useMemo(() => (output ? collectInquiries(output, { tax }) : []), [output, tax])
   /** まだ答えの無いセルの問い合わせ（外したものは数えない）。「AI で読む」に出す */
@@ -630,7 +633,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
   const activeInquiries = inquiries.filter((q) => !dismissed.has(inquiryKey(q))).length
   const summary = useMemo(() => (edited && selected ? summarizeKoji(edited, selected, { tax, basis, rule7Tax }) : []), [edited, selected, tax, basis, rule7Tax])
   /** 表の絞り込み。職員が選ぶまでは、確かめる行があればその行だけ（無ければすべて） */
-  const tableFilter: RowFilter = filter ?? (filterCounts && filterCounts.check.all > 0 ? "check" : "all")
+  const tableFilter: RowFilter = filter ?? (filterCounts && filterCounts.check > 0 ? "check" : "all")
 
   const fx = useUsdJpy()
   /** 開いている変更案の中身（サーバーが R2 から読んだもの。指示の返事で届いたものを足す。保存はサーバーが済ませている） */
@@ -661,7 +664,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
 
   /** 今の表（チャットと工事場所の調査に送る。大きいので送るときだけ作る） */
   function tableWire() {
-    return rows ? toWire({ rows, added, edits, replacements, manual, tax, basis, rule7Tax, selection: selectionMode, includeAtLeastYen: threshold, sorted, dismissed, inquiryText: work.inquiryText }) : null
+    return rows ? toWire({ rows, added, edits, replacements, manual, tax, basis, rule7Tax, selection: selectionMode, includeAtLeastYen: threshold, dismissed, inquiryText: work.inquiryText }) : null
   }
 
   function chatRequest() {
@@ -973,6 +976,8 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
   const sourceSheets = work.plan?.plan.sheets ?? []
   const reportNotes: ReportProps["notes"] = [
     ...(work.plan?.notice ? [{ text: work.plan.notice, tone: "warning" as const }] : []),
+    // 計画が税込・税抜を決めたら聞き返さない。決めたことと直し方だけ伝える
+    ...(work.planTax && tax === work.planTax ? [{ text: `Excel の金額は${TAX_LABELS[tax]}とみなしました（見出し・注記から）。違えば「7割と金額」で直してください。`, testId: "plan-tax-note" }] : []),
     // 使うシートのメモは報告の最初の行（どのファイルのどのシートか）と重なるので出さない
     ...(work.plan?.plan.notes ?? []).filter((n) => !n.startsWith("使うシート「")).map((text) => ({ text })),
     ...(sources && sources.duplicates > 0
@@ -998,8 +1003,8 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
       : []
   function answerReport(id: string, value: string) {
     if (id !== "tax") return
-    if (value === "included" || value === "excluded") setWork((w) => ({ ...w, tax: value, reportAnswers: { ...w.reportAnswers, tax: value } }))
-    else setWork((w) => ({ ...w, reportAnswers: { ...w.reportAnswers, tax: "ask" } }))
+    if (value === "included" || value === "excluded") setWork((w) => ({ ...w, tax: value, planTax: null, reportAnswers: { ...w.reportAnswers, tax: value } }))
+    else setWork((w) => ({ ...w, planTax: null, reportAnswers: { ...w.reportAnswers, tax: "ask" } }))
   }
   const locationSites = locationSearch.sites
   const report = (
@@ -1008,15 +1013,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
       source={sourceFile ? `「${sourceFile.name}」${sourceSheets.length ? `のシート「${sourceSheets.join("」「")}」` : ""}` : null}
       planByAi={work.plan?.source === "ai"}
       notes={reportNotes}
-      counts={
-        filterCounts && shown && output
-          ? { rows: shown.length, csv: output.length, ask: filterCounts.ask.csv, guessed: filterCounts.guessed.csv, error: filterCounts.error.csv, review: filterCounts.review.csv }
-          : null
-      }
-      onFilter={(f) => {
-        setFilter(f)
-        if (!wide) setChatShown(false)
-      }}
+      counts={shown && output ? { rows: shown.length, csv: output.length } : null}
       questions={questions}
       onAnswer={answerReport}
       previous={
@@ -1029,12 +1026,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
             }
           : null
       }
-      next={{
-        export: () => setExportOpen(true),
-        inquiry: inquiries.length ? () => showTab("inquiry") : null,
-        location: locationSites > 0 ? () => showTab("location") : null,
-        locationSites,
-      }}
+      location={locationSites > 0 ? { open: () => showTab("location"), sites: locationSites } : null}
       onRetry={() => {
         if (phase.kind === "failed" && phase.retry === "source" && sourceError) return void openSource(sourceError.file, !work.plan)
         setConvertError(null)
@@ -1157,60 +1149,60 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
         <PageHeader
           title={`${customer.name} ${kase.fiscalYear}年度`}
           actions={
-            <div className="flex flex-wrap items-center gap-3">
+            <div className="flex flex-wrap items-center gap-2">
               <SaveIndicator status={saveStatus} />
-              <CaseCost usd={costUsd} fx={fx} />
               <Segmented label="案件の状態" value={status} options={CASE_STATUSES.map((s) => ({ value: s, label: CASE_STATUS_LABELS[s] }))} onChange={(s) => void changeStatus(s)} testId="case-status" />
-              <DeleteButton
-                target={{ caseId: kase.id }}
-                title={`${kase.fiscalYear}年度の案件`}
-                customerName={customer.name}
-                onDeleted={() => router.navigate({ to: "/customers/$customerId", params: { customerId: customer.id } })}
-              />
+              {hasTable && output && (
+                <Button onClick={() => setExportOpen(true)} disabled={reconverting} data-testid="export-button">
+                  {errorCells ? <TriangleAlert className="text-amber-200" /> : <FileSpreadsheet />}
+                  書き出す（{output.length}件）
+                </Button>
+              )}
+              {!wide && chatPanel && (
+                <Button variant="outline" onClick={() => setChatShown(true)} data-testid="chat-open">
+                  <MessageSquare /> チャット
+                  {openProposals > 0 && <span className="rounded-full bg-violet-600 px-1.5 text-xs text-white">{openProposals}</span>}
+                  {questions.some((q) => q.answered === null) && (
+                    <span className="rounded-full bg-amber-500 px-1.5 text-xs text-white" title="変換の報告に、答えてほしいことがあります" data-testid="chat-open-question">
+                      ?
+                    </span>
+                  )}
+                </Button>
+              )}
+              <CaseMenu usd={costUsd} fx={fx} onDelete={() => setDeleteOpen(true)} />
             </div>
           }
         />
+        <DeleteDialog
+          open={deleteOpen}
+          onOpenChange={setDeleteOpen}
+          target={{ caseId: kase.id }}
+          title={`${kase.fiscalYear}年度の案件`}
+          customerName={customer.name}
+          onDeleted={() => router.navigate({ to: "/customers/$customerId", params: { customerId: customer.id } })}
+        />
 
-        <div className="mb-3 flex flex-wrap items-center gap-2" data-testid="case-toolbar">
-          <label className="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-lg border bg-background px-3 text-sm font-medium hover:bg-muted" htmlFor="case-file-input">
-            <FileUp className="size-4" /> ファイルを付ける
-          </label>
-          <input
-            id="case-file-input"
-            type="file"
-            multiple
-            accept={ATTACH_ACCEPT}
-            className="sr-only"
-            data-testid="file-input"
-            onChange={(e) => {
-              if (e.target.files?.length) void attach([...e.target.files])
-              e.target.value = ""
-            }}
-          />
-          <FileChips files={files} sourceFileId={work.sourceFileId} loading={!!loadingSource || planning} onChoose={chooseSource} />
-          {source && grid && plan && source.sheets.length > 1 && (
-            <SheetChooser sheets={source.sheets} primary={grid} plan={plan} onPrimary={(name) => void startPlanning(source, name)} onChange={changePlan} />
-          )}
-          <div className="ml-auto flex items-center gap-2">
-            {hasTable && output && (
-              <Button onClick={() => setExportOpen(true)} disabled={reconverting} data-testid="export-button">
-                {counts?.error ? <TriangleAlert className="text-amber-200" /> : <FileSpreadsheet />}
-                書き出す（{output.length}件）
-              </Button>
-            )}
-            {!wide && chatPanel && (
-              <Button variant="outline" onClick={() => setChatShown(true)} data-testid="chat-open">
-                <MessageSquare /> チャット
-                {openProposals > 0 && <span className="rounded-full bg-violet-600 px-1.5 text-xs text-white">{openProposals}</span>}
-                {questions.some((q) => q.answered === null) && (
-                  <span className="rounded-full bg-amber-500 px-1.5 text-xs text-white" title="変換の報告に、答えてほしいことがあります" data-testid="chat-open-question">
-                    ?
-                  </span>
-                )}
-              </Button>
+        {/* ファイルはこの画面とチャット欄に落とすか、チャットの添付で付ける。表がまだ無ければ下の欄を押しても選べる */}
+        <input
+          id="case-file-input"
+          type="file"
+          multiple
+          accept={ATTACH_ACCEPT}
+          className="sr-only"
+          data-testid="file-input"
+          onChange={(e) => {
+            if (e.target.files?.length) void attach([...e.target.files])
+            e.target.value = ""
+          }}
+        />
+        {files.length > 0 && (
+          <div className="-mt-3 mb-3 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs" data-testid="case-toolbar">
+            <FileChips files={files} sourceFileId={work.sourceFileId} loading={!!loadingSource || planning} onChoose={chooseSource} />
+            {source && grid && plan && source.sheets.length > 1 && (
+              <SheetChooser sheets={source.sheets} primary={grid} plan={plan} onPrimary={(name) => void startPlanning(source, name)} onChange={changePlan} />
             )}
           </div>
-        </div>
+        )}
 
         {/* チャットが使えない（APIキーが無い）ときは、変換の報告を表の上に出す */}
         {!chatPanel && <div className="mb-3 rounded-xl border bg-card p-3">{report}</div>}
@@ -1242,7 +1234,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
           </label>
         )}
 
-        {hasTable && output && shown && counts && (
+        {hasTable && output && shown && (
           <section className="relative space-y-3" data-testid="table-section">
             {reconverting && (
               <div className="absolute inset-0 z-30 flex items-start justify-center rounded-xl bg-background/60 pt-24 backdrop-blur-[1px]" data-testid="reconverting">
@@ -1251,22 +1243,14 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
                 </span>
               </div>
             )}
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-              <StatusLegend counts={counts} />
-              <label className="flex items-center gap-2 text-xs text-muted-foreground" title="業種ごとに元請→下請、金額の大きい順（CSV もこの順）">
-                <Switch checked={sorted} onCheckedChange={(v) => set("sorted", v)} aria-label="記載順に並べ替え" />
-                記載順
-              </label>
-              {output.length === 0 && (
-                <span className="text-sm text-muted-foreground" data-testid="no-rows-note">
-                  載せる行がありません
-                </span>
-              )}
-            </div>
+            {output.length === 0 && (
+              <p className="text-sm text-muted-foreground" data-testid="no-rows-note">
+                載せる行がありません
+              </p>
+            )}
             <PreviewTable
               spec={SPEC}
               rows={shown}
-              order={sorted ? "gyoshu" : "source"}
               inclusion={inclusion}
               openEditor={(cell) => editSession(cell, letters)}
               onEdit={edit}
@@ -1300,7 +1284,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
                   rounding={rounding}
                   onRounding={(r) => set("rounding", r)}
                   tax={tax}
-                  onTax={(t) => set("tax", t)}
+                  onTax={(t) => setWork((w) => ({ ...w, tax: t, planTax: null }))}
                   rule7Tax={rule7Tax}
                   onRule7Tax={(t) => set("rule7Tax", t)}
                   selection={selectionMode}
@@ -1471,19 +1455,31 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
   )
 }
 
-/** 案件の AI の費用の合計。10ドルを超えたら注意を出す（止めない） */
-function CaseCost({ usd, fx }: { usd: number; fx: UsdJpy | null }) {
+/**
+ * 見出しの「…」: 案件の AI の費用の合計と削除。費用が10ドルを超えたら、ボタンにも注意を出す（止めない）
+ */
+function CaseMenu({ usd, fx, onDelete }: { usd: number; fx: UsdJpy | null; onDelete: () => void }) {
   const over = usd > CASE_COST_NOTICE_USD
   return (
-    <span
-      className={over ? "text-xs font-medium text-amber-700" : "text-xs text-muted-foreground"}
-      title={over ? `この案件の AI の費用が ${CASE_COST_NOTICE_USD} ドルを超えました（止めません）` : undefined}
-      data-testid="case-cost"
-      data-over={over || undefined}
-    >
-      {over && <TriangleAlert className="mr-1 inline size-3.5" />}
-      AI の費用 <Cost usd={usd} fx={fx} />
-    </span>
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        render={<Button variant="ghost" size="icon" aria-label="案件のメニュー" title={over ? `この案件の AI の費用が ${CASE_COST_NOTICE_USD} ドルを超えました` : "案件のメニュー"} data-testid="case-menu" data-over={over || undefined} />}
+      >
+        {over ? <TriangleAlert className="text-amber-600" /> : <Ellipsis />}
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-64">
+        <DropdownMenuGroup>
+          <DropdownMenuLabel className={over ? "font-medium text-amber-700" : undefined} data-testid="case-cost" data-over={over || undefined}>
+            この案件の AI の費用 <Cost usd={usd} fx={fx} />
+            {over && <span className="block">{CASE_COST_NOTICE_USD} ドルを超えました（止めません）</span>}
+          </DropdownMenuLabel>
+        </DropdownMenuGroup>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem variant="destructive" onClick={onDelete} data-testid="delete-button">
+          <Trash2 /> 案件を削除
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }
 
@@ -1496,8 +1492,10 @@ function SaveIndicator({ status }: { status: SaveStatus }) {
     tooLarge: "案件の状態が大きすぎて保存できません（次の変更で送り直します）",
     gone: "この案件は削除されたか、削除の途中です（この画面の変更は保存しません）",
   }[status.kind]
+  // 保存できているあいだは目立たせない（読み上げには伝える）。保存できないときだけ目立たせる
+  const quiet = status.kind === "saved" || status.kind === "pending"
   return (
-    <span className={status.kind === "saved" || status.kind === "pending" ? "text-xs text-muted-foreground" : "text-xs font-medium text-red-700"} data-testid="save-status" data-status={status.kind}>
+    <span role="status" className={quiet ? "sr-only" : "basis-full text-xs font-medium text-red-700"} data-testid="save-status" data-status={status.kind}>
       {text}
     </span>
   )

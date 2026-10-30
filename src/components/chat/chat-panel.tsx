@@ -15,7 +15,7 @@ import { Message, MessageContent, MessageFooter } from "@/components/ui/message"
 import { MessageScroller, MessageScrollerButton, MessageScrollerContent, MessageScrollerItem, MessageScrollerProvider, MessageScrollerViewport } from "@/components/ui/message-scroller"
 import { Trace, TraceCollapsible, TraceCollapsibleContent, TraceCollapsibleTrigger, TraceIcon, TraceLine, TraceTitle } from "@/components/ui/trace"
 import type { TableView } from "@/lib/cases/view"
-import { chatDataSchemas, chatMetadataSchema, conversationUsd, type ChatAction, type ChatMessage, type ChatRequest } from "@/lib/chat/messages"
+import { chatDataSchemas, chatMetadataSchema, type ChatAction, type ChatMessage, type ChatRequest } from "@/lib/chat/messages"
 import type { MappingPlan } from "@/lib/convert/plan"
 import type { KojiFieldId } from "@/lib/spec/koji-keireki"
 import type { ChatChange, Proposal } from "@/lib/chat/proposals"
@@ -249,7 +249,6 @@ export function ChatPanel(props: ChatPanelProps) {
     undo: actions.undo,
     undoState: actions.undoState,
   }
-  const total = conversationUsd(messages)
 
   return (
     <aside
@@ -275,12 +274,8 @@ export function ChatPanel(props: ChatPanelProps) {
     >
       <header className="flex items-center gap-2 border-b px-4 py-3">
         <MessageSquare className="size-4 text-violet-600" />
-        <div className="min-w-0 flex-1">
-          <div className="text-sm font-semibold">チャット</div>
-          <div className="text-xs text-muted-foreground" data-testid="chat-cost">
-            この会話の AI の費用 <Cost usd={total} fx={fx} />
-          </div>
-        </div>
+        {/* 費用は返事ごとと、案件の合計（見出しの「…」）に出す */}
+        <div className="min-w-0 flex-1 text-sm font-semibold">チャット</div>
         <Button size="sm" variant="ghost" onClick={end} disabled={working || ending} title="AI に渡したファイルを消し、次の指示から新しい会話にします" data-testid="chat-end">
           {ending ? <Loader2 className="animate-spin" /> : <Trash2 />}
           会話を終える
@@ -324,9 +319,6 @@ export function ChatPanel(props: ChatPanelProps) {
                 <div className="rounded-lg border border-red-200 bg-red-50 p-2 text-xs text-red-800" data-testid="chat-error">
                   {history.error}
                 </div>
-              )}
-              {history === "loaded" && messages.length === 0 && props.ready && (
-                <p className="text-xs text-muted-foreground">例:「金額は税込の列で」「完成年月は引渡日にして」「CSV を出して」</p>
               )}
               {messages.map((m, i) => (
                 <MessageScrollerItem key={m.id} messageId={m.id} scrollAnchor={m.role === "user"}>
@@ -395,7 +387,7 @@ export function ChatPanel(props: ChatPanelProps) {
                 void send()
               }
             }}
-            placeholder={ready ? "指示（⌘+Enter で送る）" : "ファイルを落とすと変換します"}
+            placeholder={ready ? "例: 金額は税込の列で（⌘+Enter で送る）" : "ファイルを落とすと変換します"}
             disabled={!ready}
             className="min-h-16 text-sm"
             data-testid="chat-input"

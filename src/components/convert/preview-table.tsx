@@ -12,6 +12,7 @@ import {
 } from "@tanstack/react-table"
 import { useVirtualizer } from "@tanstack/react-virtual"
 import { ArrowDown, ArrowUp, ArrowUpDown, Columns3, RefreshCw, Search } from "lucide-react"
+import { Segmented } from "@/components/segmented"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import {
@@ -24,12 +25,13 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
 import { TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import type { CellEdit, CellResult, EditSession, RowResult } from "@/lib/convert/convert"
 import { INCLUSION_LABELS, type Inclusion } from "@/lib/convert/koji-selection"
 import type { KojiFieldId } from "@/lib/spec/koji-keireki"
 import type { CsvSpec } from "@/lib/spec/types"
 import { cn } from "@/lib/utils"
-import { FILTER_ORDER, ROW_FILTERS, STATUS, cellClass, countRowFilters, rowFilters, type RowFilter } from "./status"
+import { ROW_FILTERS, STATUS, cellClass, changedCell, countRowFilters, inFilter, rowNeedsCheck, type RowFilter } from "./status"
 
 type Row = RowResult<KojiFieldId>
 
@@ -64,23 +66,19 @@ const WIDTH: Record<KojiFieldId | "include" | "origin", number> = {
   supervisingEngineer: 104,
 }
 
-/** 絞り込みの印の色（確かめる行の件数を目立たせる） */
-const FILTER_TONE: Partial<Record<RowFilter, string>> = {
-  check: "text-violet-700 dark:text-violet-300",
-  ask: "text-amber-700 dark:text-amber-300",
-  guessed: "text-violet-700 dark:text-violet-300",
-  error: "text-red-700 dark:text-red-300",
-}
-
 /** 手直し中のセル。下書きは行の外に持つ（仮想スクロールで行が消えても残る） */
 type Editing = { row: string; field: KojiFieldId; session: EditSession; draft: string }
+
+/** 注意書きを出すセル（選んだ・マウスを乗せたセル） */
+type Active = { row: string; field: KojiFieldId }
+
+const NOTE_ID = "preview-cell-note"
 
 const originText = (r: Row) => `${r.sheet}!${r.row + 1}`
 
 export function PreviewTable({
   spec,
   rows,
-  order,
   inclusion,
   openEditor,
   onEdit,
@@ -90,8 +88,6 @@ export function PreviewTable({
 }: {
   spec: CsvSpec<KojiFieldId>
   rows: Row[]
-  /** rows の並びの決まり（業種ごとに並べるか）。変わったら、手直しのために止めた表示の並びを解く */
-  order: string
   inclusion: ReadonlyMap<string, Inclusion>
   /** 手直しを始める（直す元の文字列は個人名の記号を「〔Ａ〕」の形で出し、確定した文字列は同じ記号の表で読む） */
   openEditor: (cell: CellResult) => EditSession
@@ -112,11 +108,6 @@ export function PreviewTable({
    */
   const [pinned, setPinned] = useState<readonly string[] | null>(null)
   const unpin = () => setPinned(null)
-  const [pinnedOrder, setPinnedOrder] = useState(order)
-  if (pinnedOrder !== order) {
-    setPinnedOrder(order)
-    unpin()
-  }
 
   const columns = useMemo(
     () =>
@@ -124,23 +115,16 @@ export function PreviewTable({
         columnHelper.display({ id: "include", header: "載せる", enableHiding: false }),
         columnHelper.accessor(originText, { id: "origin", header: "元の行", sortFn: "alphanumeric" }),
         ...spec.fields.map((f) =>
-          columnHelper.accessor((r) => r.cells[f.id].value, {
-            id: f.id,
-            header: () => (
-              <>
-                <span className="mr-1 font-mono">{f.letter}</span>
-                {f.label}
-              </>
-            ),
-            sortFn: "alphanumeric",
-          }),
+          // CSV の列（A〜N）との対応は見出しのツールチップに出す
+          columnHelper.accessor((r) => r.cells[f.id].value, { id: f.id, header: f.label, sortFn: "alphanumeric" }),
         ),
       ]),
     [spec],
   )
-  const matches = useMemo(() => new Map(rows.map((r) => [r.key, rowFilters(r)])), [rows])
-  /** 絞り込みごとの行数。CSV に載せる行と、表に出る行（載せない行も含む） */
-  const counts = useMemo(() => countRowFilters(rows, inclusion, matches), [rows, matches, inclusion])
+  const checks = useMemo(() => new Map(rows.map((r) => [r.key, rowNeedsCheck(r)])), [rows])
+  /** 絞り込みごとの行数（確かめるは CSV に載せる行だけ） */
+  const counts = useMemo(() => countRowFilters(rows, inclusion), [rows, inclusion])
+  const [active, setActive] = useState<Active | null>(null)
 
   const needle = query.trim().toLowerCase()
   const data = useMemo(() => {
@@ -148,8 +132,8 @@ export function PreviewTable({
     const searched = spec.fields.filter((f) => visible(f.id))
     const hasText = (r: Row) =>
       (visible("origin") && originText(r).toLowerCase().includes(needle)) || searched.some((f) => r.cells[f.id].value.toLowerCase().includes(needle))
-    return rows.filter((r) => matches.get(r.key)![filter] && (!needle || hasText(r)))
-  }, [rows, matches, filter, needle, columnVisibility, spec])
+    return rows.filter((r) => inFilter(filter, r, inclusion.get(r.key)?.included ?? false, checks.get(r.key)) && (!needle || hasText(r)))
+  }, [rows, checks, inclusion, filter, needle, columnVisibility, spec])
 
   const table = useTable({
     features,
@@ -173,6 +157,7 @@ export function PreviewTable({
   function startEdit(r: Row, field: KojiFieldId) {
     if (editing) finishEdit(true)
     setPinned((p) => p ?? live.map((r) => r.key))
+    setActive({ row: r.key, field })
     const session = openEditor(r.cells[field])
     setEditing({ row: r.key, field, session, draft: session.text })
   }
@@ -227,21 +212,22 @@ export function PreviewTable({
         className={cn("border-b border-l p-0 align-top whitespace-normal", cellClass(cell))}
         data-field={field}
         data-status={cell.status}
-        data-changed={ROW_FILTERS.changed.matches(cell, field) ? "1" : undefined}
+        data-changed={changedCell(cell) ? "1" : undefined}
       >
         {isEditing ? (
           <CellEditor value={editing.draft} onChange={(draft) => setEditing({ ...editing, draft })} onDone={finishEdit} />
         ) : (
+          // 注意書きはセルの下に出さない（色で状態は分かる）。選んだ・マウスを乗せたセルのものを表の上の1行に出す（キーボードで選んでも出る）
           <button
             type="button"
             className="block min-h-8 w-full px-2 py-1.5 text-left break-words hover:ring-1 hover:ring-ring/40 hover:ring-inset"
-            title={describe(cell)}
+            title={cell.message}
+            aria-describedby={active?.row === r.key && active.field === field ? NOTE_ID : undefined}
+            onFocus={() => setActive({ row: r.key, field })}
+            onMouseEnter={() => setActive({ row: r.key, field })}
             onClick={() => startEdit(r, field)}
           >
             <span className="whitespace-pre-wrap">{cell.value || <span className="text-muted-foreground/50">—</span>}</span>
-            {cell.message && (cell.status === "warning" || cell.status === "error" || cell.status === "ai") && (
-              <span className="mt-0.5 line-clamp-2 text-[11px] leading-snug opacity-75">{cell.message}</span>
-            )}
           </button>
         )}
       </TableCell>
@@ -253,33 +239,17 @@ export function PreviewTable({
   return (
     <div className="grid gap-2">
       <div className="flex flex-wrap items-center gap-2">
-        <div className="flex flex-wrap items-center gap-1" role="group" aria-label="表の絞り込み" title="件数は CSV に載せる行（かっこ内は載せない行も含む）" data-testid="row-filters">
-          {FILTER_ORDER.map((f) => (
-            <Button
-              key={f}
-              size="sm"
-              variant={filter === f ? "secondary" : "ghost"}
-              aria-pressed={filter === f}
-              title={ROW_FILTERS[f].title}
-              data-filter={f}
-              onClick={() => {
-                unpin()
-                setFilter(f)
-              }}
-            >
-              {ROW_FILTERS[f].label}
-              <span className={cn("num", counts[f].csv > 0 && FILTER_TONE[f] ? cn("font-semibold", FILTER_TONE[f]) : "text-muted-foreground")} data-count="csv">
-                {counts[f].csv}
-              </span>
-              {counts[f].all !== counts[f].csv && (
-                <span className="num text-[11px] text-muted-foreground/70" data-count="all">
-                  （全{counts[f].all}）
-                </span>
-              )}
-            </Button>
-          ))}
-        </div>
-        <div className="relative w-56">
+        <Segmented
+          label="表の絞り込み"
+          value={filter}
+          options={(["check", "all"] as const).map((f) => ({ value: f, label: `${ROW_FILTERS[f].label} ${counts[f]}` }))}
+          onChange={(f) => {
+            unpin()
+            setFilter(f)
+          }}
+          testId="row-filters"
+        />
+        <div className="relative w-44 sm:w-56">
           <Search className="pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-muted-foreground" />
           <Input
             type="search"
@@ -294,9 +264,6 @@ export function PreviewTable({
           />
         </div>
         {sorting.length > 0 && <span className="text-xs text-muted-foreground">並べ替えは表示だけ</span>}
-        <span className="num text-xs text-muted-foreground" data-testid="shown-count">
-          {shown.length} 行を表示
-        </span>
         {outdated && (
           <span className="flex items-center gap-1.5 text-xs text-amber-700" data-testid="outdated">
             手直しのあと止めています
@@ -307,9 +274,8 @@ export function PreviewTable({
           </span>
         )}
         <DropdownMenu>
-          <DropdownMenuTrigger render={<Button variant="outline" size="sm" className="ml-auto" />}>
+          <DropdownMenuTrigger render={<Button variant="ghost" size="icon-sm" className="ml-auto" aria-label="表示する列" title="表示する列" />}>
             <Columns3 />
-            表示する列
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-60">
             <DropdownMenuGroup>
@@ -326,6 +292,8 @@ export function PreviewTable({
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
+
+      <CellNote spec={spec} row={active ? byKey.get(active.row) : undefined} field={active?.field} />
 
       <div ref={scrollRef} className="overflow-auto rounded-xl border bg-card" style={{ maxHeight: "70vh" }}>
         <table
@@ -354,12 +322,17 @@ export function PreviewTable({
                       )}
                     >
                       {h.column.getCanSort() ? (
-                        <button type="button" className="inline-flex items-end gap-1 text-left font-medium hover:text-foreground" onClick={h.column.getToggleSortingHandler()}>
-                          <span>
-                            <table.FlexRender header={h} />
-                          </span>
-                          {sorted === "asc" ? <ArrowUp className="size-3 shrink-0" /> : sorted === "desc" ? <ArrowDown className="size-3 shrink-0" /> : <ArrowUpDown className="size-3 shrink-0 opacity-40" />}
-                        </button>
+                        <Tooltip>
+                          <TooltipTrigger
+                            render={<button type="button" className="inline-flex items-end gap-1 text-left font-medium hover:text-foreground" onClick={h.column.getToggleSortingHandler()} />}
+                          >
+                            <span>
+                              <table.FlexRender header={h} />
+                            </span>
+                            {sorted === "asc" ? <ArrowUp className="size-3 shrink-0" /> : sorted === "desc" ? <ArrowDown className="size-3 shrink-0" /> : <ArrowUpDown className="size-3 shrink-0 opacity-40" />}
+                          </TooltipTrigger>
+                          <TooltipContent>{columnTip(spec, h.column.id)}</TooltipContent>
+                        </Tooltip>
                       ) : (
                         <table.FlexRender header={h} />
                       )}
@@ -391,7 +364,7 @@ export function PreviewTable({
             {shown.length === 0 && (
               <TableRow>
                 <TableCell colSpan={visibleColumns.length} className="h-20 text-center text-muted-foreground" data-testid="no-match">
-                  {needle ? `「${query.trim()}」を含む${ROW_FILTERS[filter].title}` : ROW_FILTERS[filter].title}はありません
+                  {needle ? `「${query.trim()}」を含む${ROW_FILTERS[filter].empty}` : ROW_FILTERS[filter].empty}はありません
                 </TableCell>
               </TableRow>
             )}
@@ -404,11 +377,36 @@ export function PreviewTable({
 
 function columnLabel(spec: CsvSpec<KojiFieldId>, id: string) {
   const f = spec.fields.find((f) => f.id === id)
-  return f ? `${f.letter} ${f.label}` : "元の行"
+  return f ? f.label : "元の行"
 }
 
-function describe(c: CellResult) {
-  return [`${STATUS[c.status].label}（元: ${c.source}）`, c.message].filter(Boolean).join("\n")
+function columnTip(spec: CsvSpec<KojiFieldId>, id: string) {
+  const f = spec.fields.find((f) => f.id === id)
+  return f ? `CSV の ${f.letter} 列` : "元の Excel のシートと行"
+}
+
+/** 選んだ・マウスを乗せたセルの状態と注意書き（高さは1行に決めて、出し入れで表が動かないようにする） */
+function CellNote({ spec, row, field }: { spec: CsvSpec<KojiFieldId>; row: Row | undefined; field: KojiFieldId | undefined }) {
+  const cell = row && field ? row.cells[field] : undefined
+  const label = field ? spec.fields.find((f) => f.id === field)?.label : undefined
+  return (
+    <p id={NOTE_ID} className="flex h-5 min-w-0 items-center gap-1.5 text-xs text-muted-foreground" aria-live="polite" data-testid="cell-note" data-status={cell?.status}>
+      {cell ? (
+        <>
+          <span className={cn("size-2 shrink-0 rounded-full", STATUS[cell.status].dot)} />
+          <span className="shrink-0 font-medium text-foreground">
+            {label}（{originText(row!)}）
+          </span>
+          <span className="truncate" title={[cell.message, `元: ${cell.source}`].filter(Boolean).join("\n")}>
+            {STATUS[cell.status].label}
+            {cell.message ? `: ${cell.message}` : `（元: ${cell.source || "空"}）`}
+          </span>
+        </>
+      ) : (
+        "色のセルを選ぶと、理由をここに出します"
+      )}
+    </p>
+  )
 }
 
 /** 下書き（value）は PreviewTable が持つ。onDone(true) で確定、onDone(false) で取り消し */
@@ -432,18 +430,5 @@ function CellEditor({ value, onChange, onDone }: { value: string; onChange: (v: 
         if (e.key === "Escape") finish(false)
       }}
     />
-  )
-}
-
-export function StatusLegend({ counts }: { counts: Record<keyof typeof STATUS, number> }) {
-  return (
-    <ul className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground" data-testid="status-counts">
-      {(Object.keys(STATUS) as (keyof typeof STATUS)[]).map((s) => (
-        <li key={s} className="flex items-center gap-1.5" data-status={s}>
-          <span className={cn("size-2 rounded-full", STATUS[s].dot)} />
-          {STATUS[s].label} <span className="num font-medium text-foreground">{counts[s]}</span>
-        </li>
-      ))}
-    </ul>
   )
 }

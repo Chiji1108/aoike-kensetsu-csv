@@ -57,13 +57,6 @@ export const chatDataSchemas = {
 /** 会話を終えた印（画面にだけ出す。AI の履歴には入らない） */
 export const ENDED_TEXT = "会話を終えました（AI に渡したファイルは消しました）。次の指示から新しい会話になります。"
 
-/** 今の会話（最後に「会話を終えた」印より後）の返事の費用の合計 */
-export function conversationUsd(messages: readonly ChatMessage[]) {
-  let usd = 0
-  for (const m of messages) usd = m.role === "system" ? 0 : usd + (m.metadata?.usd ?? 0)
-  return usd
-}
-
 /** 画面から送る1回の指示 */
 export type ChatRequest = {
   id: string
