@@ -147,7 +147,7 @@ function reviewSavedPlan(w: CaseWork): CaseWork {
   if (!w.plan) return w
   const { plan, changed } = reviewPlanTransforms(SPEC, w.plan.plan)
   if (!changed.length) return w
-  const notice = `保存した計画の ${changed.join("・")} の変換を、個人名を匿名化する変換に替えて変換し直しました。`
+  const notice = `保存した計画の ${changed.join("・")} を今の決まり（個人名の項目は匿名化する変換だけ）に合わせて直し、変換し直しました。`
   return { ...w, plan: { ...w.plan, plan, notice: [w.plan.notice, notice].filter(Boolean).join(" ") }, converted: false }
 }
 

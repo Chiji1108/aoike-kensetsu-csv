@@ -219,13 +219,21 @@ export function fieldPlanProblem(
 
 /**
  * 保存済みの計画を、今の変換の決まり（transformFits）で確かめる。使えなくなった変換（工事名の全角にする・注文者の匿名化しない変換など）は
- * その項目で最初に選ぶ変換（preferredTransform）に替え、替えた項目の名前を changed に返す。AI の計画の取り込み（acceptAiPlan）と同じ決まり
+ * その項目で最初に選ぶ変換（preferredTransform）に替え、使えない定数（注文者・工事名の定数）は外して、直した項目の名前を changed に返す。AI の計画の取り込み（acceptAiPlan）と同じ決まり
  */
 export function reviewPlanTransforms<F extends string>(spec: CsvSpec<F>, plan: MappingPlan<F>): { plan: MappingPlan<F>; changed: string[] } {
   const changed: string[] = []
   const fields = { ...plan.fields }
   for (const f of spec.fields) {
     const p: FieldPlan = fields[f.id]
+    // 定数は新しい計画と同じ決まり（fieldPlanProblem）で確かめ、使えなければ外す（元データに無い扱いにして、顧客に聞く）
+    if (p.kind === "constant") {
+      if (fieldPlanProblem(p, f.valueType, Number.MAX_SAFE_INTEGER)) {
+        fields[f.id] = { kind: "missing" }
+        changed.push(f.label)
+      }
+      continue
+    }
     if ((p.kind !== "column" && p.kind !== "columns") || transformFits(getTransform(p.transform), f.valueType)) continue
     const transform = preferredTransform(f.valueType, p.kind === "columns")
     fields[f.id] = p.kind === "column" ? { kind: "column", column: p.column, transform } : { kind: "columns", columns: p.columns, transform }
