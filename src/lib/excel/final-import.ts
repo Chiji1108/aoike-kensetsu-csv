@@ -14,15 +14,15 @@ import { KOJI_KEIREKI, type KojiFieldId } from "../spec/koji-keireki"
 import { CHECK_SHEET_NAME, FINAL_SHEET_NAME, keyMark, MARK_RE, NUMERIC_FIELDS, personHash, readCheckSheet, toHex, type FinalCheck } from "./final-sheet"
 
 /**
- * 直した最後の Excel を上げ直したときの取り込み。照合用の隠しシートの落としたときの値と、データのシートの今の値を比べ、
+ * 直した最後の Excel を上げ直したときの取り込み。照合用の隠しシートのダウンロードしたときの値と、データのシートの今の値を比べ、
  * 職員が直したセルを変更案（出どころ excel）にする。
  * - 行は中身で対応させる（職員が行を足した・消した・並べ替えたときも）。同じ中身の行 → 14列のうち MATCH_FIELDS 列以上が同じで、
  *   互いにいちばん近い行、の順に当てる。決めきれない行（近い行が2つ以上・CANDIDATE_FIELDS 列以上が同じだが当てるほどは近くない）は
- *   黙って当てず ambiguous に出す（その候補の行は「載せない」にもしない）。落とした行が1つも見つからなければ（別のシートを上げたなど）読まない
- * - 当たらなかった今の行は足した工事、当たらなかった落とした行は「載せない」の変更案
+ *   黙って当てず ambiguous に出す（その候補の行は「載せない」にもしない）。ダウンロードした行が1つも見つからなければ（別のシートを上げたなど）読まない
+ * - 当たらなかった今の行は足した工事、当たらなかったダウンロードした行は「載せない」の変更案
  * - 値は CSV の値（匿名化のあと・業種などのコード・千円・YYYYMM）なので、変換と同じ決まった処理で表の値に直す。記号（Ａ・Ｂ…）は
  *   そのまま匿名化の値として、照合用のハッシュでその人に戻す。注文者・工事名に書いた実名は変換と同じ匿名化に通す（確かめられなければ取り込まない）
- * - 落としたあとに表のその値が変わっていたら、黙って上書きせず食い違い（conflicts）に出す
+ * - ダウンロードしたあとに表のその値が変わっていたら、黙って上書きせず食い違い（conflicts）に出す
  */
 
 type F = KojiFieldId
@@ -30,7 +30,7 @@ const FIELDS = KOJI_KEIREKI.fields
 
 /** 1つの Excel の変更案に入れられる項目の数（R2 の記録と画面の一覧が重くなりすぎないように） */
 export const MAX_EXCEL_CHANGES = 20_000
-/** 落とした行と今の行を同じ工事とみなす、同じ値の列の数（14列のうち。3列までの手直しは同じ工事） */
+/** ダウンロードした行と今の行を同じ工事とみなす、同じ値の列の数（14列のうち。3列までの手直しは同じ工事） */
 export const MATCH_FIELDS = 11
 /** 同じ工事かもしれない（決めきれない）とする、同じ値の列の数 */
 export const CANDIDATE_FIELDS = 8
@@ -64,7 +64,7 @@ export type FinalReport = {
   excluded: number
   /** もう表にある（前に上げて承認した）ので足さなかった行 */
   alreadyAdded: number
-  /** 落としたあとに表のその値が変わっていた（職員の手直しを上書きしないので、変更案にしない）。値は CSV の値（記号） */
+  /** ダウンロードしたあとに表のその値が変わっていた（職員の手直しを上書きしないので、変更案にしない）。値は CSV の値（記号） */
   conflicts: { line: number; field: F; sent: string; now: string; uploaded: string }[]
   /** 開いている・却下した直した Excel の変更案と同じなので除いた項目の数（画面が withoutKnown で数える） */
   skipped?: number
@@ -76,28 +76,28 @@ export type FinalReport = {
   refused: { line: number; field: F; value: string; message: string }[]
   /** どの工事を直したのか決めきれなかった行（候補が2つ以上）。取り込まない */
   ambiguous: { line: number; candidates: number }[]
-  /** 決めきれない行の候補なので「載せない」にしなかった、落とした行の数 */
+  /** 決めきれない行の候補なので「載せない」にしなかった、ダウンロードした行の数 */
   keptRows: number
-  /** 今の表に無い行（落としたあとに足した行を消したなど）の数 */
+  /** 今の表に無い行（ダウンロードしたあとに足した行を消したなど）の数 */
   unknownRows: number
 }
 
 /** lookup は場所名に書いた住所を引く（変換と同じ分け方。address.ts） */
 export type FinalAi = { rounding: Rounding; cache: AiCache; callAi?: AiCaller; lookup: AddressLookup }
 
-/** 最後の Excel の照合用の隠しシートを読む。無ければ null（この画面で落とした最後の Excel ではない） */
+/** 最後の Excel の照合用の隠しシートを読む。無ければ null（この画面でダウンロードした最後の Excel ではない） */
 export function finalCheckOf(sheets: readonly SheetGrid[]): FinalCheck | { error: string } | null {
   const sheet = sheets.find((s) => s.name === CHECK_SHEET_NAME)
   return sheet ? (readCheckSheet(sheet.rows) ?? { error: "照合用のシートが書き換えられていて読めません" }) : null
 }
 
-type Cell = { line: number; rowKey: string; field: F; value: string; /** 落としたときにこのセルにあった、人ではない記号の形の文字（「Ｋ建設」の Ｋ） */ literal: ReadonlySet<string> }
+type Cell = { line: number; rowKey: string; field: F; value: string; /** ダウンロードしたときにこのセルにあった、人ではない記号の形の文字（「Ｋ建設」の Ｋ） */ literal: ReadonlySet<string> }
 
 const unmark = (marked: string) => marked.replace(MARK_RE, "$1")
 const ALNUM = "Ａ-Ｚａ-ｚA-Za-z０-９0-9"
 /** 記号の形の文字（前後が英数字でない Ａ・Ｂ２…） */
 const LETTER_RE = new RegExp(`(?<![${ALNUM}])([Ａ-Ｚ][０-９]*)(?![${ALNUM}])`, "g")
-/** 落としたときの値のうち、人の記号ではない記号の形の文字 */
+/** ダウンロードしたときの値のうち、人の記号ではない記号の形の文字 */
 const literalIn = (marked: string) => {
   const persons = new Set([...marked.matchAll(MARK_RE)].map((m) => m[1]!))
   return new Set([...marked.replace(MARK_RE, "").matchAll(LETTER_RE)].map((m) => m[1]!).filter((l) => !persons.has(l)))
@@ -136,10 +136,10 @@ export async function readFinalSheet(
   ai: FinalAi,
 ): Promise<{ changes: ChatChange[]; report: FinalReport } | { error: string }> {
   const check = finalCheckOf(sheets)
-  if (!check) return { error: "照合用のシートがありません。この画面の「書き出す」で落とした Excel を直して上げてください" }
+  if (!check) return { error: "照合用のシートがありません。この画面の「書き出す」でダウンロードした Excel を直してアップロードしてください" }
   if ("error" in check) return check
-  if (check.meta.caseId !== id.caseId) return { error: "別の案件で落とした Excel です" }
-  if (check.meta.sourceFileId !== id.sourceFileId) return { error: "落としたあとに変換の元のファイルが変わったので、この Excel は表に戻せません。書き出し直してから直してください" }
+  if (check.meta.caseId !== id.caseId) return { error: "別の案件でダウンロードした Excel です" }
+  if (check.meta.sourceFileId !== id.sourceFileId) return { error: "ダウンロードしたあとに変換の元のファイルが変わったので、この Excel は表に戻せません。書き出し直してから直してください" }
   if (check.meta.keyMark !== (await keyMark(id.excelKey, id.caseId))) return { error: "この Excel の記録と合いません。書き出し直してから直してください" }
   const data = sheets.find((s) => s.name === FINAL_SHEET_NAME) ?? sheets.find((s) => s.name !== CHECK_SHEET_NAME)
   if (!data) return { error: "データのシートがありません" }
@@ -150,13 +150,13 @@ export async function readFinalSheet(
   })
   if (uploaded.length > MAX_EXCEL_CHANGES) return { error: `行が ${uploaded.length} 行あります。取り込めるのは ${MAX_EXCEL_CHANGES} 行までです` }
 
-  // 記号の人: 落としたときの記号 → 今の表の人（照合用のハッシュで見つける。記号が付け直されていても同じ人）
+  // 記号の人: ダウンロードしたときの記号 → 今の表の人（照合用のハッシュで見つける。記号が付け直されていても同じ人）
   const nameByHash = new Map<string, string>()
   await Promise.all([...view.letters.personOf.values()].map(async (name) => nameByHash.set(await personHash(id.excelKey, name), name)))
   const nameOfLetter = new Map(check.persons.flatMap((p) => (nameByHash.has(p.hash) ? [[p.letter, nameByHash.get(p.hash)!] as const] : [])))
   const sentLetters = new Set(check.persons.map((p) => p.letter))
   const letterOfPerson = new Map([...nameOfLetter].map(([letter, name]) => [personKey(name), letter]))
-  /** 今の表のセルを、落としたときの記号の「〔Ａ〕」の形にする。落としたときにいなかった人がいれば undefined */
+  /** 今の表のセルを、ダウンロードしたときの記号の「〔Ａ〕」の形にする。ダウンロードしたときにいなかった人がいれば undefined */
   const asSent = (cell: CellResult) => {
     let ok = true
     const v = cell.stored
@@ -174,13 +174,13 @@ export async function readFinalSheet(
     uploaded.map((u) => comparable(u.values)),
     sent.map((s) => comparable(s.csv)),
   )
-  if (sent.length && !match.pairs.length && !match.candidates.size) return { error: "落としたときの工事が1つも見つかりません。書き出した Excel のデータのシートを上げてください" }
+  if (sent.length && !match.pairs.length && !match.candidates.size) return { error: "ダウンロードしたときの工事が1つも見つかりません。書き出した Excel のデータのシートをアップロードしてください" }
   const report: FinalReport = { cells: 0, added: 0, excluded: 0, alreadyAdded: 0, conflicts: [], invalid: [], refused: [], ambiguous: [], keptRows: 0, unknownRows: 0, extraColumns }
   const now = new Map(view.shown.map((r) => [r.key, r]))
 
   const cellChanges: Cell[] = []
   const suspects: { cell: Cell; sent: string }[] = []
-  /** 当てた行の、落としたときの値（場所名からそろえる都道府県名が、落としたあとに変わっていないかを見る） */
+  /** 当てた行の、ダウンロードしたときの値（場所名からそろえる都道府県名が、ダウンロードしたあとに変わっていないかを見る） */
   const sentOf = new Map(match.pairs.map(([, si]) => [sent[si]!.key, sent[si]!]))
   for (const [ui, si] of match.pairs) {
     const u = uploaded[ui]!
@@ -198,7 +198,7 @@ export async function readFinalSheet(
       const cur = asSent(current.cells[f.id])
       // 前に上げて承認した値（同じ Excel を2回上げた）
       if (cur !== undefined && unmark(cur) === u.values[c]) return
-      // 落としたあとに表が変わっていた。上げた値を読んで今の値と同じなら（承認した値を形を変えて読んだ）何もしない。違えば食い違い
+      // ダウンロードしたあとに表が変わっていた。上げた値を読んで今の値と同じなら（承認した値を形を変えて読んだ）何もしない。違えば食い違い
       if (cur !== s.marked[f.id]) suspects.push({ cell, sent: s.csv[c]! })
       else cellChanges.push(cell)
     })
@@ -206,7 +206,7 @@ export async function readFinalSheet(
   for (const ui of match.ambiguous) report.ambiguous.push({ line: uploaded[ui]!.line, candidates: match.candidates.get(ui)!.length })
   const kept = new Set([...match.candidates.values()].flat())
   report.keptRows = match.unmatchedSent.filter((si) => kept.has(si)).length
-  // 消した行は「載せない」（今も載っているときだけ。落としたあとに画面で外した行は何もしない）
+  // 消した行は「載せない」（今も載っているときだけ。ダウンロードしたあとに画面で外した行は何もしない）
   const excludes = match.unmatchedSent.filter((si) => !kept.has(si) && view.inclusion.get(sent[si]!.key)?.included === true).map((si) => sent[si]!.key)
 
   // 足した工事（同じ中身の何番目かを Excel の行の順で数え、同じ Excel を2回上げても二重に足さない）
@@ -232,7 +232,7 @@ export async function readFinalSheet(
   if (addedNow + newRows.length > MAX_ADDED_ROWS) return { error: `足す行が ${newRows.length} 行あります。案件に足せる行は ${MAX_ADDED_ROWS} 行までです（今 ${addedNow} 行）` }
   const places = new Set(cellChanges.filter((c) => c.field === "place").map((c) => c.rowKey)).size
   const planned = cellChanges.length + places + excludes.length + newRows.length * 2
-  if (planned > MAX_EXCEL_CHANGES) return { error: `変更が ${planned} 件あります。1回に取り込めるのは ${MAX_EXCEL_CHANGES} 件までです（分けて上げ直してください）` }
+  if (planned > MAX_EXCEL_CHANGES) return { error: `変更が ${planned} 件あります。1回に取り込めるのは ${MAX_EXCEL_CHANGES} 件までです（分けてアップロードし直してください）` }
 
   const read = await readValues([...cellChanges, ...newRows.flatMap((r) => r.cells)], ai, nameOfLetter, sentLetters)
   /** 今の表の値と同じか（人の印の氏名は空白を除いて比べる） */
@@ -240,7 +240,7 @@ export async function readFinalSheet(
     const cell = now.get(c.rowKey)!.cells[c.field]
     return comparableValue(value) === comparableValue(cell.stored ?? cell.value)
   }
-  // 落としたあとに表が変わっていたセルは、決まった処理で読んで今の値と同じなら何もしない（AI には通さない。注文者・工事名は食い違いのまま）
+  // ダウンロードしたあとに表が変わっていたセルは、決まった処理で読んで今の値と同じなら何もしない（AI には通さない。注文者・工事名は食い違いのまま）
   const checked = await readValues(
     suspects.filter((x) => !READ_AS[x.cell.field].startsWith("ai.")).map((x) => x.cell),
     { ...ai, callAi: undefined },
@@ -266,7 +266,7 @@ export async function readFinalSheet(
       return
     }
     if (pref) return
-    // 落としたあとに画面で都道府県名を変えていたら、黙って上書きしない
+    // ダウンロードしたあとに画面で都道府県名を変えていたら、黙って上書きしない
     const s = sentOf.get(rowKey)
     const current = now.get(rowKey)
     if (s && current && current.cells.prefecture.value !== s.marked.prefecture) {
@@ -317,18 +317,18 @@ export async function readFinalSheet(
 const INDEX_LIMIT = 500
 
 export type RowMatch = {
-  /** [今の行, 落とした行] */
+  /** [今の行, ダウンロードした行] */
   pairs: [number, number][]
   /** 決めきれなかった今の行 */
   ambiguous: number[]
-  /** 決めきれなかった今の行 → 候補の落とした行 */
+  /** 決めきれなかった今の行 → 候補のダウンロードした行 */
   candidates: Map<number, number[]>
   unmatchedUploaded: number[]
   unmatchedSent: number[]
 }
 
 /**
- * 今の行と落とした行を中身で対応させる。1) 14列が同じ行を上から順に当てる。2) 残りは MATCH_FIELDS 列以上が同じ候補のうち、
+ * 今の行とダウンロードした行を中身で対応させる。1) 14列が同じ行を上から順に当てる。2) 残りは MATCH_FIELDS 列以上が同じ候補のうち、
  * 互いにいちばん近い（同じ列が多い）ただ1つの行どうしを当て、当てた分を除いて繰り返す。3) CANDIDATE_FIELDS 列以上が同じ候補が残るのに
  * 決めきれない今の行は ambiguous。候補は INDEX_FIELDS のどれかが同じ行だけを数える（同じ値の行が INDEX_LIMIT を超える値は手がかりにしない）
  */
@@ -358,7 +358,7 @@ export function matchRows(uploaded: readonly (readonly string[])[], sent: readon
     return { c, m }
   })
   const score = (u: readonly string[], s: readonly string[]) => u.reduce((n, v, c) => n + (v === s[c] ? 1 : 0), 0)
-  // 今の行ごとの候補（MATCH_FIELDS 列以上が同じ落とした行と、同じ列の数）
+  // 今の行ごとの候補（MATCH_FIELDS 列以上が同じダウンロードした行と、同じ列の数）
   const cand = new Map<number, Map<number, number>>()
   /** 同じ値の多すぎる手がかりを使わなかった今の行（候補を見落としたかもしれない） */
   const partial = new Set<number>()
@@ -408,8 +408,8 @@ export function matchRows(uploaded: readonly (readonly string[])[], sent: readon
     const ss = [...cand.get(ui)!.keys()].filter((si) => restS.has(si))
     if (ss.length) candidates.set(ui, ss)
   }
-  // 手がかりを使わなかった行は、残った（載せないになる）落とした行と全部比べ、近い行があれば黙って差し替えず決めきれない行にする
-  // （残った落とした行は消した行だけのことが多く、少ない）
+  // 手がかりを使わなかった行は、残った（載せないになる）ダウンロードした行と全部比べ、近い行があれば黙って差し替えず決めきれない行にする
+  // （残ったダウンロードした行は消した行だけのことが多く、少ない）
   const matched = new Set(pairs.map(([u]) => u))
   for (const ui of partial) {
     if (matched.has(ui) || candidates.has(ui)) continue
@@ -431,7 +431,7 @@ type Read = { ok: true; edit: CellEdit; prefecture?: Prefecture } | { ok: false;
 
 /**
  * 値の記号（Ａ・Ｂ…）を、その人の氏名にした値（匿名化に通す元の値。変換のときと同じく、匿名化の AI が氏名を同じ人の印にする）。
- * 前後が英数字でない記号の形の文字は、落としたときにこの Excel に書いた記号の人（照合用のハッシュ）として読む。落としたときにこのセルに
+ * 前後が英数字でない記号の形の文字は、ダウンロードしたときにこの Excel に書いた記号の人（照合用のハッシュ）として読む。ダウンロードしたときにこのセルに
  * あった人ではない文字（literal）はそのまま。人に戻せない記号は黙って文字にせず読めない
  */
 function withLetterNames(text: string, literal: ReadonlySet<string>, nameOfLetter: ReadonlyMap<string, string>, sentLetters: ReadonlySet<string>): { ok: true; value: string } | { ok: false; message: string } {

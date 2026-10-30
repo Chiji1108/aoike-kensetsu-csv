@@ -42,15 +42,17 @@ export async function openNewCase(page: Page, year = "2026") {
   return { customer, caseUrl: page.url() }
 }
 
-/** 案件の画面で Excel（パスか中身）を付け、AI が列の対応を考えて自動で変換し、変換の報告とプレビューの表が出るまで待つ */
+/** 案件の画面のチャットの📎で Excel（パスか中身）をアップロードし、AI が列の対応を考えて自動で変換し、変換の報告と作業の画面の表が出るまで待つ */
 export async function attachAndConvert(page: Page, file: Parameters<Locator["setInputFiles"]>[0]) {
-  await page.getByTestId("file-input").setInputFiles(file)
-  await expect(page.getByTestId("preview-table")).toBeVisible({ timeout: 180_000 })
-  await expect(page.getByTestId("case-report")).toHaveAttribute("data-phase", "done", { timeout: 120_000 })
+  await page.getByTestId("chat-file-input").setInputFiles(file)
+  await expect(page.getByTestId("case-report")).toHaveAttribute("data-phase", "done", { timeout: 300_000 })
+  // 広い画面では作業の画面がチャットの右に開く（狭い画面ではチャットの「表を開く」で開く）
+  if ((page.viewportSize()?.width ?? 0) >= 1280) await expect(page.getByTestId("preview-table")).toBeVisible()
 }
 
-/** 表の絞り込みを「すべて」にする（はじめは確かめる行だけ） */
+/** 作業の画面の表のタブで、絞り込みを「すべて」にする（はじめは確かめる行だけ） */
 export async function showAllRows(page: Page) {
+  await openTab(page, "table")
   await page.getByTestId("row-filters-all").click()
   await expect(page.getByTestId("row-filters-all")).toHaveAttribute("aria-pressed", "true")
 }
@@ -75,15 +77,16 @@ export async function openCaseDelete(page: Page) {
   await page.getByTestId("delete-button").click()
 }
 
-/** 表の下の欄を開く */
-export async function openTab(page: Page, tab: "selection" | "inquiry" | "location" | "replace") {
+/** 作業の画面のタブを開く */
+export async function openTab(page: Page, tab: "table" | "selection" | "inquiry" | "location" | "replace") {
   await page.getByTestId(`tab-${tab}`).click()
+  await expect(page.getByTestId(`tab-${tab}`)).toHaveAttribute("aria-selected", "true")
 }
 
 /** 書き出すボタンの件数（CSV に載せる行） */
 export const csvCount = async (page: Page) => Number(/（(\d+)件/.exec((await page.getByTestId("export-button").textContent()) ?? "")![1])
 
-/** 書き出す前の確認を開いて CSV（控え）を落とし、中身（CP932）を返す。確認は閉じる */
+/** 書き出す前の確認を開いて CSV（控え）をダウンロードし、中身（CP932）を返す。確認は閉じる */
 export async function downloadCsv(page: Page) {
   await page.getByTestId("export-button").click()
   const dialog = page.getByTestId("export-dialog")

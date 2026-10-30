@@ -47,7 +47,7 @@ function ImportReport({ result }: { result: FinalImport }) {
   const r = result.report
   const proposed = r.cells + r.added + r.excluded
   const problems: { label: string; items: string[] }[] = [
-    { label: "落としたあとに表が変わっていたので取り込まなかった値（今の値を残しています）", items: r.conflicts.map((c) => `${c.line}行目 ${fieldLabel(c.field)}: 落としたとき「${c.sent}」→ 今「${c.now}」、Excel「${c.uploaded}」`) },
+    { label: "ダウンロードしたあとに表が変わっていたので取り込まなかった値（今の値を残しています）", items: r.conflicts.map((c) => `${c.line}行目 ${fieldLabel(c.field)}: ダウンロードしたとき「${c.sent}」→ 今「${c.now}」、Excel「${c.uploaded}」`) },
     { label: "どの工事を直したか決めきれなかった行（表かチャットで直してください）", items: r.ambiguous.map((a) => `${a.line}行目（似た工事が ${a.candidates} 件）`) },
     { label: "N列より右の値（取り込みません。「CSV で保存」すると CSV にも出るので、消してから保存してください）", items: r.extraColumns.map((l) => `${l}行目`) },
     { label: "読めない値", items: r.invalid.map((c) => `${c.line}行目 ${fieldLabel(c.field)}「${c.value}」: ${c.message}`) },
@@ -63,7 +63,7 @@ function ImportReport({ result }: { result: FinalImport }) {
             ? `変更案にしました（セル ${r.cells} 件・足す ${r.added} 行・載せない ${r.excluded} 行）。`
             : problems.length
               ? "変更案にできる変更はありませんでした。"
-              : "落としたときから変わったところはありませんでした。"}
+              : "ダウンロードしたときから変わったところはありませんでした。"}
         {proposed > 0 && r.skipped ? ` 前に出した・却下した変更と同じ ${r.skipped} 件は除きました。` : ""}
         {r.alreadyAdded > 0 && ` 足した ${r.alreadyAdded} 行はもう表にあります。`}
         {r.keptRows > 0 && ` 決めきれない行の候補 ${r.keptRows} 行は「載せない」にしていません。`}

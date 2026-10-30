@@ -90,7 +90,7 @@ export function ExportDialog({
             )}
             <GyoshuSummaryTable summary={summary} basis={basis} rule7Tax={rule7Tax} onBasisChange={onBasisChange} />
             <p className="text-xs text-muted-foreground" data-testid="export-note">
-              Excel で直したら、その Excel をチャット欄か表に上げると表に戻ります。取込は1回だけ（追加になる）、「1行目が項目行」は外す。
+              Excel で直したら、その Excel をチャットの📎でアップロードすると表に戻ります。取込は1回だけ（追加になる）、「1行目が項目行」は外す。
             </p>
           </div>
         )}

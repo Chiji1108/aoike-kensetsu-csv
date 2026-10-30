@@ -13,7 +13,7 @@ import type { ReportPhase } from "@/lib/cases/phase"
 
 export type { ReportPhase }
 
-/** 落とした・付けたファイルをどう扱ったか */
+/** アップロードしたファイルをどう扱ったか */
 export type UploadNote = { name: string; text: string; tone?: "error" }
 
 export type ReportQuestion = {
@@ -54,9 +54,12 @@ export function CaseReport(p: ReportProps) {
   return (
     <Message data-testid="case-report" data-phase={p.phase.kind}>
       <MessageContent className="gap-2.5">
-        <MessageHeader className="px-0 text-xs text-muted-foreground">
-          <Sparkles className="size-3.5 text-violet-500" /> 変換の報告
-        </MessageHeader>
+        {/* ファイルの前は案内だけ（まだ報告は無い） */}
+        {p.phase.kind !== "empty" && (
+          <MessageHeader className="px-0 text-xs text-muted-foreground">
+            <Sparkles className="size-3.5 text-violet-500" /> 変換の報告
+          </MessageHeader>
+        )}
         <Body {...p} />
         {p.uploads.length > 0 && (
           <ul className="grid gap-0.5 text-xs" data-testid="report-uploads">
@@ -76,10 +79,13 @@ function Body(p: ReportProps) {
   const { phase } = p
   if (phase.kind === "empty")
     return (
-      <p className="flex items-start gap-2 text-sm" data-testid="report-empty">
-        <FileUp className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
-        顧客の Excel をここに落としてください。変換して、気になる点をお知らせします。
-      </p>
+      <div className="grid gap-1 text-sm" data-testid="report-empty">
+        <p className="flex items-start gap-2">
+          <FileUp className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+          顧客の Excel をアップロードしてください。
+        </p>
+        <p className="pl-6 text-xs text-muted-foreground">画面にドラッグしても置けます。</p>
+      </div>
     )
   if (phase.kind === "noAi")
     return (
@@ -88,7 +94,11 @@ function Body(p: ReportProps) {
       </p>
     )
   if (phase.kind === "noSheet")
-    return <p className="text-sm">表として読めるファイルがありません。「PDF から表を作って」と頼んでください。</p>
+    return (
+      <p className="text-sm" data-testid="no-sheet-source">
+        表として読めるファイルがありません。「PDF から表を作って」と頼んでください。
+      </p>
+    )
   if (phase.kind === "reading" || phase.kind === "planning" || phase.kind === "converting")
     return (
       <p className="flex items-center gap-2 text-sm" data-testid="report-progress">

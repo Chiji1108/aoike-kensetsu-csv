@@ -1,6 +1,6 @@
 import { useMemo } from "react"
 import { createClientOnlyFn } from "@tanstack/react-start"
-import { Copy, FileDown, FileUp } from "lucide-react"
+import { Copy, FileDown } from "lucide-react"
 import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -31,7 +31,7 @@ type Row = RowResult<KojiFieldId>
 const loadXlsxWriter = createClientOnlyFn(() => import("@/lib/inquiry/inquiry-xlsx"))
 
 /**
- * 顧客に問い合わせる: 件数・項目ごとの件数・外すチェック、質問の文（AI の案を承認したもの・職員が直したもの・決まった文）、メールの件名と本文、記入用Excel、回答の取り込み。
+ * 顧客に問い合わせる: 件数・項目ごとの件数・外すチェック、質問の文（AI の案を承認したもの・職員が直したもの・決まった文）、メールの件名と本文、記入用Excel、取り込んだ回答の結果（記入された Excel はチャットの📎でアップロードする）。
  * inquiries は CSV に載せる行から集めたもの。回答の照合は記入用Excelの各行の照合用の列で行うので、どの版の記入用Excelでも取り込める。
  */
 export function InquiryPanel({
@@ -45,7 +45,6 @@ export function InquiryPanel({
   onText,
   keepFile,
   onToggle,
-  importAnswers,
 }: {
   inquiries: Inquiry[]
   outputRows: Row[]
@@ -60,8 +59,6 @@ export function InquiryPanel({
   /** ダウンロードした記入用Excelを案件に残す */
   keepFile: (name: string, bytes: Uint8Array, type: string) => void
   onToggle: (key: string, ask: boolean) => void
-  /** 記入された Excel を取り込む（案件の画面が照合して手直しに反映し、結果を answers に入れる。チャット欄に落としたときも同じ） */
-  importAnswers: (file: File) => Promise<void>
 }) {
   const active = useMemo(() => inquiries.filter((q) => !dismissed.has(inquiryKey(q))), [inquiries, dismissed])
   const activeCells = useMemo(() => active.filter((q): q is CellInquiry => q.kind === "cell"), [active])
@@ -201,21 +198,10 @@ export function InquiryPanel({
 
       {allRows.length > 0 && (
         <div className="grid gap-2">
-          <label className="inline-flex w-fit cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-muted/60">
-            <FileUp className="size-4" />
-            記入された Excel を取り込む
-            <input
-              type="file"
-              accept=".xlsx,.xls"
-              className="sr-only"
-              data-testid="answer-input"
-              onChange={(e) => {
-                const f = e.target.files?.[0]
-                if (f) void importAnswers(f)
-                e.target.value = ""
-              }}
-            />
-          </label>
+          {/* 返ってきた記入用Excel のアップロードは、ほかのファイルと同じくチャットの📎（印で見分けて取り込む） */}
+          <p className="text-xs text-muted-foreground" data-testid="answer-upload-note">
+            記入された Excel は、チャットの📎でアップロードすると取り込みます。
+          </p>
           {answers && <AnswerReportView report={answers} rowLabel={rowLabel} />}
         </div>
       )}

@@ -1,10 +1,11 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react"
 import { Link, createFileRoute, notFound, useRouter } from "@tanstack/react-router"
-import { Ellipsis, FileSpreadsheet, FileText, FileUp, Loader2, MessageSquare, Trash2, TriangleAlert } from "lucide-react"
+import { Ellipsis, FileSpreadsheet, FileText, FileUp, Loader2, MessageSquare, PanelRightClose, Paperclip, Trash2, TriangleAlert, X } from "lucide-react"
 import { toast } from "sonner"
-import { AppShell, PageHeader } from "@/components/app-shell"
+import { AppShell } from "@/components/app-shell"
 import { CaseReport, type ReportProps, type ReportQuestion, type UploadNote } from "@/components/cases/case-report"
 import { reportPhase } from "@/lib/cases/phase"
+import { WORK_TABS, type WorkTab } from "@/components/cases/work-tabs"
 import { DeleteDialog } from "@/components/cases/delete-dialog"
 import { useCaseAutosave, type SaveStatus } from "@/components/cases/use-case-autosave"
 import { FinalImportPanel, type FinalImport } from "@/components/convert/final-import-panel"
@@ -28,6 +29,7 @@ import {
 } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import { NativeSelect } from "@/components/ui/native-select"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Segmented } from "@/components/segmented"
 import { MAX_ADDED_ROWS } from "@/lib/cases/added"
@@ -83,7 +85,7 @@ export const Route = createFileRoute("/_authed/cases/$caseId")({
   component: CasePage,
 })
 
-/** 最後の Excel を書く ExcelJS は、落とすときにブラウザで読み込む */
+/** 最後の Excel を書く ExcelJS は、ダウンロードするときにブラウザで読み込む */
 const loadFinalXlsx = createClientOnlyFn(() => import("@/lib/excel/final-xlsx"))
 
 /** チャット（Markdown の描画・AI SDK）は画面を開いたあとに読み込む */
@@ -99,22 +101,13 @@ type Source = { fileId: string; name: string; sheets: SheetGrid[] }
 /** 列の計画の前に、去年の Excel を読み終えるのを待つ長さ */
 const PREVIOUS_WAIT_MS = 3_000
 
-/** チャットを表の横に並べる画面の幅（これより狭い画面ではチャットを表の上に重ねて開く） */
+/** 作業の画面をチャットの横に並べる画面の幅（これより狭い画面ではチャットを画面いっぱいにし、作業の画面は上に重ねて開く） */
 const WIDE_QUERY = "(min-width: 1280px)"
 /** チャットの案内のうち、案件を終えるときの振り返り（返ってきた記入用Excelの案内はファイルの id） */
 const REVIEW_SUGGESTION = "review"
 const INQUIRY_SUGGESTION = "inquiry-text"
 
 type PreviousCase = NonNullable<NonNullable<Awaited<ReturnType<typeof getCasePageFn>>>["previous"]>
-
-/** 表の下の欄 */
-const TABS = [
-  { id: "selection", label: "7割と金額" },
-  { id: "inquiry", label: "問い合わせ" },
-  { id: "location", label: "工事場所" },
-  { id: "replace", label: "一括置換" },
-] as const
-type Tab = (typeof TABS)[number]["id"]
 
 /** 去年の比べるシートと見出しの行（去年の計画のもの。計画が無い・シートが無ければ見出しから推定する）。比べるシートが無ければ null */
 function previousSideOf(previous: PreviousCase, sheets: SheetGrid[]) {
@@ -224,7 +217,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
   const [loadingSource, setLoadingSource] = useState<string | null>(null)
   /** 変換の元を読めなかった（報告に理由とやり直しを出す） */
   const [sourceError, setSourceError] = useState<{ file: CaseFile; message: string } | null>(null)
-  /** 落とした・付けたファイルをどう扱ったか（報告に出す。保存しない） */
+  /** アップロードしたファイルをどう扱ったか（報告に出す。保存しない） */
   const [uploadNotes, setUploadNotes] = useState<UploadNote[]>([])
   const note = (n: UploadNote) => setUploadNotes((ns) => [...ns.slice(-9), n])
   /** AI が列の対応を考えている間の、見出しからの推定（保存しない） */
@@ -235,10 +228,10 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
   const [convertError, setConvertError] = useState<{ message: string; plan: SavedPlan | null } | null>(null)
   const [exportOpen, setExportOpen] = useState(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
-  const fileInput = useRef<HTMLInputElement>(null)
   const [pendingSource, setPendingSource] = useState<CaseFile | null>(null)
   const [filter, setFilter] = useState<RowFilter | null>(null)
-  const [tab, setTab] = useState<Tab>("selection")
+  /** 作業の画面のタブ */
+  const [tab, setTab] = useState<WorkTab>("table")
   /** 最後に上げ直した最後の Excel の結果（チャット欄の報告の下に出す。保存しない） */
   const [finalResult, setFinalResult] = useState<FinalImport | null>(null)
   /** 決まった欄で読めなかった記入のある、返ってきた記入用Excel（ファイルごとに AI に読ませるかをチャットに出す。保存しない） */
@@ -248,14 +241,12 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
   /** 問い合わせの欄を開いた（チャットに「AI で文面を作る」を出す。一度送ったら、この画面では出さない） */
   const [inquiryHint, setInquiryHint] = useState(false)
   const inquiryHintSent = useRef(false)
-  useEffect(() => {
-    if (tab === "inquiry" && !inquiryHintSent.current) setInquiryHint(true)
-  }, [tab])
   const wide = useMediaQuery(WIDE_QUERY)
-  /** 狭い画面でチャットを開いているか（広い画面ではいつも開いている） */
-  const [chatShown, setChatShown] = useState(false)
-  const chatOpen = wide || chatShown
-  const tabsRef = useRef<HTMLDivElement>(null)
+  /**
+   * 職員が作業の画面を開いた（true）・閉じた（false）か。決めるまで（null）は、表があれば広い画面では開き、狭い画面では閉じておく
+   * （狭い画面で開くとチャットを覆うので、チャットの「表を開く」で開く）
+   */
+  const [workChoice, setWorkChoice] = useState<boolean | null>(null)
   /** 案件の元（ファイルとシートの計画）の世代。待っている間に元が変わった計画・回答の結果は捨てる */
   const caseGeneration = useRef(0)
   /** 変換の世代。元・計画が変わったら上げ、待っている間の古い変換の結果を捨てる */
@@ -398,8 +389,8 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
   }
 
   /**
-   * 届いたファイルを付ける（表の欄・チャット欄に落としたファイル、付けるボタン）。種類は決まった印で見分ける（lib/cases/upload-kind.ts）:
-   * この画面で落とした最後の Excel は差分を変更案に、記入用Excel は回答として取り込み、ほかの表は届いたファイルとして保存する。
+   * 届いたファイルを付ける（チャットの📎でアップロードしたファイル、画面にドラッグしたファイル）。種類は決まった印で見分ける（lib/cases/upload-kind.ts）:
+   * この画面でダウンロードした最後の Excel は差分を変更案に、記入用Excel は回答として取り込み、ほかの表は届いたファイルとして保存する。
    * 変換の元がまだ無ければ最初の表を変換の元にし、もう元があれば変換の元にするか聞く。照合用のシートの無い最後の Excel の形の表は、
    * 変換の元があれば直した Excel と取り違えないよう、表に戻せないと伝えて聞く（前の編集用の Excel も同じ。lib/cases/upload-kind.ts の warnsUnlinked）
    */
@@ -621,7 +612,6 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
   /** 待っている間・続けて処理するファイルの間で読む、最新の表と元（古い描画の値で取り込まない） */
   const live = useRef({ view, shown, source, addresses, plan, hasTable })
   live.current = { view, shown, source, addresses, plan, hasTable }
-  const openProposals = work.proposals.filter((p) => p.state === "open" && p.origin.kind === "chat").length
   /** 欄に出す変更案: 開いているものと、承認を取り消せるもの（決め終わっても、取り消すまで欄に残す） */
   const shownInPanel = (p: Proposal) => p.state === "open" || work.undo.some((e) => e.proposalId === p.id && canUndo(e))
   const excelProposals = work.proposals.filter((p) => p.origin.kind === "excel" && shownInPanel(p))
@@ -817,12 +807,12 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
   }
 
   /**
-   * 直した最後の Excel を取り込む: 照合用のシートの落としたときの値との差分を変更案にしてサーバーに置き（チャットの変更案と同じく、開き直しても残る）、
+   * 直した最後の Excel を取り込む: 照合用のシートのダウンロードしたときの値との差分を変更案にしてサーバーに置き（チャットの変更案と同じく、開き直しても残る）、
    * 上げたファイルを案件に残す。差分は取り込み始めたときの表と比べる。待っている間に変換の元が変わったら捨てる
    */
   async function readFinalFile(f: File, sheets: readonly SheetGrid[]): Promise<{ report: FinalReport } | { error: string } | undefined> {
     const against = live.current.hasTable ? live.current.view : null
-    if (!against) return { error: "表がまだありません。変換が済んでから上げてください" }
+    if (!against) return { error: "表がまだありません。変換が済んでからアップロードしてください" }
     const generation = caseGeneration.current
     const failures = new Set<string>()
     const cache: AiCache = new Map(workRef.current.aiCache)
@@ -858,7 +848,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
     return { report }
   }
 
-  /** チャット欄・表の欄に落とした直した Excel。結果はチャット欄の報告の下と通知に出す */
+  /** チャット欄・画面にアップロードした直した Excel。結果はチャット欄の報告の下と通知に出す */
   async function importFinalFile(f: File, sheets: readonly SheetGrid[]) {
     let r: { report: FinalReport } | { error: string } | undefined
     try {
@@ -916,7 +906,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
     return { aiFailures: [...failures], forAi: readable && saved ? saved : null }
   }
 
-  /** 記入された Excel を取り込む（問い合わせの欄・チャット欄・表の欄）。結果は報告と通知に出す */
+  /** 記入された Excel を取り込む（チャットの📎・画面にドラッグしたファイル）。結果は報告と「問い合わせ」のタブと通知に出す */
   async function importAnswers(f: File) {
     const fail = (text: string) => {
       toast.error(text)
@@ -946,7 +936,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
     undoState,
   }
 
-  /** CSV（控え）を落とす。CP932 の検査を通した値をそのまま書き、案件のファイルに残す */
+  /** CSV（控え）をダウンロードする。CP932 の検査を通した値をそのまま書き、案件のファイルに残す */
   function downloadCsv() {
     if (!output) return
     const bytes = toCsvBytes(SPEC, output)
@@ -955,7 +945,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
     void keepFile("csv", new Blob([bytes as BlobPart], { type: "text/csv" }), name)
   }
 
-  /** 最後の Excel を落とす（lib/excel/final-sheet.ts。値は CSV と同じ。直して上げ直せる照合用の隠しシート付き）。案件のファイルに残す */
+  /** 最後の Excel をダウンロードする（lib/excel/final-sheet.ts。値は CSV と同じ。直して上げ直せる照合用の隠しシート付き）。案件のファイルに残す */
   async function downloadFinalExcel() {
     if (!view || !output) return
     try {
@@ -970,11 +960,25 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
     }
   }
 
-  /** 表の下の欄を開いて見せる */
-  function showTab(t: Tab) {
+  /** 作業の画面を開いているか（表ができてから） */
+  const workShown = hasTable && (workChoice ?? wide)
+  useEffect(() => {
+    if (workShown && tab === "inquiry" && !inquiryHintSent.current) setInquiryHint(true)
+  }, [workShown, tab])
+
+  /** 作業の画面をそのタブで開く */
+  function showTab(t: WorkTab) {
     setTab(t)
-    if (!wide) setChatShown(false)
-    requestAnimationFrame(() => tabsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }))
+    setWorkChoice(true)
+  }
+
+  /**
+   * チャットから作業のタブを開く。押したとき（click）は開く。道具の結果が届いたとき（auto）は、広い画面で職員が閉じていなければ開き、
+   * 職員が閉じた・狭い画面ではタブだけ切り替える（勝手に開き直さない。返事の途中でチャットを覆わない。「表を開く」で開くとそのタブ）
+   */
+  function openTab(t: WorkTab, how: "auto" | "click") {
+    if (how === "click" || (wide && workChoice !== false)) showTab(t)
+    else setTab(t)
   }
 
   function onChatAction(a: ChatAction) {
@@ -1069,12 +1073,11 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
   )
 
   const chatPanel = chatEnabled ? (
-    <Suspense fallback={chatOpen && <aside className="fixed inset-y-0 right-0 z-40 w-[var(--aside-width)] border-l bg-background xl:top-14" />}>
+    <Suspense fallback={<div className="h-full" />}>
       <ChatPanel
         caseId={kase.id}
-        open={chatOpen}
-        closable={!wide}
         ready={chatReady}
+        empty={files.length === 0}
         request={chatRequest}
         proposals={work.proposals}
         changes={proposalChanges}
@@ -1085,6 +1088,8 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
         report={report}
         onFiles={(fs) => void attach(fs)}
         onAction={onChatAction}
+        onOpenTab={openTab}
+        work={hasTable ? { shown: workShown, open: () => setWorkChoice(true) } : null}
         plan={work.plan?.plan ?? null}
         carryover={
           previous && {
@@ -1107,7 +1112,6 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
         }}
         onCaseCost={setCostUsd}
         location={locationSearch}
-        onClose={() => setChatShown(false)}
         suggestions={[
           ...(leftInquiries > 0
             ? answerHints.map((h) => ({
@@ -1156,132 +1160,97 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
     </Suspense>
   ) : null
 
+  /**
+   * 画面のどこにドラッグしたファイルも、📎と同じくアップロードする（重ねて開いた作業の画面も同じ要素の中）。
+   * 印は、画面の外へ出た（relatedTarget が画面の中でない）・離した・ドラッグをやめた（窓の外を含む）ときに必ず消す
+   */
+  const [dragging, setDragging] = useState(false)
+  const hasFiles = (e: React.DragEvent) => [...e.dataTransfer.types].includes("Files")
+  useEffect(() => {
+    if (!dragging) return
+    const stop = () => setDragging(false)
+    const leaveWindow = (e: DragEvent) => {
+      if (!e.relatedTarget) stop()
+    }
+    window.addEventListener("drop", stop)
+    window.addEventListener("dragend", stop)
+    window.addEventListener("dragleave", leaveWindow)
+    return () => {
+      window.removeEventListener("drop", stop)
+      window.removeEventListener("dragend", stop)
+      window.removeEventListener("dragleave", leaveWindow)
+    }
+  }, [dragging])
   const dropFiles = {
+    onDragEnter: (e: React.DragEvent) => {
+      if (hasFiles(e)) setDragging(true)
+    },
+    onDragLeave: (e: React.DragEvent) => {
+      if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragging(false)
+    },
     onDragOver: (e: React.DragEvent) => {
-      if ([...e.dataTransfer.types].includes("Files")) e.preventDefault()
+      if (hasFiles(e)) e.preventDefault()
     },
     onDrop: (e: React.DragEvent) => {
       e.preventDefault()
+      setDragging(false)
       if (e.dataTransfer.files.length) void attach([...e.dataTransfer.files])
     },
   }
 
-  return (
-    <AppShell aside={chatPanel} asideOpen={chatOpen && !!chatPanel} wide>
-      <div {...dropFiles}>
-        <nav className="mb-2 flex gap-1 text-sm text-muted-foreground">
-          <Link to="/" className="hover:underline">
-            顧客
-          </Link>
-          <span>/</span>
-          <Link to="/customers/$customerId" params={{ customerId: customer.id }} className="hover:underline">
-            {customer.name}
-          </Link>
-        </nav>
-        <PageHeader
-          title={`${customer.name} ${kase.fiscalYear}年度`}
-          actions={
-            <div className="flex flex-wrap items-center gap-2">
-              <SaveIndicator status={saveStatus} />
-              <Segmented label="案件の状態" value={status} options={CASE_STATUSES.map((s) => ({ value: s, label: CASE_STATUS_LABELS[s] }))} onChange={(s) => void changeStatus(s)} testId="case-status" />
-              {hasTable && output && (
-                <Button onClick={() => setExportOpen(true)} disabled={reconverting} data-testid="export-button">
-                  {errorCells ? <TriangleAlert className="text-amber-200" /> : <FileSpreadsheet />}
-                  書き出す（{output.length}件）
-                </Button>
-              )}
-              {!wide && chatPanel && (
-                <Button variant="outline" onClick={() => setChatShown(true)} data-testid="chat-open">
-                  <MessageSquare /> チャット
-                  {openProposals > 0 && <span className="rounded-full bg-violet-600 px-1.5 text-xs text-white">{openProposals}</span>}
-                  {questions.some((q) => q.answered === null) && (
-                    <span className="rounded-full bg-amber-500 px-1.5 text-xs text-white" title="変換の報告に、答えてほしいことがあります" data-testid="chat-open-question">
-                      ?
-                    </span>
-                  )}
-                </Button>
-              )}
-              <CaseMenu usd={costUsd} fx={fx} onDelete={() => setDeleteOpen(true)} />
-            </div>
-          }
-        />
-        <DeleteDialog
-          open={deleteOpen}
-          onOpenChange={setDeleteOpen}
-          target={{ caseId: kase.id }}
-          title={`${kase.fiscalYear}年度の案件`}
-          customerName={customer.name}
-          onDeleted={() => router.navigate({ to: "/customers/$customerId", params: { customerId: customer.id } })}
-        />
+  /** チャットに職員の答えを待つもの（承認待ちの変更案・聞き返し）。狭い画面で作業の画面を重ねて開いている間、閉じるボタンの横に出す */
+  const chatPending =
+    work.proposals.filter((p) => p.state === "open" && (p.origin.kind === "chat" || p.origin.kind === "excel")).length + questions.filter((q) => q.answered === null).length
 
-        {/* ファイルはこの画面とチャット欄に落とすか、元ファイルの札の行の「ファイル」・チャットの添付で付ける。表がまだ無ければ下の欄を押しても選べる */}
-        <input
-          ref={fileInput}
-          id="case-file-input"
-          type="file"
-          multiple
-          accept={ATTACH_ACCEPT}
-          className="sr-only"
-          data-testid="file-input"
-          onChange={(e) => {
-            if (e.target.files?.length) void attach([...e.target.files])
-            e.target.value = ""
-          }}
-        />
-        {files.length > 0 && (
-          <div className="-mt-3 mb-3 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs" data-testid="case-toolbar">
-            {/* 表ができたあとにファイルを足す・差し替える入口（落とす欄は表の前だけ） */}
-            <Button variant="outline" size="xs" onClick={() => fileInput.current?.click()} data-testid="attach-button">
-              <FileUp /> ファイル
+  const tabBadge = (t: WorkTab) => (t === "inquiry" ? inquiries.length : t === "location" ? locationProposals.filter((p) => p.state === "open").length : 0)
+
+  /** 作業の画面（表と、7割・問い合わせ・工事場所・一括置換のタブ）。広い画面ではチャットの右、狭い画面では上に重ねて開く */
+  const workPanel =
+    hasTable && output && shown ? (
+      <section className="flex h-full min-h-0 flex-col bg-background" aria-label="作業の画面" data-testid="work-panel">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5 border-b px-4 py-2 text-xs" data-testid="case-toolbar">
+          <FileChips files={files} sourceFileId={work.sourceFileId} loading={!!loadingSource || planning} onChoose={chooseSource} />
+          {source && grid && plan && source.sheets.length > 1 && (
+            <SheetChooser sheets={source.sheets} primary={grid} plan={plan} onPrimary={(name) => void startPlanning(source, name)} onChange={changePlan} />
+          )}
+          <div className="ml-auto flex items-center gap-1">
+            {!wide && chatPending > 0 && (
+              <Button size="sm" variant="outline" onClick={() => setWorkChoice(false)} title="チャットに答えを待つものがあります（閉じてチャットへ）" data-testid="work-chat-pending">
+                <MessageSquare /> チャット
+                <span className="num rounded-full bg-violet-600 px-1.5 text-xs text-white">{chatPending}</span>
+              </Button>
+            )}
+            <Button size="sm" onClick={() => setExportOpen(true)} disabled={reconverting} data-testid="export-button">
+              {errorCells ? <TriangleAlert className="text-amber-200" /> : <FileSpreadsheet />}
+              書き出す（{output.length}件）
             </Button>
-            <FileChips files={files} sourceFileId={work.sourceFileId} loading={!!loadingSource || planning} onChoose={chooseSource} />
-            {source && grid && plan && source.sheets.length > 1 && (
-              <SheetChooser sheets={source.sheets} primary={grid} plan={plan} onPrimary={(name) => void startPlanning(source, name)} onChange={changePlan} />
-            )}
+            <Button size="icon-sm" variant="ghost" onClick={() => setWorkChoice(false)} aria-label="作業の画面を閉じる" title="作業の画面を閉じる（チャットの「表を開く」で開き直せます）" data-testid="work-close">
+              {wide ? <PanelRightClose /> : <X />}
+            </Button>
           </div>
-        )}
-
-        {/* チャットが使えない（APIキーが無い）ときは、変換の報告を表の上に出す */}
-        {!chatPanel && <div className="mb-3 rounded-xl border bg-card p-3">{report}</div>}
-
-        {!hasTable && (
-          <label
-            htmlFor="case-file-input"
-            className="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-2xl border border-dashed bg-muted/30 px-4 py-16 text-center text-sm transition-colors hover:bg-muted/60"
-            data-testid="drop-zone"
-          >
-            {phase.kind === "noAi" ? (
-              <span className="text-red-800" data-testid="no-ai">AI が使えないため変換できません（APIキーが未設定）。管理者に連絡してください。</span>
-            ) : phase.kind === "empty" || phase.kind === "noSheet" ? (
-              <>
-                <FileUp className="size-7 text-muted-foreground" />
-                <span className="text-base font-medium">顧客の Excel を落とす</span>
-                <span className="text-xs text-muted-foreground">.xlsx・.xls・.csv・.pdf</span>
-                {noSheetSource && (
-                  <span className="text-xs text-muted-foreground" data-testid="no-sheet-source">
-                    PDF だけなら、チャットで「PDF から表を作って」と頼んでください。
-                  </span>
-                )}
-              </>
-            ) : (
-              <span className="flex items-center gap-2 text-muted-foreground">
-                <Loader2 className="size-4 animate-spin" /> {phase.kind === "reading" ? "ファイルを読んでいます…" : phase.kind === "planning" ? "AI が列の対応を考えています…" : phase.kind === "failed" ? "止まっています（報告にやり直しがあります）" : "変換しています…"}
-              </span>
-            )}
-          </label>
-        )}
-
-        {hasTable && output && shown && (
-          <section className="relative space-y-3" data-testid="table-section">
+        </div>
+        <Tabs value={tab} onValueChange={(v) => setTab(v as WorkTab)} className="min-h-0 flex-1 gap-0">
+          <TabsList variant="line" className="h-10 w-full shrink-0 justify-start overflow-x-auto rounded-none border-b px-3" aria-label="作業">
+            {WORK_TABS.map((t) => {
+              const badge = tabBadge(t.id)
+              return (
+                <TabsTrigger key={t.id} value={t.id} className="flex-none px-2.5" data-testid={`tab-${t.id}`}>
+                  {t.label}
+                  {badge > 0 && <span className="num rounded-full bg-muted px-1.5 text-xs">{badge}</span>}
+                </TabsTrigger>
+              )
+            })}
+          </TabsList>
+          <TabsContent value="table" keepMounted className="relative flex min-h-0 flex-col p-4" data-testid="table-section">
             {reconverting && (
-              <div className="absolute inset-0 z-30 flex items-start justify-center rounded-xl bg-background/60 pt-24 backdrop-blur-[1px]" data-testid="reconverting">
+              <div className="absolute inset-0 z-30 flex items-start justify-center bg-background/60 pt-24 backdrop-blur-[1px]" data-testid="reconverting">
                 <span className="flex items-center gap-2 rounded-full border bg-background px-4 py-2 text-sm shadow-sm">
                   <Loader2 className="size-4 animate-spin text-violet-600" /> 列の対応を変えたので変換し直しています…
                 </span>
               </div>
             )}
             {output.length === 0 && (
-              <p className="text-sm text-muted-foreground" data-testid="no-rows-note">
+              <p className="mb-3 text-sm text-muted-foreground" data-testid="no-rows-note">
                 載せる行がありません
               </p>
             )}
@@ -1297,76 +1266,154 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
               checks={rowChecks}
               counts={filterCounts!}
             />
+          </TabsContent>
+          <TabsContent value="selection" keepMounted className="min-h-0 overflow-auto p-4">
+            <SelectionPanel
+              rounding={rounding}
+              onRounding={(r) => set("rounding", r)}
+              tax={tax}
+              onTax={(t) => setWork((w) => setTax(w, t, "staff"))}
+              rule7Tax={rule7Tax}
+              onRule7Tax={(t) => set("rule7Tax", t)}
+              selection={selectionMode}
+              onSelection={(m) => set("selection", m)}
+              manualCount={manual.size}
+              onClearManual={() => set("manual", new Map())}
+              roundingTotals={roundingTotals}
+            >
+              <GyoshuSummaryTable summary={summary} basis={basis} rule7Tax={rule7Tax} onBasisChange={(code, side, v) => update("basis", (prev) => ({ ...prev, [code]: { ...prev[code], [side]: v } }))} />
+            </SelectionPanel>
+          </TabsContent>
+          <TabsContent value="inquiry" keepMounted className="min-h-0 overflow-auto px-4 pt-2 pb-4">
+            <InquiryPanel
+              inquiries={inquiries}
+              outputRows={output}
+              allRows={shown}
+              customer={customer.name}
+              dismissed={dismissed}
+              answers={answers}
+              text={work.inquiryText}
+              onText={(next) => update("inquiryText", next)}
+              keepFile={(name, bytes, type) => void keepFile("inquiry_sheet", new Blob([bytes as BlobPart], { type }), name)}
+              onToggle={(key, ask) =>
+                update("dismissed", (prev) => {
+                  const next = new Set(prev)
+                  if (ask) next.delete(key)
+                  else next.add(key)
+                  return next
+                })
+              }
+            />
+          </TabsContent>
+          <TabsContent value="location" keepMounted className="min-h-0 overflow-auto p-4">
+            {view && <LocationPanel search={locationSearch} view={view} proposals={locationProposals} changes={proposalChanges} actions={proposalActions} busy={savingRule} fx={fx} />}
+          </TabsContent>
+          <TabsContent value="replace" keepMounted className="min-h-0 overflow-auto p-4" data-testid="replace-details">
+            <ReplacePanel spec={SPEC} rows={rows!} letters={letters} replacements={replacements} onChange={replace} />
+          </TabsContent>
+        </Tabs>
+      </section>
+    ) : null
+  /** 作業の画面をチャットの横に並べるか（狭い画面では重ねて開く） */
+  const workInline = wide && workShown && !!workPanel
+  /** 狭い画面で作業の画面を重ねて開いているか（開いている間はうしろのチャットと見出しを触れなくする） */
+  const workOverlay = !wide && workShown && !!workPanel
+  /** 重ねて開いたときは作業の画面へ、閉じたら開く前の場所へフォーカスを戻す */
+  const workFrame = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!workOverlay) return
+    const before = document.activeElement as HTMLElement | null
+    workFrame.current?.focus()
+    return () => before?.focus()
+  }, [workOverlay])
+  const noChatInput = useRef<HTMLInputElement>(null)
 
-            <div ref={tabsRef} className="scroll-mt-20 pt-4">
-              <div className="flex flex-wrap gap-1 border-b" role="tablist" aria-label="表のほかの作業">
-                {TABS.map((t) => {
-                  const badge = t.id === "inquiry" ? inquiries.length : t.id === "location" ? locationProposals.filter((p) => p.state === "open").length : 0
-                  return (
-                    <button
-                      key={t.id}
-                      type="button"
-                      role="tab"
-                      aria-selected={tab === t.id}
-                      className={cn("-mb-px border-b-2 px-3 py-2 text-sm", tab === t.id ? "border-violet-600 font-medium text-foreground" : "border-transparent text-muted-foreground hover:text-foreground")}
-                      onClick={() => setTab(t.id)}
-                      data-testid={`tab-${t.id}`}
-                    >
-                      {t.label}
-                      {badge > 0 && <span className="num ml-1.5 rounded-full bg-muted px-1.5 text-xs">{badge}</span>}
-                    </button>
-                  )
-                })}
-              </div>
-              <div className="pt-4" hidden={tab !== "selection"} role="tabpanel">
-                <SelectionPanel
-                  rounding={rounding}
-                  onRounding={(r) => set("rounding", r)}
-                  tax={tax}
-                  onTax={(t) => setWork((w) => setTax(w, t, "staff"))}
-                  rule7Tax={rule7Tax}
-                  onRule7Tax={(t) => set("rule7Tax", t)}
-                  selection={selectionMode}
-                  onSelection={(m) => set("selection", m)}
-                  manualCount={manual.size}
-                  onClearManual={() => set("manual", new Map())}
-                  roundingTotals={roundingTotals}
-                >
-                  <GyoshuSummaryTable summary={summary} basis={basis} rule7Tax={rule7Tax} onBasisChange={(code, side, v) => update("basis", (prev) => ({ ...prev, [code]: { ...prev[code], [side]: v } }))} />
-                </SelectionPanel>
-              </div>
-              <div className="pt-2" hidden={tab !== "inquiry"} role="tabpanel">
-                <InquiryPanel
-                  inquiries={inquiries}
-                  outputRows={output}
-                  allRows={shown}
-                  customer={customer.name}
-                  dismissed={dismissed}
-                  answers={answers}
-                  text={work.inquiryText}
-                  onText={(next) => update("inquiryText", next)}
-                  keepFile={(name, bytes, type) => void keepFile("inquiry_sheet", new Blob([bytes as BlobPart], { type }), name)}
-                  onToggle={(key, ask) =>
-                    update("dismissed", (prev) => {
-                      const next = new Set(prev)
-                      if (ask) next.delete(key)
-                      else next.add(key)
-                      return next
-                    })
-                  }
-                  importAnswers={importAnswers}
+  return (
+    <AppShell fill>
+      <div className="relative flex min-h-0 flex-1 flex-col" {...dropFiles}>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b px-4 py-2 sm:px-6" inert={workOverlay}>
+          <div className="min-w-0">
+            <nav className="flex gap-1 text-xs text-muted-foreground">
+              <Link to="/" className="hover:underline">
+                顧客
+              </Link>
+              <span>/</span>
+              <Link to="/customers/$customerId" params={{ customerId: customer.id }} className="truncate hover:underline">
+                {customer.name}
+              </Link>
+            </nav>
+            <h1 className="truncate text-lg font-semibold tracking-tight">{`${customer.name} ${kase.fiscalYear}年度`}</h1>
+          </div>
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            <SaveIndicator status={saveStatus} />
+            <Segmented label="案件の状態" value={status} options={CASE_STATUSES.map((s) => ({ value: s, label: CASE_STATUS_LABELS[s] }))} onChange={(s) => void changeStatus(s)} testId="case-status" />
+            <CaseMenu usd={costUsd} fx={fx} onDelete={() => setDeleteOpen(true)} />
+          </div>
+        </div>
+
+        <div className="flex min-h-0 flex-1">
+          <div className={cn("min-h-0 min-w-0", workInline ? "w-[400px] shrink-0 border-r 2xl:w-[440px]" : "mx-auto w-full max-w-3xl xl:border-x")} inert={workOverlay} data-testid="chat-column">
+            {chatPanel ?? (
+              // チャットが使えない（APIキーが無い）ときは、報告と📎と同じアップロードの入口をチャットの代わりに出す
+              <div className="grid h-full content-start gap-3 overflow-auto p-4">
+                {report}
+                <Button size="sm" className="w-fit" onClick={() => noChatInput.current?.click()} data-testid="chat-attach">
+                  <Paperclip /> アップロード
+                </Button>
+                <input
+                  ref={noChatInput}
+                  type="file"
+                  multiple
+                  accept={ATTACH_ACCEPT}
+                  className="sr-only"
+                  data-testid="chat-file-input"
+                  onChange={(e) => {
+                    if (e.target.files?.length) void attach([...e.target.files])
+                    e.target.value = ""
+                  }}
                 />
               </div>
-              <div className="pt-4" hidden={tab !== "location"} role="tabpanel">
-                {view && <LocationPanel search={locationSearch} view={view} proposals={locationProposals} changes={proposalChanges} actions={proposalActions} busy={savingRule} fx={fx} />}
-              </div>
-              <div className="pt-4" hidden={tab !== "replace"} role="tabpanel" data-testid="replace-details">
-                <ReplacePanel spec={SPEC} rows={rows!} letters={letters} replacements={replacements} onChange={replace} />
-              </div>
+            )}
+          </div>
+          {/*
+            作業の画面は表がある間ずっと置いたまま、閉じても隠すだけにする（表の検索・並べ替え・表示する列・工事場所の調査・置換の欄を消さない）。
+            広い画面ではチャットの右、狭い画面では画面の上に重ねる。幅が変わっても同じ要素のまま
+          */}
+          {workPanel && (
+            <div
+              ref={workFrame}
+              hidden={!workShown}
+              tabIndex={-1}
+              className={cn("min-h-0 min-w-0 outline-none", wide ? "flex-1" : "fixed inset-0 z-50 bg-background shadow-xl")}
+              {...(wide ? {} : { role: "dialog", "aria-modal": true, "aria-label": "作業の画面" })}
+              onKeyDown={(e) => {
+                // 重ねて開いたときの Escape で閉じる。中の欄が済ませた Escape（セルの手直しをやめるなど。preventDefault の印）と、
+                // 画面の外に開いたメニューの Escape は見送る
+                if (wide || e.key !== "Escape" || e.defaultPrevented || !e.currentTarget.contains(e.target as Node)) return
+                setWorkChoice(false)
+              }}
+              data-testid="work-frame"
+            >
+              {workPanel}
             </div>
-          </section>
+          )}
+        </div>
+
+        {dragging && (
+          <div className="pointer-events-none absolute inset-2 z-40 flex items-center justify-center rounded-2xl border-2 border-dashed border-violet-400 bg-violet-50/70 text-sm font-medium text-violet-800 dark:bg-violet-950/60 dark:text-violet-200" data-testid="drop-overlay">
+            <FileUp className="mr-2 size-5" /> 離すとアップロードします
+          </div>
         )}
       </div>
+
+      <DeleteDialog
+        open={deleteOpen}
+        onOpenChange={setDeleteOpen}
+        target={{ caseId: kase.id }}
+        title={`${kase.fiscalYear}年度の案件`}
+        customerName={customer.name}
+        onDeleted={() => router.navigate({ to: "/customers/$customerId", params: { customerId: customer.id } })}
+      />
 
       {output && (
         <ExportDialog

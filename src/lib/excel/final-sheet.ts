@@ -11,13 +11,13 @@ import { KOJI_KEIREKI, type KojiFieldId } from "../spec/koji-keireki"
  * 値は CSV に出す値と同じ（匿名化のあと）。
  *
  * 直して上げ直すと表に戻せるよう、照合用の隠しシートを足す（列は足さない。「CSV で保存」は開いているシートだけを書き、隠しシートは
- * 開いているシートにならないので CSV に入らない）。隠しシートには、落とした時点の識別（案件・変換の元）・行ごとの key と落としたときの14列の値・
+ * 開いているシートにならないので CSV に入らない）。隠しシートには、ダウンロードした時点の識別（案件・変換の元）・行ごとの key とダウンロードしたときの14列の値・
  * 記号（Ａ・Ｂ…）がどの人だったかの照合用の値を持つ。個人名は書かない（記号の人は、サーバーが案件ごとに決める鍵の HMAC で見分ける。鍵は Excel に
  * 書かないので、Excel だけからは名前の辞書で当てられない）
  */
 
 export const FINAL_SHEET_NAME = "工事経歴"
-/** 照合用の隠しシート。名前と1行目の印で、この画面で落とした最後の Excel だと見分ける */
+/** 照合用の隠しシート。名前と1行目の印で、この画面でダウンロードした最後の Excel だと見分ける */
 export const CHECK_SHEET_NAME = "照合用（最後の Excel）"
 export const CHECK_MARK = "aoike-final-check"
 export const CHECK_VERSION = 1
@@ -30,7 +30,7 @@ const NUMBER_RE = /^(0|[1-9]\d{0,14})$/
 
 export type FinalCell = string | number | null
 
-/** 落とした時点の識別。上げ直したとき、別の案件・変換の元を変えたあとの Excel を取り違えない */
+/** ダウンロードした時点の識別。上げ直したとき、別の案件・変換の元を変えたあとの Excel を取り違えない */
 export const checkMetaSchema = z.object({
   caseId: z.string().min(1).max(64),
   sourceFileId: z.string().max(64).nullable(),
@@ -40,7 +40,7 @@ export const checkMetaSchema = z.object({
 })
 export type CheckMeta = z.infer<typeof checkMetaSchema>
 
-/** 照合用の行。marked は落としたときの値で、記号の人を「〔Ａ〕」の形にしたもの（CSV の値は記号を外したもの） */
+/** 照合用の行。marked はダウンロードしたときの値で、記号の人を「〔Ａ〕」の形にしたもの（CSV の値は記号を外したもの） */
 export type CheckRow = { key: string; marked: Record<KojiFieldId, string> }
 
 export type FinalCheck = {
@@ -79,7 +79,7 @@ export const personHash = (key: string, name: string) => hmac(key, `person\n${pe
 /** 鍵の印（案件の id の HMAC の先頭8バイト）。上げ直したとき、同じ鍵で書いた Excel かを確かめる */
 export const keyMark = (key: string, caseId: string) => hmac(key, `case\n${caseId}`, 8)
 
-/** 落とした値の「〔Ａ〕」の形（記号の人が無い値はそのまま） */
+/** ダウンロードした値の「〔Ａ〕」の形（記号の人が無い値はそのまま） */
 const markedOf = (cell: RowResult<KojiFieldId>["cells"][KojiFieldId], letters: PersonLetters) => (cell.stored ? showPersons(cell.stored, letters, true) : cell.value)
 
 /** 案件の今の表から最後の Excel を作る（値は CSV と同じ。照合用の隠しシートの中身も）。excelKey は案件の照合用の鍵 */
@@ -110,12 +110,12 @@ export function checkSheetRows(check: FinalCheck): string[][] {
 
 const personRowSchema = z.object({ letter: z.string().regex(/^[Ａ-Ｚ][０-９]*$/), hash: z.string().regex(/^[0-9a-f]{24}$/) })
 
-/** 照合用の隠しシートを読む。この画面で落とした最後の Excel でなければ null、壊れていれば error */
+/** 照合用の隠しシートを読む。この画面でダウンロードした最後の Excel でなければ null、壊れていれば error */
 export function readCheckSheet(rows: readonly (readonly string[])[]): FinalCheck | { error: string } | null {
   if ((rows[0]?.[0] ?? "").trim() !== CHECK_MARK) return null
   const version = Number((rows[0]?.[1] ?? "").trim())
   if (!Number.isInteger(version)) return { error: "照合用のシートが書き換えられていて読めません" }
-  if (version > CHECK_VERSION) return { error: "この画面より新しい形の Excel です。画面を読み込み直してから上げてください" }
+  if (version > CHECK_VERSION) return { error: "この画面より新しい形の Excel です。画面を読み込み直してからアップロードしてください" }
   if (version < CHECK_VERSION) return { error: "前の形の Excel なので表に戻せません。書き出し直してから直してください" }
   let meta: CheckMeta | undefined
   const persons: FinalCheck["persons"] = []

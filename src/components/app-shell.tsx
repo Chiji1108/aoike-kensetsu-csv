@@ -16,10 +16,9 @@ import { OFFICE_NAME } from "@/lib/constants"
 import { cn } from "@/lib/utils"
 
 /**
- * aside は画面の右に固定する横の欄（チャット）。開いている（asideOpen）間は、広い画面では本文を横の欄の幅だけ空ける（狭い画面では本文の上に重ねる）。
- * wide は本文の幅を画面いっぱいにする（案件の画面の表）
+ * fill は本文を見出しの下の画面いっぱい（幅も高さも）にし、本文の中でスクロールさせる（案件の画面のチャットと作業の画面）
  */
-export function AppShell({ children, aside, asideOpen = false, wide = false }: { children: React.ReactNode; aside?: React.ReactNode; asideOpen?: boolean; wide?: boolean }) {
+export function AppShell({ children, fill = false }: { children: React.ReactNode; fill?: boolean }) {
   const router = useRouter()
   const [pwOpen, setPwOpen] = useState(false)
 
@@ -30,7 +29,7 @@ export function AppShell({ children, aside, asideOpen = false, wide = false }: {
   }
 
   return (
-    <div className="min-h-dvh [--aside-width:400px] 2xl:[--aside-width:440px]">
+    <div className="min-h-dvh">
       <header className="no-print sticky top-0 z-30 border-b bg-background/85 backdrop-blur supports-[backdrop-filter]:bg-background/70">
         <div className="mx-auto flex h-14 max-w-7xl items-center gap-2 px-4 sm:gap-6 sm:px-6">
           <Link to="/" className="flex items-center gap-2.5">
@@ -67,10 +66,7 @@ export function AppShell({ children, aside, asideOpen = false, wide = false }: {
         </div>
       </header>
 
-      <div className={asideOpen ? "xl:pr-[var(--aside-width)]" : undefined}>
-        <main className={cn("mx-auto px-4 pt-6 pb-16 sm:px-6 sm:pt-8", wide ? "max-w-none" : "max-w-7xl")}>{children}</main>
-      </div>
-      {aside}
+      <main className={cn(fill ? "flex h-[calc(100dvh-3.5rem)] min-h-0 flex-col" : "mx-auto max-w-7xl px-4 pt-6 pb-16 sm:px-6 sm:pt-8")}>{children}</main>
 
       <ChangePasswordDialog open={pwOpen} onOpenChange={setPwOpen} />
     </div>

@@ -2,11 +2,12 @@ import { useEffect, useRef, useState } from "react"
 import { useChat } from "@ai-sdk/react"
 import { DefaultChatTransport, validateUIMessages } from "ai"
 import { z } from "zod"
-import { Brain, Code2, FileSpreadsheet, History, Loader2, MessageSquare, MessageSquareText, Paperclip, Send, Square, Table2, Trash2, X } from "lucide-react"
+import { Brain, Code2, FileSpreadsheet, History, Loader2, MessageSquare, MessageSquareText, PanelRightOpen, Paperclip, Send, Square, Table2, Trash2 } from "lucide-react"
 import { toast } from "sonner"
 import { Markdown } from "@/components/chat/markdown"
 import { ProposalCard, type ProposalActions } from "@/components/chat/proposal-card"
 import { LocationSearchStatus, type LocationSearch } from "@/components/convert/location-panel"
+import { TOOL_TABS, workTabLabel, type WorkTab } from "@/components/cases/work-tabs"
 import { Bubble, BubbleContent } from "@/components/ui/bubble"
 import { Button } from "@/components/ui/button"
 import { CodeBlock, CodeBlockContent } from "@/components/ui/code-block"
@@ -22,7 +23,6 @@ import type { ChatChange, Proposal } from "@/lib/chat/proposals"
 import { Cost } from "@/components/cost"
 import type { UsdJpy } from "@/lib/fx"
 import { errorMessage } from "@/lib/errors"
-import { cn } from "@/lib/utils"
 import { ATTACH_ACCEPT } from "@/lib/cases/types"
 import { endChatFn, stopChatFn } from "@/server/chat-fns"
 
@@ -70,10 +70,10 @@ const TOOL_LABELS: Record<string, string> = {
 
 export type ChatPanelProps = {
   caseId: string
-  /** 見せているか（閉じても消さずに隠す。進めている指示と会話の状態を残す） */
-  open: boolean
   /** 変換が済んで送れるか */
   ready: boolean
+  /** 案件にまだファイルが無い（入力欄の📎を「アップロード」と書いて目立たせる。ファイルのアップロードの入口は📎だけ） */
+  empty: boolean
   /** 送る直前に今の表と文脈を作る（送るまでの手直しも入れる。大きいので送るときだけ呼ぶ） */
   request: () => Omit<ChatRequest, "id" | "text"> | null
   proposals: readonly Proposal[]
@@ -91,19 +91,23 @@ export type ChatPanelProps = {
   carryover: { fiscalYear: number; ready: boolean; names: () => string[]; headers: () => string[] } | null
   onProposal: (p: { proposal: Proposal; changes: ChatChange[] }) => void
   onCaseCost: (usd: number) => void
-  onClose: () => void
   /** 工事場所の一括調査（返事の「調べ始める」は案件の画面と同じものを動かす） */
   location: LocationSearch
   /** 会話の最初に出す変換の報告（案件の作業から作る。保存しない） */
   report: React.ReactNode
-  /** チャット欄に落とした・付けたファイル（種類は案件の画面が見分ける） */
+  /** 📎でアップロードしたファイル（種類は案件の画面が見分ける。画面にドラッグしたファイルも案件の画面が受け取る） */
   onFiles: (files: File[]) => void
   /** 返事のボタン（書き出す前の確認・問い合わせ） */
   onAction: (action: ChatAction) => void
+  /**
+   * 作業の画面のタブを開く。道具の結果が届いたとき（auto。保存した会話を読んだときは開かない）と、
+   * 道具の行の「…を開く」を押したとき（click）
+   */
+  onOpenTab: (tab: WorkTab, how: "auto" | "click") => void
+  /** 作業の画面（表ができてから）。閉じているときは見出しに「表を開く」を出す */
+  work: { shown: boolean; open: () => void } | null
   /** 今の列の対応（列の対応の変更案を「今 → 案」で出す） */
   plan: MappingPlan<KojiFieldId> | null
-  /** 狭い画面で、閉じるボタンを出すか（広い画面ではチャットは閉じない） */
-  closable: boolean
   /**
    * AI に頼むとよいこと（返ってきた記入用Excelの、決まった欄で読めなかった記入〔ファイルごと。fileName はそのファイル〕と、案件を完了にしたときの振り返り）。
    * 押すと prompt を送り、送れたら onSuggestionSent。会話の最後に出す
@@ -121,12 +125,11 @@ export type ChatPanelProps = {
 export type Suggestion = { id: string; fileName?: string; text: string; label: string; prompt: string; needsSaved?: true; once?: true }
 
 /**
- * 案件の画面の横のチャット。AI の変更は変更案として返事に付け、職員が承認したものだけを表に入れる。
+ * 案件の画面のチャット（画面の主。表などの作業の画面はチャットの右か、狭い画面では上に重ねて開く）。AI の変更は変更案として返事に付け、職員が承認したものだけを表に入れる。
  * 会話は案件に保存し（R2）、開き直すと続きから。「会話を終える」で AI に渡したファイルを消す
  */
 export function ChatPanel(props: ChatPanelProps) {
-  const { caseId, open, proposals, changes, view, actions, busy, fx, carryover, onClose, closable } = props
-  const [dragging, setDragging] = useState(false)
+  const { caseId, proposals, changes, view, actions, busy, fx, carryover, work } = props
   const fileInput = useRef<HTMLInputElement>(null)
   const [input, setInput] = useState("")
   const [ending, setEnding] = useState(false)
@@ -169,6 +172,7 @@ export function ChatPanel(props: ChatPanelProps) {
     void loadHistory(caseId).then(
       (h) => {
         if (!live) return
+        for (const m of h.messages) for (const p of m.parts) if ("toolCallId" in p) openedTools.current.add(p.toolCallId)
         setMessages(h.messages)
         setCarried(h.carried)
         setHistory("loaded")
@@ -181,6 +185,25 @@ export function ChatPanel(props: ChatPanelProps) {
     // 読むのは開いたときの1回だけ（あとは指示の返事で会話が進む）
   }, [caseId])
   const ready = props.ready && history === "loaded"
+
+  /**
+   * 道具の結果が届いたら、その道具の作業のタブを開く（同じ道具の呼び出しで二度開かない）。
+   * 保存した会話を読んだときは、読んだ道具の呼び出しを開いたことにしておく（開き直すたびにタブを動かさない）
+   */
+  const openedTools = useRef(new Set<string>())
+  useEffect(() => {
+    for (const m of messages.slice(-2)) {
+      if (m.role !== "assistant") continue
+      for (const p of m.parts) {
+        if (!p.type.startsWith("tool-")) continue
+        const call = p as { toolCallId?: string; state?: string }
+        const tab = TOOL_TABS[p.type.slice(5)]
+        if (!tab || !call.toolCallId || call.state !== "output-available" || openedTools.current.has(call.toolCallId)) continue
+        openedTools.current.add(call.toolCallId)
+        live.current.onOpenTab(tab, "auto")
+      }
+    }
+  }, [messages])
 
   /** 送る。送れなかった（返事の途中・会話の読み込み中、またはサーバーが断った）なら false */
   /** keepInput なら入力欄の書きかけを残す（決まった指示を送るボタン） */
@@ -251,40 +274,20 @@ export function ChatPanel(props: ChatPanelProps) {
   }
 
   return (
-    <aside
-      className={cn(
-        "fixed inset-y-0 right-0 z-40 flex w-[var(--aside-width)] max-w-full flex-col border-l bg-background shadow-xl xl:top-14 xl:z-20 xl:shadow-none",
-        !open && "hidden",
-        dragging && "ring-2 ring-violet-400 ring-inset",
-      )}
-      data-testid="chat-panel"
-      onDragOver={(e) => {
-        if (![...e.dataTransfer.types].includes("Files")) return
-        e.preventDefault()
-        setDragging(true)
-      }}
-      onDragLeave={(e) => {
-        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragging(false)
-      }}
-      onDrop={(e) => {
-        e.preventDefault()
-        setDragging(false)
-        if (e.dataTransfer.files.length) props.onFiles([...e.dataTransfer.files])
-      }}
-    >
-      <header className="flex items-center gap-2 border-b px-4 py-3">
+    <section className="flex h-full min-h-0 flex-col bg-background" aria-label="チャット" data-testid="chat-panel">
+      <header className="flex items-center gap-2 border-b px-4 py-2">
         <MessageSquare className="size-4 text-violet-600" />
         {/* 費用は返事ごとと、案件の合計（見出しの「…」）に出す */}
         <div className="min-w-0 flex-1 text-sm font-semibold">チャット</div>
+        {work && !work.shown && (
+          <Button size="sm" variant="outline" onClick={work.open} data-testid="work-open">
+            <PanelRightOpen /> 表を開く
+          </Button>
+        )}
         <Button size="sm" variant="ghost" onClick={end} disabled={working || ending} title="AI に渡したファイルを消し、次の指示から新しい会話にします" data-testid="chat-end">
           {ending ? <Loader2 className="animate-spin" /> : <Trash2 />}
           会話を終える
         </Button>
-        {closable && (
-          <Button size="icon-sm" variant="ghost" onClick={onClose} aria-label="チャットを閉じる">
-            <X />
-          </Button>
-        )}
       </header>
 
       <MessageScrollerProvider autoScroll>
@@ -333,6 +336,7 @@ export function ChatPanel(props: ChatPanelProps) {
                     fx={fx}
                     location={props.location}
                     onAction={props.onAction}
+                    onOpenTab={work ? (t) => props.onOpenTab(t, "click") : null}
                     plan={props.plan}
                   />
                 </MessageScrollerItem>
@@ -387,15 +391,22 @@ export function ChatPanel(props: ChatPanelProps) {
                 void send()
               }
             }}
-            placeholder={ready ? "例: 金額は税込の列で（⌘+Enter で送る）" : "ファイルを落とすと変換します"}
+            placeholder={ready ? "例: 金額は税込の列で（⌘+Enter で送る）" : props.empty ? "Excel をアップロードすると送れます" : "変換が済むと送れます"}
             disabled={!ready}
             className="min-h-16 text-sm"
             data-testid="chat-input"
           />
           <InputGroupAddon align="block-end" className="justify-between">
-            <InputGroupButton size="icon-xs" variant="ghost" onClick={() => fileInput.current?.click()} aria-label="ファイルを付ける" title="ファイルを付ける">
-              <Paperclip />
-            </InputGroupButton>
+            {/* ファイルのアップロードの入口はここだけ（画面のどこにドラッグしても同じ） */}
+            {props.empty ? (
+              <InputGroupButton size="sm" variant="default" onClick={() => fileInput.current?.click()} data-testid="chat-attach">
+                <Paperclip /> アップロード
+              </InputGroupButton>
+            ) : (
+              <InputGroupButton size="icon-xs" variant="ghost" onClick={() => fileInput.current?.click()} aria-label="ファイルをアップロード" title="ファイルをアップロード" data-testid="chat-attach">
+                <Paperclip />
+              </InputGroupButton>
+            )}
             <input
               ref={fileInput}
               type="file"
@@ -420,7 +431,7 @@ export function ChatPanel(props: ChatPanelProps) {
           </InputGroupAddon>
         </InputGroup>
       </form>
-    </aside>
+    </section>
   )
 }
 
@@ -435,11 +446,14 @@ function ChatMessageView({
   fx,
   location,
   onAction,
+  onOpenTab,
   plan,
 }: {
   message: ChatMessage
   location: LocationSearch
   onAction: (a: ChatAction) => void
+  /** 道具の行から作業の画面のタブを開く（表がまだ無ければ null） */
+  onOpenTab: ((tab: WorkTab) => void) | null
   plan: MappingPlan<KojiFieldId> | null
   streaming: boolean
   proposals: ReadonlyMap<string, Proposal>
@@ -505,6 +519,7 @@ function ChatMessageView({
                   </CodeBlock>
                 </Step>
               )
+            const tab = TOOL_TABS[name]
             return (
               <Trace key={i}>
                 <TraceLine>
@@ -512,6 +527,11 @@ function ChatMessageView({
                     <Table2 />
                   </TraceIcon>
                   <TraceTitle className="text-xs text-muted-foreground">{TOOL_LABELS[name] ?? name}</TraceTitle>
+                  {tab && onOpenTab && (
+                    <Button size="xs" variant="ghost" className="h-5 px-1.5 text-xs text-violet-700" onClick={() => onOpenTab(tab)} data-testid="chat-open-tab" data-tab={tab}>
+                      {workTabLabel(tab)}を開く
+                    </Button>
+                  )}
                 </TraceLine>
               </Trace>
             )
