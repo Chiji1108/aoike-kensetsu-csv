@@ -1,5 +1,5 @@
 import type { TableView } from "../cases/view"
-import { INCLUSION_LABELS, SELECTION_LABELS, TAX_LABELS } from "../convert/koji-selection"
+import { INCLUSION_LABELS, SELECTION_LABELS, TAX_LABELS, type Basis, type SelectionMode, type TaxMode } from "../convert/koji-selection"
 import { personKey, withNames, type PersonLetters } from "../convert/persons"
 import { KOJI_KEIREKI, type KojiFieldId } from "../spec/koji-keireki"
 import type { MappingPlan } from "../convert/plan"
@@ -24,6 +24,15 @@ export type ChangeLine = { where: string; what: string; from: string; to: string
 /** 顧客の回答から読んだ変更（record_answers）は、項目の名前に添えて分かるようにする（聞いていない項目の訂正は「顧客の訂正」） */
 const BY_NOTE: Partial<Record<Extract<ChatChange, { kind: "cell" }>["edit"]["by"], string>> = { customer: "（顧客の回答）", confirmed: "（顧客が確認）" }
 
+/** 7割の設定の変更（変更案の settings・チャットの set_selection の入力）を言葉にする。振り返りの材料も同じ言葉で出す */
+export function describeSettings(c: { tax?: TaxMode; selection?: SelectionMode; basis?: Basis }): string[] {
+  return [
+    c.tax && `Excel の金額: ${TAX_LABELS[c.tax]}`,
+    c.selection && `載せる工事: ${SELECTION_LABELS[c.selection]}`,
+    c.basis && `基準額: ${Object.entries(c.basis).map(([code, b]) => `業種${code} 合計${b?.total ?? "-"}・元請${b?.motouke ?? "-"}千円`).join("、")}`,
+  ].filter((x): x is string => !!x)
+}
+
 /** plan は今の計画（列の対応の変更案を「今 → 案」で出す） */
 export function describeChange(c: ChatChange, view: TableView, byKey: ReadonlyMap<string, TableView["shown"][number]>, plan?: MappingPlan<KojiFieldId> | null): ChangeLine {
   const rowName = (key: string) => {
@@ -43,14 +52,8 @@ export function describeChange(c: ChatChange, view: TableView, byKey: ReadonlyMa
       const now = view.inclusion.get(c.rowKey)
       return { where: rowName(c.rowKey), what: "CSV に載せる", from: now ? `${now.included ? "載せる" : "載せない"}${INCLUSION_LABELS[now.reason] ? `（${INCLUSION_LABELS[now.reason]}）` : ""}` : "", to: c.include ? "載せる（手動）" : "載せない（手動）" }
     }
-    case "settings": {
-      const parts = [
-        c.tax && `Excel の金額: ${TAX_LABELS[c.tax]}`,
-        c.selection && `載せる工事: ${SELECTION_LABELS[c.selection]}`,
-        c.basis && `基準額: ${Object.entries(c.basis).map(([code, b]) => `業種${code} 合計${b?.total ?? "-"}・元請${b?.motouke ?? "-"}千円`).join("、")}`,
-      ].filter(Boolean)
-      return { where: "案件", what: "7割の設定", from: "", to: parts.join(" / ") }
-    }
+    case "settings":
+      return { where: "案件", what: "7割の設定", from: "", to: describeSettings(c).join(" / ") }
     case "rule":
       return { where: c.scope === "global" ? "全体ルール" : "顧客ルール", what: c.source === "review" ? "項目を足す（振り返り）" : "項目を足す", from: "", to: c.text }
     case "plan":

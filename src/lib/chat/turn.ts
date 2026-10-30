@@ -15,7 +15,7 @@ import { basisSchema, fieldIdSchema, selectionSchema, taxSchema } from "../schem
 import { KOJI_ANONYMIZE, KOJI_KEIREKI, type KojiFieldId } from "../spec/koji-keireki"
 import { applyChanges, type ChatChange } from "./proposals"
 import { charCount, MAX_RULE_ITEM_LENGTH, RULE7_TAX_LABELS, ruleScopeSchema, type Rule7Tax, type RuleScope } from "./rules"
-import { MAX_REVIEW_NOTES, MAX_REVIEW_RULES, reviewGuard, reviewMaterial, type ReviewGuard, type ReviewTurn } from "./review"
+import { MAX_REVIEW_NOTES, MAX_REVIEW_RULES, reviewGuard, reviewMaterial, sameRuleText, UNKNOWN_RESULT, type ReviewGuard, type ReviewTurn } from "./review"
 import { CHAT_ACTIONS, type ChatAction } from "./messages"
 import { outcomeChanges } from "../location/changes"
 import { askReason, estimateUsd, MAX_SITES_PER_RUN, runSitesOf, siteOfRow, SOURCE_LABELS, type Outcome, type Site } from "../location/sites"
@@ -88,7 +88,7 @@ ${fileLines || "（なし）"}
   - 返ってきた記入用Excelの色付きの欄は画面がもう読んで表に入れている。読むのはその外（別の列・欄の外のメモ・別のシート）と、読めなかった記入だけ。
 - 職員が「顧客ルールに追加して」「全体ルールに追加して」と言ったら propose_rule で足す項目の案を出す（1つの決まりを1項目に。今のルールと同じ項目は出さない。保存は職員の承認後）。
 - 職員が案件を終えるときの振り返り（「振り返って顧客ルールの案を出して」）を頼んだら、get_review を直接呼んで今年の作業（職員の指示と承認の結果・聞き返しと答え・列の対応の変更・手直しと置換の例・7割の設定）を読み、propose_review で来年のための顧客ルールの案を出す。表は変えない。
-  - yearly（毎年の決まり）: 来年もこの顧客のデータに同じように当てはまるやり方だけ。職員が承認した指示・手直し・列の対応の変更・答えた聞き返しから決め、evidence に元にした指示の番号や手直しを書く。却下した・承認を取り消した・まだ決めていない変更案は決まりにしない。全体ルールと今の顧客ルールにすでにある決まりは出さない。
+  - yearly（毎年の決まり）: 来年もこの顧客のデータに同じように当てはまるやり方だけ。職員が承認した指示・手直し・列の対応の変更・答えた聞き返しから決め、evidence に元にした指示の番号や手直しを書く。却下した・承認を取り消した・まだ決めていない・状態不明の変更案は決まりにしない。全体ルールと今の顧客ルール、まだ決めていない前の振り返りの案（pendingReview）にすでにある決まりは出さない。
   - one_off（今年だけ）: 特定の工事・行だけの直し、顧客の回答で埋めた値、今年のファイルだけの事情など、来年は当てはまらないもの。ルールにはしない。
   - 決まりは来年のファイルでも読めるように書く: 列記号・行番号・シート名でなく見出しの名前や中身で書く（例「完成年月は引渡日の列」）。特定の工事名・注文者名を挙げず、決まりとして一般化する。個人名と表の記号（〔Ａ〕〔個人名〕）は書かない。1つの決まりを1項目（1〜2文）。
   - 返事では、足す案の数と、今年だけの事情（ルールにしないもの）を短く箇条書きで分けて伝える。
@@ -165,10 +165,16 @@ export type TurnState = {
 }
 
 /**
- * 振り返りに使うもの。turns はこの案件の会話の指示（サーバーは画面の会話と、画面が送った変更案の状態から作る。無ければ使えない理由）、
- * names は表の人のほかに分かっている個人名（サーバーは保存した作業と AI の結果から。去年のコードと同じ集め方）
+ * 振り返りに使うもの。turns はこの案件の会話の指示（サーバーは画面の会話と、保存した作業の変更案の状態・取り消しの記録から作る。作れなければ理由）、
+ * names は表の人のほかに分かっている個人名（サーバーは保存した作業と AI の結果から。去年のコードと同じ集め方。保存が無ければ空、読めなければ投げる）、
+ * taken は重ねて案にしない項目（今の顧客ルールと、まだ決めていない振り返りの案）
  */
-export type ReviewDeps = { turns: () => readonly ReviewTurn[] | string; names: () => Promise<Iterable<string>>; rounding: Rounding }
+export type ReviewDeps = {
+  turns: () => Promise<readonly ReviewTurn[] | string>
+  names: () => Promise<Iterable<string>>
+  taken: () => Promise<{ rules: string[]; pending: string[] }>
+  rounding: Rounding
+}
 
 /** record_answers が顧客の回答を値にするのに使うもの（記入用Excelの取り込みと同じ。AI は匿名化の AI を使う） */
 export type AnswerDeps = { lookup: AddressLookup; rounding: Rounding }
@@ -333,8 +339,17 @@ export function chatTools(state: TurnState) {
       return run(args)
     }
   /** ルールの案・振り返りの材料の個人名（表の人と、分かっている個人名。指示の間で1回だけ作る。集められなければ道具は理由を返す） */
-  let guarding: Promise<ReviewGuard> | null = null
-  const guard = () => (guarding ??= (async () => reviewGuard(state.start, state.review ? await state.review.names() : []))())
+  // 名前は確かめるときの表（この指示で AI が入れた手直しも）から集める。分かっている個人名は指示の間で1回だけ読む
+  let knownNames: Promise<Iterable<string>> | null = null
+  let guarded_: { table: CaseTable; guard: Promise<ReviewGuard> } | null = null
+  const guard = () => {
+    if (guarded_?.table !== state.current) {
+      const table = state.current
+      knownNames ??= state.review ? state.review.names() : Promise.resolve([])
+      guarded_ = { table, guard: knownNames.then((names) => reviewGuard(table, names)) }
+    }
+    return guarded_.guard
+  }
   /** 個人名の入った項目の番号（0 から） */
   const personal = async (texts: readonly string[]) => {
     const g = await guard()
@@ -644,14 +659,17 @@ export function chatTools(state: TurnState) {
     }),
     get_review: tool({
       description:
-        "案件を終えるときの振り返りの材料を JSON 文字列で返す: {instructions:[{n, text, result（承認の結果）, question?, answer?, plan?（承認の対象になった列の対応の変更）, selection?, tools?}], edits:[{field, label, counts（出どころごとの数）, examples:[{by, before（変換の値）, after（今の値）}]}], replacements, manual, addedRows, settings, rows}。個人名は〔個人名〕に伏せてある。",
+        "案件を終えるときの振り返りの材料を JSON 文字列で返す: {instructions:[{n, text, result（承認の結果）, question?, answer?, plan?（承認の対象になった列の対応の変更）, selection?, tools?}], edits:[{field, label, counts（出どころごとの数）, examples:[{by, before（変換の値）, after（今の値）}]}], replacements, manual, addedRows, settings, rows, pendingReview（まだ決めていない前の振り返りの案。重ねて出さない）}。" +
+        `個人名は〔個人名〕に伏せてある。result が「${UNKNOWN_RESULT}」の指示は決まりの根拠にしない。`,
       inputSchema: z.strictObject({}),
       execute: counted<object>(async () => {
-        const turns = state.review?.turns() ?? "振り返りの材料は今使えません"
+        const review = state.review
+        const turns = review ? await review.turns() : "振り返りの材料は今使えません"
         if (typeof turns === "string") return json({ ok: false, error: turns })
         return guarded(async () => {
           state.log.push({ tool: "get_review", summary: `${turns.length}回の指示` })
-          return json(reviewMaterial({ turns, table: state.current, view: view(), rounding: state.review!.rounding, hide: (await guard()).hide }))
+          const { pending } = await review!.taken()
+          return json({ ...reviewMaterial({ turns, table: state.current, view: view(), rounding: review!.rounding, hide: (await guard()).hide }), pendingReview: pending })
         })
       }),
     }),
@@ -667,10 +685,28 @@ export function chatTools(state: TurnState) {
         guarded(async () => {
           const named = await personal(yearly.map((y) => y.text))
           if (named.length) return json({ ok: false, error: NAME_REFUSAL, yearly: named })
-          for (const y of yearly) state.pending.push({ kind: "rule", scope: "customer", text: y.text, source: "review" })
+          // 今の顧客ルール・まだ決めていない振り返りの案（ほかのタブで出したものも）・この指示で出した案と同じ項目は重ねない
+          const taken = state.review ? await state.review.taken() : { rules: [], pending: [] }
+          const seen = [...taken.rules, ...taken.pending, ...state.pending.flatMap((c) => (c.kind === "rule" && c.scope === "customer" ? [c.text] : []))]
+          const added: typeof yearly = []
+          const skipped: string[] = []
+          for (const y of yearly) {
+            if (seen.some((t) => sameRuleText(t, y.text))) skipped.push(y.text)
+            else {
+              added.push(y)
+              seen.push(y.text)
+            }
+          }
+          for (const y of added) state.pending.push({ kind: "rule", scope: "customer", text: y.text, source: "review" })
           state.oneOff.push(...one_off)
-          state.log.push({ tool: "propose_review", summary: [...yearly.map((y) => `毎年: ${y.text}（${y.evidence}）`), ...one_off.map((o) => `今年だけ: ${o}`)].join(" / ") })
-          return json({ ok: true, yearly: yearly.length, oneOff: one_off.length, note: "返事で、足す案の数と今年だけの事情（ルールにしないもの）を分けて伝えてください。" })
+          state.log.push({ tool: "propose_review", summary: [...added.map((y) => `毎年: ${y.text}（${y.evidence}）`), ...skipped.map((t) => `重ねない: ${t}`), ...one_off.map((o) => `今年だけ: ${o}`)].join(" / ") })
+          return json({
+            ok: true,
+            yearly: added.length,
+            ...(skipped.length ? { skipped, skippedNote: "今の顧客ルールか、まだ決めていない振り返りの案と同じなので出していません" } : {}),
+            oneOff: one_off.length,
+            note: "返事で、足す案の数と今年だけの事情（ルールにしないもの）を分けて伝えてください。",
+          })
         }),
       ),
     }),

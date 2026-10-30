@@ -5,7 +5,7 @@ import type { CaseTable } from "../../cases/view"
 import { deriveTable } from "../../cases/view"
 import type { ChatMessage } from "../messages"
 import type { ChatChange, Proposal } from "../proposals"
-import { reviewGuard, reviewMaterial, reviewTurnsFromUi, type ReviewTurn } from "../review"
+import { reviewGuard, reviewMaterial, reviewTurnsFromUi, UNKNOWN_RESULT, type ReviewTurn } from "../review"
 import { chatTools, newTurnState, type ReviewDeps } from "../turn"
 
 const yamada = personToken("山田太郎")
@@ -43,38 +43,64 @@ const tool = (name: string, input: unknown, output: unknown = "") => ({ type: `t
 const closed = (id: string, applied: number, rejected: number, question: Proposal["question"] = null): Proposal => ({ id, origin: { kind: "chat", messageId: id }, question, state: "closed", applied, rejected })
 
 describe("振り返る指示（画面の会話から）", () => {
-  test("指示ごとに、変更案の承認の結果・聞き返しと答え・承認の対象の列の対応の変更・7割の設定・道具を会話の順に", () => {
+  test("指示ごとに、変更案の承認の結果・聞き返しと答え・承認の対象の列の対応の変更・7割の設定（溜めたものだけ）・道具を会話の順に", () => {
     const ui: ChatMessage[] = [
       user("u1", "完成年月は引渡日にして"),
       assistant("a1", [{ type: "text", text: "直します" }, tool("set_plan", {}, JSON.stringify({ ok: true, changes: ["完成年月: J列（年月）"] })), tool("get_table", {}), { type: "data-proposal", data: { id: "p1" } }]),
       { id: "s1", role: "system", parts: [{ type: "text", text: "会話を終えました" }] },
       user("u2", "全部載せて"),
-      assistant("a2", [tool("set_selection", { selection: "all", tax: "excluded" }), tool("set_include", {}), tool("set_include", {}), { type: "data-proposal", data: { id: "p2" } }]),
+      assistant("a2", [
+        tool("set_selection", { selection: "all", tax: "excluded" }, JSON.stringify({ ok: true, applied: 1 })),
+        // 断られた set_selection（道具の回数を使い切った）は記録しない
+        tool("set_selection", { tax: "included" }, JSON.stringify({ ok: false, error: "使い切りました" })),
+        tool("set_include", {}),
+        tool("set_include", {}),
+        { type: "data-proposal", data: { id: "p2" } },
+      ]),
       user("u3", "(仮称)を取って"),
       assistant("a3", [tool("ask_staff", { question: "q" }), { type: "data-proposal", data: { id: "p3" } }]),
       user("u4", "これは何？"),
       assistant("a4", [{ type: "text", text: "説明" }, tool("set_plan", {}, JSON.stringify({ ok: false, problems: ["x"] }))]),
       user("u5", "止めた指示"),
+      // 作業に状態の無い変更案（保存の前に閉じた画面など）
+      user("u6", "注文者を直して"),
+      assistant("a6", [{ type: "data-proposal", data: { id: "p-lost" } }]),
     ]
     const proposals: Proposal[] = [closed("p1", 1, 0), closed("p2", 2, 0), { ...closed("p3", 0, 3, { text: "工事名の(仮称)も取ってよいですか", answer: "no" }) }]
-    const turns = reviewTurnsFromUi(ui, proposals, [{ proposalId: "p2", undone: true }])
+    const turns = reviewTurnsFromUi(ui, proposals, [{ proposalId: "p2", undone: true, items: [0, 1] }])
+    const known = (applied: number, count: number, undone = 0) => ({ applied, undone, undoneUnknown: false, count, open: false })
     expect(turns).toEqual([
-      { instruction: "完成年月は引渡日にして", proposal: { applied: 1, count: 1, open: false, undone: false }, question: null, plan: ["完成年月: J列（年月）"], selection: [], tools: ["set_plan"] },
-      { instruction: "全部載せて", proposal: { applied: 2, count: 2, open: false, undone: true }, question: null, plan: [], selection: ["Excel の金額: 税抜", "載せる工事: 全件"], tools: ["set_selection", "set_include"] },
-      { instruction: "(仮称)を取って", proposal: { applied: 0, count: 3, open: false, undone: false }, question: { text: "工事名の(仮称)も取ってよいですか", answer: "no" }, plan: [], selection: [], tools: ["ask_staff"] },
+      { instruction: "完成年月は引渡日にして", proposal: known(1, 1), question: null, plan: ["完成年月: J列（年月）"], selection: [], tools: ["set_plan"] },
+      { instruction: "全部載せて", proposal: known(2, 2, 2), question: null, plan: [], selection: ["Excel の金額: 税抜", "載せる工事: 全件"], tools: ["set_selection", "set_include"] },
+      { instruction: "(仮称)を取って", proposal: known(0, 3), question: { text: "工事名の(仮称)も取ってよいですか", answer: "no" }, plan: [], selection: [], tools: ["ask_staff"] },
       { instruction: "これは何？", proposal: null, question: null, plan: [], selection: [], tools: ["set_plan"] },
       { instruction: "止めた指示", proposal: null, question: null, plan: [], selection: [], tools: [] },
+      { instruction: "注文者を直して", proposal: "unknown", question: null, plan: [], selection: [], tools: [] },
     ])
+  })
+
+  test("承認の一部だけを取り消した変更案は、取り消した項目を項目ごとに数える（項目の分からない前の記録は数が分からないと伝える）", () => {
+    const ui: ChatMessage[] = [user("u1", "直して"), assistant("a1", [{ type: "data-proposal", data: { id: "p1" } }])]
+    const undo = [
+      { proposalId: "p1", items: [0, 1] },
+      { proposalId: "p1", undone: true as const, items: [2] },
+    ]
+    const [t] = reviewTurnsFromUi(ui, [closed("p1", 3, 1)], undo)
+    expect(t!.proposal).toEqual({ applied: 3, undone: 1, undoneUnknown: false, count: 4, open: false })
+    const m = reviewMaterial({ turns: [t!], table, view: deriveTable(table), rounding: "floor", hide: reviewGuard(table).hide })
+    expect(m.instructions[0]!.result).toBe("承認 2/4（1 件は承認を取り消した）")
+    const [old] = reviewTurnsFromUi(ui, [closed("p1", 3, 1)], [{ proposalId: "p1", undone: true }])
+    expect(reviewMaterial({ turns: [old!], table, view: deriveTable(table), rounding: "floor", hide: reviewGuard(table).hide }).instructions[0]!.result).toBe("承認 3/4（取り消した項目があるが数は不明）")
   })
 })
 
 describe("振り返りの材料", () => {
   const turns: ReviewTurn[] = [
-    { instruction: "注文者の株式会社は㈱にして（山田太郎さんの件も）", proposal: { applied: 2, count: 2, open: false, undone: false }, question: null, plan: [], selection: [], tools: ["set_cells"] },
-    { instruction: "配置技術者は見本 花子に", proposal: { applied: 0, count: 1, open: false, undone: false }, question: { text: "試験太郎さんでよいですか", answer: "yes" }, plan: [], selection: [], tools: [] },
-    { instruction: "全部載せて", proposal: { applied: 1, count: 1, open: false, undone: true }, question: null, plan: [], selection: [], tools: [] },
-    { instruction: "まだ", proposal: { applied: 0, count: 2, open: true, undone: false }, question: null, plan: [], selection: [], tools: [] },
-    { instruction: "(仮称)は？", proposal: { applied: 0, count: 0, open: false, undone: false }, question: { text: "取ってよいですか", answer: "yes" }, plan: [], selection: [], tools: ["ask_staff"] },
+    { instruction: "注文者の株式会社は㈱にして（山田太郎さんの件も）", proposal: { applied: 2, undone: 0, undoneUnknown: false, count: 2, open: false }, question: null, plan: [], selection: [], tools: ["set_cells"] },
+    { instruction: "配置技術者は見本 花子に", proposal: { applied: 0, undone: 0, undoneUnknown: false, count: 1, open: false }, question: { text: "試験太郎さんでよいですか", answer: "yes" }, plan: [], selection: [], tools: [] },
+    { instruction: "全部載せて", proposal: { applied: 1, undone: 1, undoneUnknown: false, count: 1, open: false }, question: null, plan: [], selection: [], tools: [] },
+    { instruction: "まだ", proposal: { applied: 0, undone: 0, undoneUnknown: false, count: 2, open: true }, question: null, plan: [], selection: [], tools: [] },
+    { instruction: "(仮称)は？", proposal: { applied: 0, undone: 0, undoneUnknown: false, count: 0, open: false }, question: { text: "取ってよいですか", answer: "yes" }, plan: [], selection: [], tools: ["ask_staff"] },
   ]
 
   test("指示と承認の結果、手直しの項目ごとの数と例（職員・チャットの直しを先に）、置換・入れ外し・設定をまとめ、個人名を伏せる", () => {
@@ -129,8 +155,12 @@ describe("振り返りの材料", () => {
 
 describe("振り返りの道具（get_review・propose_review）", () => {
   const deps = (over: Partial<ReviewDeps> = {}): ReviewDeps => ({
-    turns: () => [{ instruction: "完成年月は引渡日にして", proposal: { applied: 1, count: 1, open: false, undone: false }, question: null, plan: ["完成年月: J列"], selection: [], tools: ["set_plan"] }],
+    turns: async () => [
+      { instruction: "完成年月は引渡日にして", proposal: { applied: 1, undone: 0, undoneUnknown: false, count: 1, open: false }, question: null, plan: ["完成年月: J列"], selection: [], tools: ["set_plan"] },
+      { instruction: "注文者を直して", proposal: "unknown", question: null, plan: [], selection: [], tools: [] },
+    ],
     names: async () => ["佐藤　次郎"],
+    taken: async () => ({ rules: ["注文者の株式会社は㈱にする"], pending: ["工事名の読点は取る。"] }),
     rounding: "floor",
     ...over,
   })
@@ -146,30 +176,50 @@ describe("振り返りの道具（get_review・propose_review）", () => {
 
   test("get_review は材料を返し、使えないときは理由を返す", async () => {
     const res = await call(chatTools(newTurnState(table, undefined, undefined, null, null, deps())), "get_review", {})
-    expect(res.instructions).toEqual([{ n: 1, text: "完成年月は引渡日にして", result: "承認 1/1", plan: ["完成年月: J列"], tools: ["set_plan"] }])
+    expect(res.instructions).toEqual([
+      { n: 1, text: "完成年月は引渡日にして", result: "承認 1/1", plan: ["完成年月: J列"], tools: ["set_plan"] },
+      { n: 2, text: "注文者を直して", result: UNKNOWN_RESULT },
+    ])
+    expect(res.pendingReview).toEqual(["工事名の読点は取る。"])
     expect(await call(chatTools(newTurnState(table)), "get_review", {})).toMatchObject({ ok: false })
-    expect(await call(chatTools(newTurnState(table, undefined, undefined, null, null, deps({ turns: () => "画面が古い" }))), "get_review", {})).toEqual({ ok: false, error: "画面が古い" })
+    expect(await call(chatTools(newTurnState(table, undefined, undefined, null, null, deps({ turns: async () => "画面が古い" }))), "get_review", {})).toEqual({ ok: false, error: "画面が古い" })
   })
 
-  test("propose_review は毎年の決まりを由来「振り返り」の顧客ルールの案にし、今年だけの事情は案にしない", async () => {
+  test("propose_review は毎年の決まりを由来「振り返り」の顧客ルールの案にし、今年だけの事情は案にしない。今の顧客ルール・未決の振り返りの案・同じ指示の案と同じ項目は重ねない", async () => {
     const state = newTurnState(table, undefined, undefined, null, null, deps())
-    const res = await call(chatTools(state), "propose_review", {
+    const tools = chatTools(state)
+    const res = await call(tools, "propose_review", {
       yearly: [
         { text: "完成年月は引渡日の列にする。", evidence: "指示1" },
-        { text: "注文者の株式会社は㈱にする。", evidence: "手直し" },
+        { text: "注文者の株式会社は㈱にする。", evidence: "今の顧客ルールにある" },
+        { text: "工事名の読点は取る", evidence: "未決の振り返りの案にある" },
+        { text: "完成年月は 引渡日の列にする", evidence: "同じ指示の中で重なる" },
       ],
       one_off: ["1件だけ完成年月を顧客の回答で直した"],
     })
-    expect(res).toMatchObject({ ok: true, yearly: 2, oneOff: 1 })
-    expect(state.pending).toEqual<ChatChange[]>([
-      { kind: "rule", scope: "customer", text: "完成年月は引渡日の列にする。", source: "review" },
-      { kind: "rule", scope: "customer", text: "注文者の株式会社は㈱にする。", source: "review" },
-    ])
+    expect(res).toMatchObject({ ok: true, yearly: 1, oneOff: 1, skipped: ["注文者の株式会社は㈱にする。", "工事名の読点は取る", "完成年月は 引渡日の列にする"] })
+    expect(await call(tools, "propose_review", { yearly: [{ text: "完成年月は引渡日の列にする", evidence: "もう一度" }], one_off: [] })).toMatchObject({ ok: true, yearly: 0 })
+    expect(state.pending).toEqual<ChatChange[]>([{ kind: "rule", scope: "customer", text: "完成年月は引渡日の列にする。", source: "review" }])
     expect(state.oneOff).toEqual(["1件だけ完成年月を顧客の回答で直した"])
     // 決まりが無ければ案も無い
     const empty = newTurnState(table, undefined, undefined, null, null, deps())
     expect(await call(chatTools(empty), "propose_review", { yearly: [], one_off: ["今年だけ"] })).toMatchObject({ ok: true, yearly: 0 })
     expect(empty.pending).toEqual([])
+  })
+
+  test("まだ保存した作業が無い（分かっている個人名が空）案件でも、表の人で確かめて propose_rule の案を出す", async () => {
+    const state = newTurnState(table, undefined, undefined, null, null, deps({ names: async () => [] }))
+    const tools = chatTools(state)
+    expect(await call(tools, "propose_rule", { scope: "customer", items: ["工事名の読点は取る"] })).toBe("職員に1項目の案を見せました（承認待ち）。")
+    expect(await call(tools, "propose_rule", { scope: "customer", items: ["試験太郎は配置技術者にしない"] })).toMatchObject({ ok: false })
+  })
+
+  test("同じ指示の中で AI が手直しに入れた個人名も、ルールの案に入れない（確かめるときの表から集める）", async () => {
+    const state = newTurnState(table, undefined, undefined, null, null, deps())
+    const tools = chatTools(state)
+    expect(await call(tools, "propose_rule", { scope: "customer", items: ["工事名の読点は取る"] })).toBe("職員に1項目の案を見せました（承認待ち）。")
+    expect(await call(tools, "set_cells", { changes: [{ key: "s!2", field: "engineer", value: "新顔　一郎" }] })).toMatchObject({ ok: true })
+    expect(await call(tools, "propose_rule", { scope: "customer", items: ["配置技術者は新顔一郎にする"] })).toMatchObject({ ok: false, items: [0] })
   })
 
   test("個人名（表の人・分かっている名前・表の記号）の入った案は、propose_review も propose_rule も何も受け取らない", async () => {

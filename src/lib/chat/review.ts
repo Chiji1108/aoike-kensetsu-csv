@@ -3,12 +3,14 @@ import type { UndoEntry } from "../cases/undo"
 import { baseRows, type CaseTable, type TableView } from "../cases/view"
 import type { CellEdit } from "../convert/convert"
 import { RULE7_TAX_LABELS, SELECTION_LABELS, TAX_LABELS } from "../convert/koji-selection"
+import { nfkc, removeSpaces } from "../convert/text"
 import { withNames } from "../convert/persons"
 import type { Rounding } from "../convert/transforms"
 import { tryParseJson } from "../json"
 import { basisSchema, selectionSchema, taxSchema } from "../schemas"
 import { KOJI_KEIREKI, type KojiFieldId } from "../spec/koji-keireki"
-import { appliedCount, nameScrubber, namesForCarryover, namesOfCase, NAME_MARK, personalNameTest, undoneProposals } from "./carryover"
+import { appliedCount, nameScrubber, namesForCarryover, namesOfCase, NAME_MARK, personalNameTest } from "./carryover"
+import { describeSettings } from "./describe"
 import type { ChatMessage } from "./messages"
 import type { Proposal, ProposalQuestion } from "./proposals"
 
@@ -29,8 +31,11 @@ export const MAX_REVIEW_NOTES = 20
 /** 振り返る1回の指示 */
 export type ReviewTurn = {
   instruction: string
-  /** 返事に付いた変更案（無ければ null）。applied は承認した項目の数、undone は承認をすべて取り消した、open はまだ決めていない項目がある */
-  proposal: { applied: number; count: number; open: boolean; undone: boolean } | null
+  /**
+   * 返事に付いた変更案（無ければ null。作業に状態の無い変更案は "unknown"）。applied は承認した項目の数、undone はそのうち承認を取り消した項目の数、
+   * undoneUnknown は項目の分からない取り消しの記録がある（この項目より前の記録）、open はまだ決めていない項目がある
+   */
+  proposal: { applied: number; undone: number; undoneUnknown: boolean; count: number; open: boolean } | "unknown" | null
   /** AI の聞き返しと職員の答え */
   question: ProposalQuestion | null
   /** 列の対応の変更（set_plan の説明） */
@@ -46,24 +51,27 @@ export const QUIET_TOOLS: ReadonlySet<string> = new Set(["code_execution", "get_
 
 const planOutput = z.object({ ok: z.literal(true), changes: z.array(z.string()) })
 const selectionInput = z.object({ tax: taxSchema.optional(), selection: selectionSchema.optional(), basis: basisSchema.optional() })
+/** 変更案を溜めた道具の結果（set_selection。断った結果は記録しない） */
+const pushedOutput = z.object({ ok: z.literal(true) })
+const outputOf = (output: unknown) => (typeof output === "string" ? tryParseJson(output) : output)
 
-/** 7割の設定の変更（set_selection の入力・変更案の settings）を言葉にする */
-export function describeSelection(input: unknown): string[] {
-  const s = selectionInput.safeParse(input)
-  if (!s.success) return []
-  return [
-    s.data.tax && `Excel の金額: ${TAX_LABELS[s.data.tax]}`,
-    s.data.selection && `載せる工事: ${SELECTION_LABELS[s.data.selection]}`,
-    s.data.basis && `基準額: 業種${Object.keys(s.data.basis).join("・")}`,
-  ].filter((x): x is string => !!x)
+/** 変更案の承認の数（undo は承認の取り消しの記録。取り消した項目を項目ごとに数える） */
+function proposalState(p: Proposal, undo: readonly Pick<UndoEntry, "proposalId" | "undone" | "items">[]): Exclude<ReviewTurn["proposal"], "unknown" | null> {
+  const undone = new Set<number>()
+  let undoneUnknown = false
+  for (const e of undo) {
+    if (e.proposalId !== p.id || !e.undone) continue
+    if (e.items) for (const i of e.items) undone.add(i)
+    else undoneUnknown = true
+  }
+  return { applied: appliedCount(p), undone: undone.size, undoneUnknown, count: p.state === "open" ? p.count : p.applied + p.rejected, open: p.state === "open" }
 }
 
 /**
  * 画面の会話（会話を終えても残る）と変更案の状態から、振り返る指示を会話の順に。返事が無い指示（止めた・失敗した）も、変更案の無い指示も残す
  */
-export function reviewTurnsFromUi(ui: readonly ChatMessage[], proposals: readonly Proposal[], undo: readonly Pick<UndoEntry, "proposalId" | "undone">[]): ReviewTurn[] {
+export function reviewTurnsFromUi(ui: readonly ChatMessage[], proposals: readonly Proposal[], undo: readonly Pick<UndoEntry, "proposalId" | "undone" | "items">[]): ReviewTurn[] {
   const byId = new Map(proposals.map((p) => [p.id, p]))
-  const undone = undoneProposals(undo)
   const turns: ReviewTurn[] = []
   let turn: ReviewTurn | null = null
   for (const m of ui) {
@@ -77,9 +85,9 @@ export function reviewTurnsFromUi(ui: readonly ChatMessage[], proposals: readonl
     for (const p of m.parts) {
       if (p.type === "data-proposal") {
         const proposal = byId.get(p.data.id)
-        if (!proposal) continue
-        turn.proposal = { applied: appliedCount(proposal), count: proposal.state === "open" ? proposal.count : proposal.applied + proposal.rejected, open: proposal.state === "open", undone: undone.has(proposal.id) }
-        turn.question = proposal.question
+        // 作業に状態の無い変更案（保存の前に閉じた画面など）は、承認したか分からないものとして渡す
+        turn.proposal = proposal ? proposalState(proposal, undo) : "unknown"
+        turn.question = proposal?.question ?? null
         continue
       }
       if (!p.type.startsWith("tool-")) continue
@@ -87,23 +95,36 @@ export function reviewTurnsFromUi(ui: readonly ChatMessage[], proposals: readonl
       const part = p as { input?: unknown; output?: unknown }
       if (!QUIET_TOOLS.has(name) && !turn.tools.includes(name)) turn.tools.push(name)
       if (name === "set_plan") {
-        const out = planOutput.safeParse(typeof part.output === "string" ? tryParseJson(part.output) : part.output)
+        const out = planOutput.safeParse(outputOf(part.output))
         if (out.success) turn.plan.push(...out.data.changes)
       }
-      if (name === "set_selection") turn.selection.push(...describeSelection(part.input))
+      if (name === "set_selection" && pushedOutput.safeParse(outputOf(part.output)).success) {
+        const input = selectionInput.safeParse(part.input)
+        if (input.success) turn.selection.push(...describeSettings(input.data))
+      }
     }
   }
   return turns
 }
 
 /** 変更案の結果の言葉 */
+export const UNKNOWN_RESULT = "状態不明（承認したか分からない。決まりの根拠にしない）"
 function proposalResult(p: ReviewTurn["proposal"]) {
   if (!p) return "変更案なし"
+  if (p === "unknown") return UNKNOWN_RESULT
   // 変更の無い聞き返しだけの変更案（答えは question・answer に出す）
   if (p.count === 0) return "変更案なし（聞き返しだけ）"
-  if (p.undone) return "承認を取り消した"
   if (p.applied === 0) return p.open ? "まだ決めていない" : "却下した"
-  return `承認 ${p.applied}/${p.count}${p.open ? "（残りは未決）" : ""}`
+  const kept = p.applied - p.undone
+  if (kept <= 0) return "承認を取り消した"
+  const notes = [p.undone ? `${p.undone} 件は承認を取り消した` : "", p.undoneUnknown ? "取り消した項目があるが数は不明" : "", p.open ? "残りは未決" : ""].filter(Boolean)
+  return `承認 ${kept}/${p.count}${notes.length ? `（${notes.join("・")}）` : ""}`
+}
+
+/** ルールの項目が同じか（全角半角・空白・末尾の句点の違いは同じとみなす。重ねて案にしない） */
+export const sameRuleText = (a: string, b: string) => {
+  const norm = (s: string) => removeSpaces(nfkc(s)).replace(/[。.]+$/, "")
+  return norm(a) === norm(b)
 }
 
 const QUESTION_ANSWERS = { yes: "はい", no: "いいえ" } as const

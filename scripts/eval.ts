@@ -27,7 +27,8 @@ import { newWork } from "../src/lib/cases/state"
 import { deriveTable, type CaseTable } from "../src/lib/cases/view"
 import { caseContext } from "../src/lib/chat/context"
 import { applyChanges, type ChatChange } from "../src/lib/chat/proposals"
-import { describeSelection, QUIET_TOOLS, REVIEW_PROMPT, type ReviewTurn } from "../src/lib/chat/review"
+import { QUIET_TOOLS, REVIEW_PROMPT, type ReviewTurn } from "../src/lib/chat/review"
+import { describeSettings } from "../src/lib/chat/describe"
 import { carryoverPrompt, cleanCarryoverCodes, codesFromModel, knownWords, namesForCarryover } from "../src/lib/chat/carryover"
 import { compareFormats, describeFormatDiff, similarity } from "../src/lib/convert/format-diff"
 import { DEFAULT_GLOBAL_RULE_ITEMS, rulesText, ruleTextSchema } from "../src/lib/chat/rules"
@@ -469,13 +470,13 @@ async function reviewEval() {
   // 照合では変更案をすべて承認したので、指示ごとに変更案の項目を全部承認した記録にする（聞き返しは「はい」）
   const turns: ReviewTurn[] = year.log.map((l) => ({
     instruction: l.text,
-    proposal: l.pending.length || l.question ? { applied: l.pending.length, count: l.pending.length, open: false, undone: false } : null,
+    proposal: l.pending.length || l.question ? { applied: l.pending.length, undone: 0, undoneUnknown: false, count: l.pending.length, open: false } : null,
     question: l.question ? { text: l.question, answer: "yes" } : null,
     plan: l.plan.flatMap((p) => describePlanPatch(p)),
-    selection: l.pending.flatMap((c) => (c.kind === "settings" ? describeSelection(c) : [])),
+    selection: l.pending.flatMap((c) => (c.kind === "settings" ? describeSettings(c) : [])),
     tools: [...new Set(l.tools.map((t) => t.tool).filter((t) => !QUIET_TOOLS.has(t)))],
   }))
-  const review = finish("review", await chatPhase({ turns: [REVIEW_PROMPT], table: year.table, plan: year.plan, customerItems: [], review: { turns: () => turns, names: async () => [], rounding: "floor" } }))
+  const review = finish("review", await chatPhase({ turns: [REVIEW_PROMPT], table: year.table, plan: year.plan, customerItems: [], review: { turns: async () => turns, names: async () => [], taken: async () => ({ rules: [], pending: [] }), rounding: "floor" } }))
   const reviewed = review.log.flatMap((l) => l.pending.flatMap((c) => (c.kind === "rule" && c.scope === "customer" ? [ruleTextSchema.parse(c.text)] : [])))
   const oneOff = review.log.flatMap((l) => l.oneOff)
   console.log(`\n振り返りの毎年の決まり ${reviewed.length} 項目:\n  ${reviewed.join("\n  ")}\n今年だけ ${oneOff.length} 件:\n  ${oneOff.join("\n  ")}`)

@@ -13,8 +13,7 @@ import { savedAiCacheSchema, savedWorkSchema } from "@/lib/cases/state"
 import { mappingPlanSchema } from "@/lib/convert/plan-schema"
 import { sheetShapeSchema } from "@/lib/convert/plan-patch"
 import { roundingSchema } from "@/lib/schemas"
-import { newProposal, proposalKey, proposalPrefix, proposalRecordSchema, proposalSchema, type ProposalRecord } from "@/lib/chat/proposals"
-import { MAX_UNDO_ENTRIES } from "@/lib/cases/undo"
+import { decisionOf, newProposal, proposalKey, proposalPrefix, proposalRecordSchema, type ProposalRecord } from "@/lib/chat/proposals"
 import { newTurnState, startTurn, systemPrompt, type ContainerFile, type TurnStep } from "@/lib/chat/turn"
 import { tokensOfAiSdk, usdOf } from "@/lib/cost"
 import { errorMessage } from "@/lib/errors"
@@ -42,7 +41,7 @@ import { locateOne } from "./location-run"
 import * as loc from "./location-store"
 import { serverAddressLookup, serverPlaceIndex } from "./place-index"
 import { personalChecker } from "./location-guard"
-import { savedCaseNames } from "./case-names"
+import { namesOfSaved, readSavedCase } from "./case-names"
 import { guardPersonal, type Site } from "@/lib/location/sites"
 
 
@@ -62,16 +61,6 @@ const requestSchema = z.object({
   carryoverNames: z.array(z.string()).max(20_000).optional(),
   /** 去年と今年の元の Excel の見出し（去年のコードの文字列のうち、見出しの名前は伏せずに残す） */
   carryoverHeaders: z.array(z.string()).max(2_000).optional(),
-  /**
-   * 案件を終えるときの振り返り（get_review）に使う、画面の作業の変更案の状態と承認の取り消しの記録（どれを取り消したかだけ）。
-   * 保存の前の承認も入るよう、表と同じく画面が送る。この項目より前の画面は送らない（そのときは振り返りを使えない）
-   */
-  review: z
-    .object({
-      proposals: z.array(proposalSchema).max(5_000),
-      undo: z.array(z.object({ proposalId: z.string().max(64), undone: z.literal(true).optional() })).max(MAX_UNDO_ENTRIES),
-    })
-    .optional(),
 })
 
 /** AI のコンテナに渡す案件のファイルの種類（届いたファイルと、返ってきた記入用Excel。顧客の回答を AI が読む） */
@@ -217,6 +206,9 @@ async function runTurn(request: Request, caseId: string): Promise<Response> {
   // 住所データの索引と個人名の確かめは、工事場所を調べるときだけ作る
   let checker: Promise<(text: string) => boolean> | undefined
   const guard = async (sites: Site[]) => guardPersonal(sites, await (checker ??= personalChecker(db, caseId, body.table)))
+  /** 保存した作業（振り返りと名前の確かめで、指示の間に1回だけ読む） */
+  let savedCase: ReturnType<typeof readSavedCase> | undefined
+  const saved = () => (savedCase ??= readSavedCase(db, caseId))
   // 注文者・工事名に AI が書いた値は、変換と同じ匿名化の AI に通す（lib/chat/turn.ts の anonymizeChanges）
   const state = newTurnState(
     fromWire(body.table),
@@ -240,8 +232,13 @@ async function runTurn(request: Request, caseId: string): Promise<Response> {
     { lookup: serverAddressLookup, rounding: body.rounding },
     {
       // 会話は、この指示を受けたときの画面の会話（会話を終えても残る）
-      turns: () => (body.review ? reviewTurnsFromUi(loaded.doc.ui, body.review.proposals, body.review.undo) : "画面が古いので振り返りの材料を送っていません。画面を開き直してください"),
-      names: () => savedCaseNames(db, caseId),
+      // 保存した作業（画面は振り返りを送る前に保存し終える）の変更案の状態・取り消しの記録と、この指示を受けたときの画面の会話（会話を終えても残る）
+      turns: async () => {
+        const s = await saved()
+        return s ? reviewTurnsFromUi(loaded.doc.ui, s.work.proposals, s.work.undo) : "まだ案件の作業を保存していないので振り返れません（変換して保存してからもう一度）"
+      },
+      names: async () => namesOfSaved(await saved()),
+      taken: () => takenRules(db, kase.customerId, caseId, saved),
       rounding: body.rounding,
     },
   )
@@ -356,6 +353,22 @@ async function carryoverOf(db: store.Db, prev: Case, from: Omit<Parameters<typeo
   const { ui } = (await loadChat(bucket(), prev.id)).doc
   const names = namesForCarryover({ ...from, previous: { work: work.data, aiCache: aiCache.data } })
   return { fiscalYear: prev.fiscalYear, codes: cleanCarryoverCodes(codesFromUi(ui, approvedChatProposals(work.data.proposals, work.data.undo)), names, words) }
+}
+
+/**
+ * 振り返りで重ねて案にしない項目: 今の顧客ルールと、まだ決めていない振り返りの案（R2 の開いている変更案の記録のうち、保存した作業で決めていない項目。
+ * ほかのタブで出してまだ画面に届いていない案も入る）
+ */
+async function takenRules(db: store.Db, customerId: string, caseId: string, saved: () => ReturnType<typeof readSavedCase>) {
+  const s = await saved()
+  const proposals = new Map((s?.work.proposals ?? []).map((p) => [p.id, p]))
+  const closed = new Set([...proposals.values()].filter((p) => p.state === "closed").map((p) => p.id))
+  const [rules, records] = await Promise.all([store.listRuleItems(db, { scope: "customer", customerId }), readOpenProposals(caseId, closed)])
+  const pending = records.flatMap((r) => {
+    const p = proposals.get(r.proposal.id)
+    return r.changes.flatMap((c, i) => (c.kind === "rule" && c.source === "review" && (!p || (p.state === "open" && decisionOf(p, i) === "pending")) ? [c.text] : []))
+  })
+  return { rules: rules.map((r) => r.text), pending }
 }
 
 /**
