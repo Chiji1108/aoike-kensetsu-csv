@@ -1220,7 +1220,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
               )
             })}
           </TabsList>
-          <TabsContent value="table" keepMounted className="relative min-h-0 overflow-auto p-4" data-testid="table-section">
+          <TabsContent value="table" keepMounted className="relative flex min-h-0 flex-col p-4" data-testid="table-section">
             {reconverting && (
               <div className="absolute inset-0 z-30 flex items-start justify-center bg-background/60 pt-24 backdrop-blur-[1px]" data-testid="reconverting">
                 <span className="flex items-center gap-2 rounded-full border bg-background px-4 py-2 text-sm shadow-sm">

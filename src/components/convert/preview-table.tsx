@@ -253,8 +253,9 @@ export function PreviewTable({
 
   const tableWidth = visibleColumns.reduce((s, c) => s + WIDTH[c.id as keyof typeof WIDTH], 0)
 
+  // 置かれた欄の高さに合わせ、表の中だけをスクロールする（作業の画面の「表」のタブ）
   return (
-    <div className="grid gap-2">
+    <div className="flex min-h-0 flex-1 flex-col gap-2">
       <div className="flex flex-wrap items-center gap-2">
         <Segmented
           label="表の絞り込み"
@@ -312,7 +313,7 @@ export function PreviewTable({
 
       <CellNote spec={spec} store={store.current!} byKey={byKey} />
 
-      <div ref={scrollRef} className="overflow-auto rounded-xl border bg-card" style={{ maxHeight: "70vh" }}>
+      <div ref={scrollRef} className="min-h-0 overflow-auto rounded-xl border bg-card">
         <table
           data-slot="table"
           data-testid="preview-table"
