@@ -1,0 +1,17 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", ":timezone(Asia/Tokyo)"],
+  "schedule": ["before 9am on monday"],
+  "packageRules": [
+    {
+      "description": "細かい更新は1つの PR にまとめる（大きい版の更新は別の PR）",
+      "matchUpdateTypes": ["minor", "patch", "pin", "digest"],
+      "groupName": "minor and patch"
+    },
+    {
+      "description": "SheetJS は CDN の tgz から入れているので手で更新する",
+      "matchPackageNames": ["xlsx"],
+      "enabled": false
+    }
+  ]
+}

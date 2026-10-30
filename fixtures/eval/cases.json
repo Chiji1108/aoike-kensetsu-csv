@@ -1,0 +1,40 @@
+{
+ "synth-engineers": {
+  "xlsx": "fixtures/eval/synth-engineers/工事台帳.xlsx",
+  "staffCsv": "fixtures/eval/synth-engineers/期待.csv",
+  "files": [
+   "fixtures/eval/synth-engineers/技術者一覧.xlsx"
+  ],
+  "customerName": "合成サンプル設備工業",
+  "customerRules": "",
+  "staffErrors": [],
+  "notDerivable": [],
+  "instructions": [
+   "7割以上なら件数は自由なので、全部の工事を載せて",
+   "配置技術者は技術者一覧.xlsx から工事番号で引いて入れて"
+  ],
+  "variants": [
+   "baseline",
+   "edit"
+  ]
+ },
+ "synth-pdf": {
+  "xlsx": "fixtures/eval/synth-pdf/工事経歴.xlsx",
+  "staffCsv": "fixtures/eval/synth-pdf/期待.csv",
+  "files": [
+   "fixtures/eval/synth-pdf/追加の工事.pdf"
+  ],
+  "customerName": "合成サンプル電設",
+  "customerRules": "",
+  "staffErrors": [],
+  "notDerivable": [],
+  "instructions": [
+   "7割以上なら件数は自由なので、全部の工事を載せて",
+   "追加の工事.pdf の3件も表に足して（配置技術者は PDF の担当技術者）"
+  ],
+  "variants": [
+   "baseline",
+   "edit"
+  ]
+ }
+}

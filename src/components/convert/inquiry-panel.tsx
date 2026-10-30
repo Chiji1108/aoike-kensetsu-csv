@@ -1,0 +1,254 @@
+import { useMemo } from "react"
+import { createClientOnlyFn } from "@tanstack/react-start"
+import { Copy, FileDown, FileUp } from "lucide-react"
+import { toast } from "sonner"
+import { Button } from "@/components/ui/button"
+import { Textarea } from "@/components/ui/textarea"
+import type { RowResult } from "@/lib/convert/convert"
+import { datedFileName } from "@/lib/convert/csv"
+import { withNames } from "@/lib/convert/persons"
+import { errorMessage } from "@/lib/errors"
+import { saveFile } from "@/lib/save-file"
+import { inquiryEmail } from "@/lib/inquiry/email"
+import {
+  CASE_TOPICS,
+  fieldLabel,
+  inquiryKey,
+  inquirySheet,
+  REASONS,
+  type AnswerReport,
+  type CaseInquiry,
+  type CellInquiry,
+  type Inquiry,
+} from "@/lib/inquiry/inquiry"
+import type { KojiFieldId } from "@/lib/spec/koji-keireki"
+
+type Row = RowResult<KojiFieldId>
+
+/** ExcelJS はブラウザでだけ読み込む（サーバーのバンドルに入れない） */
+const loadXlsxWriter = createClientOnlyFn(() => import("@/lib/inquiry/inquiry-xlsx"))
+
+/**
+ * 顧客に問い合わせる: 件数・項目ごとの件数・外すチェック、メール文面、記入用Excel、回答の取り込み。
+ * inquiries は CSV に載せる行から集めたもの。回答の照合は記入用Excelの各行の照合用の列で行うので、どの版の記入用Excelでも取り込める。
+ */
+export function InquiryPanel({
+  inquiries,
+  outputRows,
+  allRows,
+  customer,
+  dismissed,
+  answers,
+  keepFile,
+  onToggle,
+  readAnswerFile,
+}: {
+  inquiries: Inquiry[]
+  outputRows: Row[]
+  allRows: Row[]
+  customer: string
+  dismissed: ReadonlySet<string>
+  /** 最後に取り込んだ回答の結果 */
+  answers: AnswerReport | null
+  /** ダウンロードした記入用Excelを案件に残す */
+  keepFile: (name: string, bytes: Uint8Array, type: string) => void
+  onToggle: (key: string, ask: boolean) => void
+  /**
+   * 回答のファイルを読んで照合し、手直しに反映する（注文者・工事名の記入は元データと同じ変換・AI に通す）。
+   * 結果は answers に入る。読んでいる間に値が変わったセル（手直し・置換・変換のやり直し）の回答は反映せず、結果の changed に入る。別の案件になったら undefined（結果は捨てる）
+   */
+  readAnswerFile: (file: File, rows: Row[]) => Promise<{ error: string } | { aiFailures: string[] } | undefined>
+}) {
+  const active = useMemo(() => inquiries.filter((q) => !dismissed.has(inquiryKey(q))), [inquiries, dismissed])
+  const activeCells = useMemo(() => active.filter((q): q is CellInquiry => q.kind === "cell"), [active])
+  const activeCases = useMemo(() => active.filter((q): q is CaseInquiry => q.kind === "case"), [active])
+  const sheet = useMemo(() => inquirySheet(outputRows, activeCells), [outputRows, activeCells])
+  const email = useMemo(() => inquiryEmail(activeCases, sheet), [activeCases, sheet])
+  const byItem = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const q of active) {
+      const label = q.kind === "case" ? CASE_TOPICS[q.topic].label : fieldLabel(q.field)
+      counts.set(label, (counts.get(label) ?? 0) + 1)
+    }
+    return [...counts]
+  }, [active])
+  const rowLabel = useMemo(() => new Map(allRows.map((r) => [r.key, `${r.sheet}!${r.row + 1}`])), [allRows])
+  const rowByKey = useMemo(() => new Map(allRows.map((r) => [r.key, r])), [allRows])
+
+  async function downloadXlsx() {
+    try {
+      const { inquiryXlsx } = await loadXlsxWriter()
+      const bytes = await inquiryXlsx(sheet, customer)
+      const name = datedFileName("記入のお願い", customer, new Date(), "xlsx")
+      const type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      saveFile(bytes, name, type)
+      keepFile(name, bytes, type)
+    } catch (e) {
+      toast.error(errorMessage(e, "記入用Excelを作れませんでした"))
+    }
+  }
+
+  async function copyEmail() {
+    try {
+      await navigator.clipboard.writeText(email)
+      toast.success("メール文面をコピーしました")
+    } catch (e) {
+      toast.error(errorMessage(e, "コピーできませんでした。下の文面を選んでコピーしてください"))
+    }
+  }
+
+  async function importAnswers(f: File) {
+    try {
+      const read = await readAnswerFile(f, allRows)
+      if (!read) return
+      if ("error" in read) {
+        toast.error(read.error)
+        return
+      }
+      toast.success("顧客の回答を取り込みました。反映した件数は取り込みの下に出ています")
+      if (read.aiFailures.length) toast.warning(`AI を使えず反映していない記入があります（${read.aiFailures.join(" / ")}）。一覧を確認してください`)
+    } catch (e) {
+      toast.error(errorMessage(e, "回答のファイルを読み込めませんでした"))
+    }
+  }
+
+  return (
+    <section className="mt-10 space-y-4" data-testid="inquiry-panel">
+      <div>
+        <h2 className="text-lg font-semibold tracking-tight">3. 顧客に問い合わせる</h2>
+        <p className="mt-0.5 text-sm text-muted-foreground">
+          CSV に載せる行のうち、書類に要るのにデータに無い項目と、推定に自信がない工事場所・配置技術者の姓と名の区切りです。聞かなくてよいものはチェックを外してください。
+        </p>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2 text-sm" data-testid="inquiry-counts">
+        <span className="font-semibold">問い合わせ {active.length} 件</span>
+        {inquiries.length !== active.length && <span className="text-muted-foreground">（外した {inquiries.length - active.length} 件）</span>}
+        {byItem.map(([label, n]) => (
+          <span key={label} className="rounded-full border bg-muted/40 px-2 py-0.5 text-xs">
+            {label} {n}件
+          </span>
+        ))}
+      </div>
+
+      {inquiries.length > 0 && (
+        <details className="rounded-xl border bg-card p-3">
+          <summary className="cursor-pointer text-sm font-semibold">問い合わせの一覧（{inquiries.length}件）</summary>
+          <div className="mt-2 max-h-80 overflow-auto">
+            <table className="w-full text-xs" data-testid="inquiry-list">
+              <thead className="text-left text-muted-foreground">
+                <tr>
+                  <th className="py-1 pr-2">聞く</th>
+                  <th className="py-1 pr-2">元の行</th>
+                  <th className="py-1 pr-2">項目</th>
+                  <th className="py-1 pr-2">理由</th>
+                  <th className="py-1">今の値</th>
+                </tr>
+              </thead>
+              <tbody>
+                {inquiries.map((q) => {
+                  const key = inquiryKey(q)
+                  return (
+                    <tr key={key} className="border-t" data-inquiry={key}>
+                      <td className="py-1 pr-2">
+                        <input type="checkbox" aria-label="問い合わせる" checked={!dismissed.has(key)} onChange={(e) => onToggle(key, e.target.checked)} />
+                      </td>
+                      <td className="num py-1 pr-2 text-muted-foreground">{q.kind === "cell" ? rowLabel.get(q.rowKey) : "案件全体"}</td>
+                      <td className="py-1 pr-2">{q.kind === "cell" ? fieldLabel(q.field) : CASE_TOPICS[q.topic].label}</td>
+                      <td className="py-1 pr-2">{q.kind === "cell" ? REASONS[q.reason].label : "不明"}</td>
+                      <td className="py-1">{q.kind === "cell" ? rowByKey.get(q.rowKey)?.cells[q.field].value || "—" : ""}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </details>
+      )}
+
+      {active.length > 0 && (
+        <div className="grid gap-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="outline"
+              onClick={copyEmail}
+              data-testid="copy-email"
+            >
+              <Copy />
+              メール文面をコピー
+            </Button>
+            {sheet.askCount > 0 && (
+              <Button variant="outline" onClick={downloadXlsx} data-testid="download-inquiry-xlsx">
+                <FileDown />
+                記入用Excelをダウンロード（{sheet.askCount}件）
+              </Button>
+            )}
+          </div>
+          <Textarea readOnly className="h-64 font-mono text-xs" value={email} data-testid="inquiry-email" />
+        </div>
+      )}
+
+      {allRows.length > 0 && (
+        <div className="grid gap-2">
+          <label className="inline-flex w-fit cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-muted/60">
+            <FileUp className="size-4" />
+            記入された Excel を取り込む
+            <input
+              type="file"
+              accept=".xlsx,.xls"
+              className="sr-only"
+              data-testid="answer-input"
+              onChange={(e) => {
+                const f = e.target.files?.[0]
+                if (f) void importAnswers(f)
+                e.target.value = ""
+              }}
+            />
+          </label>
+          {answers && <AnswerReportView report={answers} rowLabel={rowLabel} />}
+        </div>
+      )}
+    </section>
+  )
+}
+
+function AnswerReportView({ report, rowLabel }: { report: AnswerReport; rowLabel: ReadonlyMap<string, string> }) {
+  const where = (q: CellInquiry) => `${rowLabel.get(q.rowKey) ?? q.rowKey} ${fieldLabel(q.field)}`
+  const problems = [
+    ...report.alsoChanged.map(
+      (c) => `${rowLabel.get(c.rowKey) ?? c.rowKey} ${fieldLabel(c.field)}: 聞いていない欄が「${c.was}」から「${c.answer}」に書き換えられていたので反映しました`,
+    ),
+    ...report.changed.map(
+      (c) => `${rowLabel.get(c.rowKey) ?? c.rowKey} ${fieldLabel(c.field)}: 送ったあとに「${withNames(c.now)}」に変わっていたため反映していません（回答「${withNames(c.answer)}」）`,
+    ),
+    ...report.invalid.map((c) => `${where(c.inquiry)}: ${c.message}（記入「${c.answer}」）`),
+    ...report.needsCheck.map((c) => `${rowLabel.get(c.rowKey) ?? c.rowKey} ${fieldLabel(c.field)}: 「${c.answer}」を反映しましたが要確認です（${c.message}）`),
+    ...report.heldBack.map(
+      (c) => `${rowLabel.get(c.rowKey) ?? c.rowKey} ${fieldLabel(c.field)}: 同じ欄のもう一方を反映できなかったため、「${c.answer}」も反映していません`,
+    ),
+    ...report.unknownKeys.map((k) => `管理番号「${k}」の行が今のデータにありません`),
+    ...report.unreadable.map((u) => `記入用Excelの${u.line}行目${u.rowKey ? `（管理番号「${u.rowKey}」）` : ""}は取り込めませんでした（${u.reason}）`),
+    ...report.duplicateKeys.map((k) => `管理番号「${k}」の行が2つ以上あり、どれが回答か分からないため取り込みませんでした`),
+  ]
+  return (
+    <div className="rounded-xl border bg-muted/30 px-4 py-3 text-sm" data-testid="answer-report">
+      <p>
+        反映 <strong>{report.applied.length}</strong> 件
+        {report.alsoChanged.length > 0 && <> ／ 聞いていない欄の書き換え {report.alsoChanged.length} 件</>} ／ 未記入 {report.unanswered.length} 件
+        {report.confirmed.length > 0 && <> ／ 推定のまま確認 {report.confirmed.length} 件</>}
+        {report.alreadyApplied.length > 0 && <> ／ 反映済み {report.alreadyApplied.length} 件</>}
+        {problems.length > 0 && <> ／ 要確認 {problems.length} 件</>}
+      </p>
+      {problems.length > 0 && (
+        <ul className="mt-1 list-disc space-y-0.5 pl-5 text-amber-900">
+          {problems.map((p, i) => (
+            <li key={i}>{p}</li>
+          ))}
+        </ul>
+      )}
+      {report.unanswered.length > 0 && (
+        <p className="mt-1 text-xs text-muted-foreground">未記入: {report.unanswered.map(where).join("、")}</p>
+      )}
+    </div>
+  )
+}

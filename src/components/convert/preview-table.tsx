@@ -1,0 +1,453 @@
+import { useMemo, useRef, useState } from "react"
+import {
+  columnVisibilityFeature,
+  createColumnHelper,
+  createSortedRowModel,
+  rowSortingFeature,
+  sortFn_alphanumeric,
+  tableFeatures,
+  useTable,
+  type ColumnVisibilityState,
+  type SortingState,
+} from "@tanstack/react-table"
+import { useVirtualizer } from "@tanstack/react-virtual"
+import { ArrowDown, ArrowUp, ArrowUpDown, Columns3, RefreshCw, Search } from "lucide-react"
+import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+import { Input } from "@/components/ui/input"
+import { TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import type { CellEdit, CellResult, EditSession, RowResult } from "@/lib/convert/convert"
+import { INCLUSION_LABELS, type Inclusion } from "@/lib/convert/koji-selection"
+import type { KojiFieldId } from "@/lib/spec/koji-keireki"
+import type { CsvSpec } from "@/lib/spec/types"
+import { cn } from "@/lib/utils"
+import { ROW_FILTERS, STATUS, cellClass, rowFilters, type RowFilter } from "./status"
+
+type Row = RowResult<KojiFieldId>
+
+const features = tableFeatures({
+  columnVisibilityFeature,
+  rowSortingFeature,
+  sortedRowModel: createSortedRowModel(),
+  sortFns: { alphanumeric: sortFn_alphanumeric },
+})
+const columnHelper = createColumnHelper<typeof features, Row>()
+
+/**
+ * 列の幅（px）。表に出す行だけで列の幅が決まると、スクロールで幅が揺れるので固定する。
+ * 「載せる」と「元の行」の列もここで持つ
+ */
+const WIDTH: Record<KojiFieldId | "include" | "origin", number> = {
+  include: 112,
+  origin: 84,
+  gyoshu: 64,
+  client: 170,
+  motoukeShitauke: 64,
+  jv: 44,
+  workName: 240,
+  prefecture: 80,
+  place: 140,
+  engineer: 104,
+  amount: 92,
+  specialAmount: 108,
+  startYm: 80,
+  endYm: 80,
+  chiefEngineer: 104,
+  supervisingEngineer: 104,
+}
+
+const FILTER_ORDER: RowFilter[] = ["all", "error", "review", "changed"]
+
+/** 手直し中のセル。下書きは行の外に持つ（仮想スクロールで行が消えても残る） */
+type Editing = { row: string; field: KojiFieldId; session: EditSession; draft: string }
+
+const originText = (r: Row) => `${r.sheet}!${r.row + 1}`
+
+export function PreviewTable({
+  spec,
+  rows,
+  order,
+  inclusion,
+  openEditor,
+  onEdit,
+  onToggle,
+}: {
+  spec: CsvSpec<KojiFieldId>
+  rows: Row[]
+  /** rows の並びの決まり（業種ごとに並べるか）。変わったら、手直しのために止めた表示の並びを解く */
+  order: string
+  inclusion: ReadonlyMap<string, Inclusion>
+  /** 手直しを始める（直す元の文字列は個人名の記号を「〔Ａ〕」の形で出し、確定した文字列は同じ記号の表で読む） */
+  openEditor: (cell: CellResult) => EditSession
+  onEdit: (rowKey: string, field: KojiFieldId, edit: CellEdit) => void
+  onToggle: (rowKey: string, included: boolean) => void
+}) {
+  const [editing, setEditing] = useState<Editing | null>(null)
+  const [filter, setFilter] = useState<RowFilter>("all")
+  const [query, setQuery] = useState("")
+  const [sorting, setSorting] = useState<SortingState>([])
+  const [columnVisibility, setColumnVisibility] = useState<ColumnVisibilityState>({})
+  /**
+   * 手直しを始めたときの表示の行（キーの並び）。手直しで行が絞り込みから外れたり並べ替えで動いたりしても、
+   * 絞り込み・並べ替え・検索を変えるか「更新」を押すまではこの並びのまま出す
+   */
+  const [pinned, setPinned] = useState<readonly string[] | null>(null)
+  const unpin = () => setPinned(null)
+  const [pinnedOrder, setPinnedOrder] = useState(order)
+  if (pinnedOrder !== order) {
+    setPinnedOrder(order)
+    unpin()
+  }
+
+  const columns = useMemo(
+    () =>
+      columnHelper.columns([
+        columnHelper.display({ id: "include", header: "載せる", enableHiding: false }),
+        columnHelper.accessor(originText, { id: "origin", header: "元の行", sortFn: "alphanumeric" }),
+        ...spec.fields.map((f) =>
+          columnHelper.accessor((r) => r.cells[f.id].value, {
+            id: f.id,
+            header: () => (
+              <>
+                <span className="mr-1 font-mono">{f.letter}</span>
+                {f.label}
+              </>
+            ),
+            sortFn: "alphanumeric",
+          }),
+        ),
+      ]),
+    [spec],
+  )
+  const matches = useMemo(() => new Map(rows.map((r) => [r.key, rowFilters(r)])), [rows])
+  /** 絞り込みごとの行数。CSV に載せる行と、表に出る行（載せない行も含む） */
+  const counts = useMemo(() => {
+    const c = Object.fromEntries(FILTER_ORDER.map((f) => [f, { csv: 0, all: 0 }])) as Record<RowFilter, { csv: number; all: number }>
+    for (const r of rows) {
+      const included = inclusion.get(r.key)?.included ?? false
+      const m = matches.get(r.key)!
+      for (const f of FILTER_ORDER) {
+        if (!m[f]) continue
+        c[f].all++
+        if (included) c[f].csv++
+      }
+    }
+    return c
+  }, [rows, matches, inclusion])
+
+  const needle = query.trim().toLowerCase()
+  const data = useMemo(() => {
+    const visible = (id: string) => columnVisibility[id] !== false
+    const searched = spec.fields.filter((f) => visible(f.id))
+    const hasText = (r: Row) =>
+      (visible("origin") && originText(r).toLowerCase().includes(needle)) || searched.some((f) => r.cells[f.id].value.toLowerCase().includes(needle))
+    return rows.filter((r) => matches.get(r.key)![filter] && (!needle || hasText(r)))
+  }, [rows, matches, filter, needle, columnVisibility, spec])
+
+  const table = useTable({
+    features,
+    data,
+    columns,
+    getRowId: (r) => r.key,
+    onSortingChange: (updater) => {
+      unpin()
+      setSorting(updater)
+    },
+    onColumnVisibilityChange: setColumnVisibility,
+    state: { sorting, columnVisibility },
+  })
+  const live = table.getRowModel().rows.map((r) => r.original)
+  const liveKeys = new Set(live.map((r) => r.key))
+  const byKey = useMemo(() => new Map(rows.map((r) => [r.key, r])), [rows])
+  const shown = pinned ? pinned.flatMap((k) => byKey.get(k) ?? []) : live
+  const outdated = pinned !== null && (shown.length !== live.length || shown.some((r, i) => r.key !== live[i]!.key))
+  const visibleColumns = table.getVisibleLeafColumns()
+
+  function startEdit(r: Row, field: KojiFieldId) {
+    if (editing) finishEdit(true)
+    setPinned((p) => p ?? live.map((r) => r.key))
+    const session = openEditor(r.cells[field])
+    setEditing({ row: r.key, field, session, draft: session.text })
+  }
+  function finishEdit(commit: boolean) {
+    if (!editing) return
+    setEditing(null)
+    if (commit && editing.draft !== editing.session.text) onEdit(editing.row, editing.field, editing.session.read(editing.draft))
+  }
+
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const virtualizer = useVirtualizer({
+    count: shown.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => 36,
+    overscan: 12,
+    getItemKey: (i) => shown[i]!.key,
+  })
+  const items = virtualizer.getVirtualItems()
+  const padTop = items[0]?.start ?? 0
+  const padBottom = virtualizer.getTotalSize() - (items.at(-1)?.end ?? 0)
+
+  function renderCell(r: Row, columnId: string) {
+    if (columnId === "include") {
+      const inc = inclusion.get(r.key)
+      return (
+        <TableCell key={columnId} className="sticky left-0 z-10 border-b bg-card px-2 py-1.5">
+          <label className="flex items-center gap-1.5 whitespace-nowrap" title={r.excluded}>
+            <Checkbox aria-label="CSVに載せる" checked={inc?.included ?? false} onCheckedChange={(checked) => onToggle(r.key, checked)} />
+            <span className="text-[11px] text-muted-foreground">{inc ? INCLUSION_LABELS[inc.reason] : ""}</span>
+          </label>
+          {!liveKeys.has(r.key) && (
+            <span className="mt-0.5 block text-[11px] text-amber-700" data-testid="row-unmatched" title="手直しで、今の絞り込み・検索に合わなくなりました。「更新」で表から外れます">
+              条件に合いません
+            </span>
+          )}
+        </TableCell>
+      )
+    }
+    if (columnId === "origin") {
+      return (
+        <TableCell key={columnId} className="num border-b px-2 py-1.5 text-muted-foreground">
+          {originText(r)}
+        </TableCell>
+      )
+    }
+    const field = columnId as KojiFieldId
+    const cell = r.cells[field]
+    const isEditing = editing?.row === r.key && editing.field === field
+    return (
+      <TableCell
+        key={columnId}
+        className={cn("border-b border-l p-0 align-top whitespace-normal", cellClass(cell))}
+        data-field={field}
+        data-status={cell.status}
+        data-changed={ROW_FILTERS.changed.matches(cell) ? "1" : undefined}
+      >
+        {isEditing ? (
+          <CellEditor value={editing.draft} onChange={(draft) => setEditing({ ...editing, draft })} onDone={finishEdit} />
+        ) : (
+          <button
+            type="button"
+            className="block min-h-8 w-full px-2 py-1.5 text-left break-words hover:ring-1 hover:ring-ring/40 hover:ring-inset"
+            title={describe(cell)}
+            onClick={() => startEdit(r, field)}
+          >
+            <span className="whitespace-pre-wrap">{cell.value || <span className="text-muted-foreground/50">—</span>}</span>
+            {cell.message && (cell.status === "warning" || cell.status === "error" || cell.status === "ai") && (
+              <span className="mt-0.5 line-clamp-2 text-[11px] leading-snug opacity-75">{cell.message}</span>
+            )}
+          </button>
+        )}
+      </TableCell>
+    )
+  }
+
+  const tableWidth = visibleColumns.reduce((s, c) => s + WIDTH[c.id as keyof typeof WIDTH], 0)
+
+  return (
+    <div className="grid gap-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-1" role="group" aria-label="表の絞り込み" data-testid="row-filters">
+          {FILTER_ORDER.map((f) => (
+            <Button
+              key={f}
+              size="sm"
+              variant={filter === f ? "secondary" : "ghost"}
+              aria-pressed={filter === f}
+              title={ROW_FILTERS[f].title}
+              data-filter={f}
+              onClick={() => {
+                unpin()
+                setFilter(f)
+              }}
+            >
+              {ROW_FILTERS[f].label}
+              <span className="num text-muted-foreground" data-count="csv">
+                {counts[f].csv}
+              </span>
+              {counts[f].all !== counts[f].csv && (
+                <span className="num text-[11px] text-muted-foreground/70" data-count="all">
+                  （全{counts[f].all}）
+                </span>
+              )}
+            </Button>
+          ))}
+          <span className="text-xs text-muted-foreground">件数は CSV に載せる行（かっこ内は載せない行も含む）</span>
+        </div>
+        <div className="relative w-56">
+          <Search className="pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            type="search"
+            aria-label="表の中を検索"
+            placeholder="表の中を検索"
+            className="pl-7"
+            value={query}
+            onChange={(e) => {
+              unpin()
+              setQuery(e.target.value)
+            }}
+          />
+        </div>
+        <span className="text-xs text-muted-foreground">
+          {sorting.length > 0 ? "見出しの並べ替えは表示の順だけで、CSV の順は変わりません。" : "見出しをクリックすると並べ替えます（表示だけ）。"}
+        </span>
+        <span className="num text-xs text-muted-foreground" data-testid="shown-count">
+          {shown.length} 行を表示
+        </span>
+        {outdated && (
+          <span className="flex items-center gap-1.5 text-xs text-amber-700" data-testid="outdated">
+            手直しのあと、表示を止めています
+            <Button size="sm" variant="outline" onClick={unpin}>
+              <RefreshCw />
+              更新
+            </Button>
+          </span>
+        )}
+        <DropdownMenu>
+          <DropdownMenuTrigger render={<Button variant="outline" size="sm" className="ml-auto" />}>
+            <Columns3 />
+            表示する列
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-60">
+            <DropdownMenuGroup>
+              <DropdownMenuLabel>表示する列</DropdownMenuLabel>
+              {table
+                .getAllLeafColumns()
+                .filter((c) => c.getCanHide())
+                .map((c) => (
+                  <DropdownMenuCheckboxItem key={c.id} checked={c.getIsVisible()} onCheckedChange={(v) => c.toggleVisibility(v)}>
+                    {columnLabel(spec, c.id)}
+                  </DropdownMenuCheckboxItem>
+                ))}
+            </DropdownMenuGroup>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+
+      <div ref={scrollRef} className="overflow-auto rounded-xl border bg-card" style={{ maxHeight: "70vh" }}>
+        <table
+          data-slot="table"
+          data-testid="preview-table"
+          className="w-full table-fixed border-separate border-spacing-0 text-xs"
+          style={{ minWidth: tableWidth }}
+        >
+          <colgroup>
+            {visibleColumns.map((c) => (
+              <col key={c.id} style={{ width: WIDTH[c.id as keyof typeof WIDTH] }} />
+            ))}
+          </colgroup>
+          <TableHeader className="sticky top-0 z-20 bg-muted">
+            {table.getHeaderGroups().map((hg) => (
+              <TableRow key={hg.id} className="hover:bg-transparent">
+                {hg.headers.map((h) => {
+                  const sorted = h.column.getIsSorted()
+                  return (
+                    <TableHead
+                      key={h.id}
+                      aria-sort={sorted === "asc" ? "ascending" : sorted === "desc" ? "descending" : undefined}
+                      className={cn(
+                        "h-auto border-b bg-muted px-2 py-2 align-bottom text-xs whitespace-normal text-muted-foreground",
+                        h.column.id === "include" && "sticky left-0 z-30",
+                      )}
+                    >
+                      {h.column.getCanSort() ? (
+                        <button type="button" className="inline-flex items-end gap-1 text-left font-medium hover:text-foreground" onClick={h.column.getToggleSortingHandler()}>
+                          <span>
+                            <table.FlexRender header={h} />
+                          </span>
+                          {sorted === "asc" ? <ArrowUp className="size-3 shrink-0" /> : sorted === "desc" ? <ArrowDown className="size-3 shrink-0" /> : <ArrowUpDown className="size-3 shrink-0 opacity-40" />}
+                        </button>
+                      ) : (
+                        <table.FlexRender header={h} />
+                      )}
+                    </TableHead>
+                  )
+                })}
+              </TableRow>
+            ))}
+          </TableHeader>
+          <TableBody>
+            {padTop > 0 && <tr aria-hidden style={{ height: padTop }} />}
+            {items.map((vi) => {
+              const r = shown[vi.index]!
+              const included = inclusion.get(r.key)?.included ?? false
+              return (
+                <TableRow
+                  key={r.key}
+                  ref={virtualizer.measureElement}
+                  data-index={vi.index}
+                  data-row-key={r.key}
+                  data-included={included ? "1" : "0"}
+                  className={cn("border-0", !included && "opacity-45")}
+                >
+                  {visibleColumns.map((c) => renderCell(r, c.id))}
+                </TableRow>
+              )
+            })}
+            {padBottom > 0 && <tr aria-hidden style={{ height: padBottom }} />}
+            {shown.length === 0 && (
+              <TableRow>
+                <TableCell colSpan={visibleColumns.length} className="h-20 text-center text-muted-foreground" data-testid="no-match">
+                  {needle ? `「${query.trim()}」を含む${ROW_FILTERS[filter].title}` : ROW_FILTERS[filter].title}はありません
+                </TableCell>
+              </TableRow>
+            )}
+          </TableBody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+function columnLabel(spec: CsvSpec<KojiFieldId>, id: string) {
+  const f = spec.fields.find((f) => f.id === id)
+  return f ? `${f.letter} ${f.label}` : "元の行"
+}
+
+function describe(c: CellResult) {
+  return [`${STATUS[c.status].label}（元: ${c.source}）`, c.message].filter(Boolean).join("\n")
+}
+
+/** 下書き（value）は PreviewTable が持つ。onDone(true) で確定、onDone(false) で取り消し */
+function CellEditor({ value, onChange, onDone }: { value: string; onChange: (v: string) => void; onDone: (commit: boolean) => void }) {
+  const finished = useRef(false)
+  const finish = (commit: boolean) => {
+    if (finished.current) return
+    finished.current = true
+    onDone(commit)
+  }
+  return (
+    <input
+      autoFocus
+      aria-label="セルの値"
+      className="h-8 w-full min-w-24 bg-background px-2 outline-none ring-2 ring-ring ring-inset"
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      onBlur={() => finish(true)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") finish(true)
+        if (e.key === "Escape") finish(false)
+      }}
+    />
+  )
+}
+
+export function StatusLegend({ counts }: { counts: Record<keyof typeof STATUS, number> }) {
+  return (
+    <ul className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground" data-testid="status-counts">
+      {(Object.keys(STATUS) as (keyof typeof STATUS)[]).map((s) => (
+        <li key={s} className="flex items-center gap-1.5" data-status={s}>
+          <span className={cn("size-2 rounded-full", STATUS[s].dot)} />
+          {STATUS[s].label} <span className="num font-medium text-foreground">{counts[s]}</span>
+        </li>
+      ))}
+    </ul>
+  )
+}

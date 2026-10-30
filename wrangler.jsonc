@@ -1,0 +1,70 @@
+/**
+ * Wrangler 設定
+ * https://developers.cloudflare.com/workers/wrangler/configuration/
+ */
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "aoike-kensetsu-csv",
+	"compatibility_date": "2026-10-06",
+	/** enable_request_signal: チャットの指示を止めた・タブを閉じたとき、request.signal で AI の呼び出しも止める */
+	"compatibility_flags": ["nodejs_compat", "enable_request_signal"],
+	/** TanStack Start の入口に、工事場所の調査の Workflow のクラスを足した入口（src/worker.ts） */
+	"main": "src/worker.ts",
+	"observability": {
+		"enabled": true
+	},
+	"upload_source_maps": true,
+	/**
+	 * 公開URLは https://csv.aoike.jp（Cloudflare for SaaS 経由で下の routes から届く）。
+	 * 入口を csv.aoike.jp に一本化するため、workers.dev とプレビューURLは閉じている。
+	 */
+	"workers_dev": false,
+	"preview_urls": false,
+	/**
+	 * Cloudflare for SaaS（SaaS ゾーン chiji.tech）経由の入口（README の「公開URL」を参照）。
+	 * csv.aoike.jp を chiji.tech の Custom Hostname として登録し、ラディックスで
+	 * CNAME を saas.chiji.tech に向けると、このルートで本 Worker に直接届く。
+	 * カスタムホスト名への通信は chiji.tech ゾーンに入るので zone_name は chiji.tech。
+	 */
+	"routes": [
+		{
+			"pattern": "csv.aoike.jp/*",
+			"zone_name": "chiji.tech"
+		}
+	],
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "aoike-kensetsu-csv",
+			"database_id": "4df05265-8f6d-4056-9443-0fa96a28ed5b",
+			"migrations_dir": "drizzle"
+		}
+	],
+	/**
+	 * 案件のファイル（届いた Excel・PDF、記入用Excel、返ってきた Excel、出力した CSV）。キーは cases/<caseId>/<fileId>。
+	 * 公開アクセスは付けない（ダウンロードはログイン必須の /api/files/<fileId> から）
+	 */
+	"r2_buckets": [
+		{
+			"binding": "FILES",
+			"bucket_name": "aoike-kensetsu-csv-files"
+		}
+	],
+	/**
+	 * 工事場所の一括調査（src/server/location-workflow.ts）。インスタンスの id は D1 の csv_location_runs の id。
+	 * 失敗した検索は step のやり直しで自動で調べ直す
+	 */
+	"workflows": [
+		{
+			"name": "aoike-kensetsu-csv-location-search",
+			"binding": "LOCATION_SEARCH",
+			"class_name": "LocationSearchWorkflow"
+		}
+	]
+	/**
+	 * Secrets（`bunx wrangler secret put <NAME>` で設定）
+	 *  - BETTER_AUTH_SECRET: 32文字以上のランダム文字列
+	 *  - BETTER_AUTH_URL:    公開URL（https://csv.aoike.jp）
+	 *  - ANTHROPIC_API_KEY:  Claude API のキー（未設定でもルール変換だけで動く）
+	 */
+}
