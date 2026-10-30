@@ -123,3 +123,42 @@ test("記入用Excelの色付きの欄の外に書いた答えは、チャット
     await expect(cell(page, answered.rowKey, answered.field)).toHaveText(ANSWER[answered.field]!)
   })
 })
+
+/** 本物の AI（E2E_LIVE_AI=1 のときだけ。費用は1回 $0.1 ほど）。サーバー（Worker）で工事場所の答えを住所データで分ける（異体字の市の名前も） */
+test("本物の AI: 「備考」の列に書いた工事場所を読み、Worker で都道府県・市区町村に分けた変更案にする", async ({ page }) => {
+  test.skip(process.env.E2E_LIVE_AI !== "1", "E2E_LIVE_AI=1 のときだけ")
+  const { customer } = await openNewCase(page)
+  created.push(customer)
+  await page.route((url) => callsServerFn(url.href, ["planWithAi"]), (route) => route.fulfill({ status: 500, body: "計画の AI を使わない" }))
+  await page.getByTestId("chat-file-input").setInputFiles(FIXTURE)
+  await expect(page.getByTestId("case-report")).toHaveAttribute("data-phase", "done", { timeout: 180_000 })
+  await openTab(page, "inquiry")
+  const downloading = page.waitForEvent("download")
+  await page.getByTestId("download-inquiry-xlsx").click()
+  const wb = new ExcelJS.Workbook()
+  await wb.xlsx.load(readFileSync((await (await downloading).path())!).buffer as ArrayBuffer)
+  const ws = wb.worksheets[0]!
+  let headerRow = 0
+  ws.eachRow((r, n) => {
+    if (!headerRow && (r.values as unknown[]).includes("管理番号")) headerRow = n
+  })
+  const header = (ws.getRow(headerRow).values as unknown[]).map(String)
+  const askedCol = header.indexOf("照合用")
+  ws.getCell(headerRow, header.length).value = "備考"
+  let rowKey = ""
+  for (let n = headerRow + 1; n <= ws.rowCount && !rowKey; n++) {
+    const asked = (JSON.parse(String(ws.getRow(n).getCell(askedCol).value)) as { asked: { field: string }[] }).asked
+    if (!asked.some((a) => a.field === "place")) continue
+    rowKey = String(ws.getRow(n).getCell(header.indexOf("管理番号")).value)
+    ws.getRow(n).getCell(header.length).value = "工事場所は茨城県竜ヶ崎市です"
+  }
+  expect(rowKey).not.toBe("")
+  await page.getByTestId("chat-file-input").setInputFiles({ name: "回答.xlsx", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buffer: Buffer.from(await wb.xlsx.writeBuffer()) })
+  await page.locator('[data-testid="chat-suggestion"][data-file-name="回答.xlsx"]').getByTestId("chat-suggestion-send").click()
+  const proposal = page.getByTestId("proposal")
+  await expect(proposal).toBeVisible({ timeout: 240_000 })
+  await proposal.getByTestId("proposal-open").click()
+  const items = page.getByTestId("proposal-dialog").getByTestId("proposal-item")
+  await expect(items.filter({ hasText: "都道府県名" })).toContainText("茨城県")
+  await expect(items.filter({ hasText: "場所名" })).toContainText("龍ケ崎市")
+})
