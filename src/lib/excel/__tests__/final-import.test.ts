@@ -41,7 +41,7 @@ const anonymize: AiCaller = async (req: AiBatchRequest) => ({
 const ai = { rounding: "floor" as const, cache: new Map(), callAi: anonymize, lookup: fileAddressLookup }
 const col = (f: KojiFieldId) => KOJI_KEIREKI.fields.findIndex((x) => x.id === f) + 1
 
-/** 落とした最後の Excel を ExcelJS で開いて直し（職員の手直しの代わり）、上げ直したときと同じく SheetJS で読む。rowOf は落としたときのその行の行番号 */
+/** ダウンロードした最後の Excel を ExcelJS で開いて直し（職員の手直しの代わり）、上げ直したときと同じく SheetJS で読む。rowOf はダウンロードしたときのその行の行番号 */
 async function roundTrip(t: CaseTable, edit: (ws: ExcelJS.Worksheet, rowOf: (key: string) => number) => void) {
   const view = deriveTable(t)
   const wb = new ExcelJS.Workbook()
@@ -57,7 +57,7 @@ async function read(sheets: ReturnType<typeof readWorkbook>, t: CaseTable, optio
 const cellsOf = (changes: ChatChange[]) => changes.flatMap((c) => (c.kind === "cell" ? [[c.rowKey, c.field, c.edit.value]] : []))
 
 describe("最後の Excel の上げ直し", () => {
-  test("何も直さずに上げ直すと変更案は無い。この画面で落とした最後の Excel だと見分ける", async () => {
+  test("何も直さずに上げ直すと変更案は無い。この画面でダウンロードした最後の Excel だと見分ける", async () => {
     const sheets = await roundTrip(table, () => {})
     expect(uploadKind(sheets)).toBe("final")
     const r = await read(sheets, table)
@@ -98,7 +98,7 @@ describe("最後の Excel の上げ直し", () => {
     expect(third.report.alreadyAdded).toBe(1)
   })
 
-  test("行を消す → 「載せない」の変更案（落としたあとに画面で外した行は何もしない）", async () => {
+  test("行を消す → 「載せない」の変更案（ダウンロードしたあとに画面で外した行は何もしない）", async () => {
     const sheets = await roundTrip(table, (ws, rowOf) => {
       ws.spliceRows(rowOf("s!3"), 1)
       ws.spliceRows(rowOf("s!2"), 1)
@@ -158,12 +158,12 @@ describe("最後の Excel の上げ直し", () => {
     expect(JSON.stringify(noAi.report)).not.toContain("山田")
   })
 
-  test("落としたあとに記号が付け直されても（前の行を外した）、記号の人を取り違えず、食い違いにもしない", async () => {
+  test("ダウンロードしたあとに記号が付け直されても（前の行を外した）、記号の人を取り違えず、食い違いにもしない", async () => {
     const t: CaseTable = { ...table, rows: [rows[0]!, kojiRow({ ...base, client: personToken("鈴木一郎"), workName: `${personToken("鈴木一郎")}邸新築工事`, amount: "3000" }, 2)] }
     const sheets = await roundTrip(t, (ws, rowOf) => {
       ws.getCell(rowOf("s!2"), col("workName")).value = "Ｂ邸改築工事"
     })
-    // 落としたあとに s!1 を外したので、鈴木は Ｂ → Ａ になった
+    // ダウンロードしたあとに s!1 を外したので、鈴木は Ｂ → Ａ になった
     const now: CaseTable = { ...t, manual: new Map([["s!1", false]]) }
     expect(deriveTable(now).output[0]!.cells.client.value).toBe("Ａ")
     const r = await read(sheets, now)
@@ -171,7 +171,7 @@ describe("最後の Excel の上げ直し", () => {
     expect(cellsOf(r.changes)).toEqual([["s!2", "workName", `${personToken("鈴木一郎")}邸改築工事`]])
   })
 
-  test("落としたあとに表のその値が変わっていたら、上書きせず食い違いとして知らせる（ほかの値は取り込む）", async () => {
+  test("ダウンロードしたあとに表のその値が変わっていたら、上書きせず食い違いとして知らせる（ほかの値は取り込む）", async () => {
     const sheets = await roundTrip(table, (ws, rowOf) => {
       ws.getCell(rowOf("s!2"), col("amount")).value = 3500
       ws.getCell(rowOf("s!2"), col("place")).value = "港区"
@@ -210,7 +210,7 @@ describe("最後の Excel の上げ直し", () => {
     const data = sheets.filter((s) => s.name !== CHECK_SHEET_NAME)
     expect(uploadKind(data)).toBe("unlinked")
     expect("error" in (await readFinalSheet(data, deriveTable(table), id, ai))).toBe(true)
-    expect(await readFinalSheet(sheets, deriveTable(table), { ...id, caseId: "case-2" }, ai)).toEqual({ error: "別の案件で落とした Excel です" })
+    expect(await readFinalSheet(sheets, deriveTable(table), { ...id, caseId: "case-2" }, ai)).toEqual({ error: "別の案件でダウンロードした Excel です" })
     expect("error" in (await readFinalSheet(sheets, deriveTable(table), { ...id, sourceFileId: "file-2" }, ai))).toBe(true)
     const broken = sheets.map((s) => (s.name === CHECK_SHEET_NAME ? { ...s, rows: s.rows.map((r, i) => (i === 1 ? ["meta", "書き換えた"] : r)) } : s))
     expect(uploadKind(broken)).toBe("final")
@@ -241,7 +241,7 @@ describe("最後の Excel の上げ直し（取り違え・二重・重さ）", 
     expect(again.changes).toEqual([])
   })
 
-  test("場所名の住所からそろえる都道府県名は、落としたあとに画面で都道府県名を変えていたら上書きせず食い違いにする", async () => {
+  test("場所名の住所からそろえる都道府県名は、ダウンロードしたあとに画面で都道府県名を変えていたら上書きせず食い違いにする", async () => {
     const sheets = await roundTrip(table, (ws, rowOf) => {
       ws.getCell(rowOf("s!1"), col("place")).value = "神奈川県横浜市中区山下町1"
     })
@@ -279,7 +279,7 @@ describe("最後の Excel の上げ直し（取り違え・二重・重さ）", 
     expect(await readFinalSheet(sheets, deriveTable(table), { ...id, excelKey: "2".repeat(64) }, ai)).toEqual({ error: "この Excel の記録と合いません。書き出し直してから直してください" })
   })
 
-  test("足した行・直したセルの記号は、Excel に書いた記号の人に戻す。戻せない記号は読めない値。落としたときの人でない記号の形の文字はそのまま", async () => {
+  test("足した行・直したセルの記号は、Excel に書いた記号の人に戻す。戻せない記号は読めない値。ダウンロードしたときの人でない記号の形の文字はそのまま", async () => {
     const t: CaseTable = { ...table, rows: [...rows.slice(0, 2), kojiRow({ ...base, client: "Ｋ建設", workName: "Ｋ建設倉庫改修", amount: "1000" }, 3)] }
     const sheets = await roundTrip(t, (ws, rowOf) => {
       ws.getCell(rowOf("s!3"), col("workName")).value = "Ｋ建設倉庫改築"
@@ -326,7 +326,7 @@ describe("最後の Excel の上げ直し（取り違え・二重・重さ）", 
 
 describe("行の対応", () => {
   const row = (...v: string[]) => [...v, ...Array(14 - v.length).fill("x")]
-  test("同じ値の多すぎる手がかりで候補を探せなかった行も、残った落とした行と近ければ黙って差し替えず決めきれない行にする", () => {
+  test("同じ値の多すぎる手がかりで候補を探せなかった行も、残ったダウンロードした行と近ければ黙って差し替えず決めきれない行にする", () => {
     // 候補を探す列（注文者・工事名など）はどの行も同じ値。ほかの7列が行ごとに違う
     const sent = Array.from({ length: 600 }, (_, i) => ["k", "x", "a", "b", "x", "c", "x", "x", "x", "e", "x", "x", "f", "g"].map((v) => (v === "x" ? v : `${v}${i}`)))
     const up = [sent[0]!.map((v, c) => (c === 0 ? "直した" : v))]

@@ -75,7 +75,7 @@ describe("最後の Excel", () => {
     expect(text).not.toContain("s!1")
   })
 
-  test("照合用のシートは行の key と落としたときの値（記号の人は「〔Ａ〕」）を持ち、個人名は書かない", async () => {
+  test("照合用のシートは行の key とダウンロードしたときの値（記号の人は「〔Ａ〕」）を持ち、個人名は書かない", async () => {
     const { book } = await written()
     const rows = XLSX.utils.sheet_to_json<string[]>(book.Sheets[CHECK_SHEET_NAME]!, { header: 1, raw: false, defval: "" })
     expect(rows[0]!.slice(0, 2)).toEqual([CHECK_MARK, "1"])

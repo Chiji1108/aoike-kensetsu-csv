@@ -36,7 +36,7 @@ export type ChatMessage = UIMessage<ChatMetadata, ChatDataParts>
 export const CHAT_ACTIONS = ["export", "inquiry_excel"] as const
 export type ChatAction = (typeof CHAT_ACTIONS)[number]
 /**
- * 保存した会話のボタン。edit_excel は前の「編集用の Excel を落とす」（編集用の Excel は最後の Excel に1つにしたので、書き出す前の確認を開く）。
+ * 保存した会話のボタン。edit_excel は前の「編集用の Excel をダウンロードする」（編集用の Excel は最後の Excel に1つにしたので、書き出す前の確認を開く）。
  * 保存した会話を読めなくしないよう、読むときだけ受け付ける
  */
 export const SAVED_CHAT_ACTIONS = [...CHAT_ACTIONS, "edit_excel"] as const

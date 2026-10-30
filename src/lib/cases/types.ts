@@ -41,7 +41,7 @@ const CONTENT_TYPES: Record<string, string> = {
   docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 }
 
-/** ファイルを付けるボタンで選べるファイル（落とすときは選ばない。表として読めないファイルは届いたファイルとして保存し、チャットの AI が読む） */
+/** ファイルを付けるボタンで選べるファイル（ドラッグしたときは選ばない。表として読めないファイルは届いたファイルとして保存し、チャットの AI が読む） */
 export const ATTACH_ACCEPT = ".xlsx,.xls,.csv,.pdf,.txt,.eml,.docx"
 
 /** 保存して返すときの種類。名前の拡張子で決め、送り手の Content-Type は使わない（ほかの種類は中身を開かせない octet-stream） */

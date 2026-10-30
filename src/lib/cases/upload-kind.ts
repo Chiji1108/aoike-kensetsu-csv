@@ -4,8 +4,8 @@ import { CHECK_SHEET_NAME } from "../excel/final-sheet"
 import { ASKED_HEADER, MANAGEMENT_HEADER } from "../inquiry/inquiry"
 
 /**
- * 上げたファイルの種類を、決まった印で見分ける（チャット欄・画面に落としたファイル）。
- * final: この画面で落とした最後の Excel（照合用の隠しシート）。answer: 記入用Excel（管理番号と照合用の列）。
+ * 上げたファイルの種類を、決まった印で見分ける（チャット欄の📎・画面にドラッグしたファイル）。
+ * final: この画面でダウンロードした最後の Excel（照合用の隠しシート）。answer: 記入用Excel（管理番号と照合用の列）。
  * unlinked: 表に戻せない Excel（照合用の隠しシートの無い、最後の Excel の形の表・前の編集用の Excel）。元データと取り違えないよう、何として読むかを職員に聞く。
  * sheet: そのほかの表（元データの候補）。document: 表として読まないファイル（PDF）
  */
