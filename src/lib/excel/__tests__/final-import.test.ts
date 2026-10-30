@@ -25,7 +25,7 @@ const rows = [
   kojiRow({ ...base, client: "株式会社サンプル", workName: "サンプル倉庫改修", amount: "1000" }, 3),
 ]
 const table: CaseTable = { rows, added: [], edits: new Map(), replacements: {}, manual: new Map(), tax: "excluded", basis: {}, rule7Tax: "excluded" as const, selection: "all" as const, dismissed: new Set<string>(), inquiryText: EMPTY_INQUIRY_TEXT }
-const id = { caseId: "case-1", sourceFileId: "file-1" }
+const id = { caseId: "case-1", sourceFileId: "file-1", excelKey: "1".repeat(64) }
 
 /** 匿名化の決まった応答: 注文者は全体、工事名は「様邸」「邸」の前を個人名として印にする */
 const anonymize: AiCaller = async (req: AiBatchRequest) => ({
@@ -218,18 +218,81 @@ describe("最後の Excel の上げ直し", () => {
   })
 })
 
+describe("最後の Excel の上げ直し（取り違え・二重・重さ）", () => {
+  test("メモのシートを先頭に足してもデータのシートを読む。データを消した・別の表を上げたなら、全行を「載せない」にせず断る", async () => {
+    const sheets = await roundTrip(table, (ws, rowOf) => {
+      ws.getCell(rowOf("s!2"), col("amount")).value = 3500
+    })
+    const memo = { name: "メモ", rows: [["確認済み"]], hidden: [false] }
+    expect(cellsOf((await read([memo, ...sheets], table)).changes)).toEqual([["s!2", "amount", "3500"]])
+    const emptied = sheets.map((s) => (s.name === CHECK_SHEET_NAME ? s : { ...s, rows: [["9", "別の表"]] }))
+    const r = await readFinalSheet(emptied, deriveTable(table), id, ai)
+    expect("error" in r && r.error).toContain("1つも見つかりません")
+  })
+
+  test("場所名に住所を書いて承認したあとに同じ Excel を上げても、食い違いにしない", async () => {
+    const sheets = await roundTrip(table, (ws, rowOf) => {
+      ws.getCell(rowOf("s!1"), col("place")).value = "神奈川県横浜市中区山下町1"
+    })
+    const first = await read(sheets, table)
+    const approved = applyChanges(table, deriveTable(table).edited, first.changes)
+    const again = await read(sheets, approved)
+    expect(again.report.conflicts).toEqual([])
+    expect(again.changes).toEqual([])
+  })
+
+  test("場所名の住所からそろえる都道府県名は、落としたあとに画面で都道府県名を変えていたら上書きせず食い違いにする", async () => {
+    const sheets = await roundTrip(table, (ws, rowOf) => {
+      ws.getCell(rowOf("s!1"), col("place")).value = "神奈川県横浜市中区山下町1"
+    })
+    const changed: CaseTable = { ...table, edits: new Map([[editKey("s!1", "prefecture"), { value: "千葉県", by: "staff" }]]) }
+    const r = await read(sheets, changed)
+    expect(cellsOf(r.changes)).toEqual([["s!1", "place", "横浜市中区"]])
+    expect(r.report.conflicts).toEqual([{ line: 1, field: "prefecture", sent: "東京都", now: "千葉県", uploaded: "神奈川県" }])
+  })
+
+  test("1行で4〜6列を直した行は、当てずに決めきれない行として出す（足した行と消した行にしない）", async () => {
+    const sheets = await roundTrip(table, (ws, rowOf) => {
+      const r = rowOf("s!2")
+      ws.getCell(r, col("client")).value = "株式会社べつ"
+      ws.getCell(r, col("workName")).value = "べつの工事"
+      ws.getCell(r, col("place")).value = "港区"
+      ws.getCell(r, col("amount")).value = 3333
+    })
+    const r = await read(sheets, table)
+    expect(r.changes).toEqual([])
+    expect(r.report.ambiguous).toEqual([{ line: 2, candidates: 1 }])
+    expect(r.report.keptRows).toBe(1)
+  })
+
+  test("請負代金の列に桁区切りの書式を付けても、直したことにしない", async () => {
+    const sheets = await roundTrip(table, (ws) => {
+      ws.getColumn(col("amount")).numFmt = "#,##0"
+    })
+    const r = await read(sheets, table)
+    expect(r.changes).toEqual([])
+    expect(r.report).toMatchObject({ conflicts: [], ambiguous: [], added: 0, excluded: 0 })
+  })
+
+  test("案件の照合用の鍵が無い（この案件で書き出していない）なら読まない", async () => {
+    const sheets = await roundTrip(table, () => {})
+    expect("error" in (await readFinalSheet(sheets, deriveTable(table), { ...id, excelKey: null }, ai))).toBe(true)
+  })
+})
+
 describe("行の対応", () => {
   const row = (...v: string[]) => [...v, ...Array(14 - v.length).fill("x")]
-  test("同じ中身 → 近い行の順。違う列が4つ以上の行は新しい行", () => {
+  test("同じ中身 → 近い行の順。違う列が7つ以上の行は新しい行、4〜6列の行は決めきれない", () => {
     const sent = [row("a", "1"), row("b", "2"), row("c", "3")]
-    const up = [row("c", "3"), row("a", "9"), row("q", "q", "q", "q", "q")]
+    const up = [row("c", "3"), row("a", "9"), row(..."qqqqqqq"), row(..."bqqqq")]
     const m = matchRows(up, sent)
     expect(m.pairs.sort()).toEqual([
       [0, 2],
       [1, 0],
     ])
-    expect(m.unmatchedUploaded).toEqual([2])
+    expect(m.unmatchedUploaded).toEqual([2, 3])
     expect(m.unmatchedSent).toEqual([1])
-    expect(m.ambiguous).toEqual([])
+    expect(m.ambiguous).toEqual([3])
+    expect(m.candidates.get(3)).toEqual([1])
   })
 })

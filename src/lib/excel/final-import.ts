@@ -11,13 +11,14 @@ import { normalizePersonName, type Rounding, type TransformId } from "../convert
 import { groupBy } from "../group-by"
 import { leadingPrefecture, type Prefecture } from "../spec/prefectures"
 import { KOJI_KEIREKI, type KojiFieldId } from "../spec/koji-keireki"
-import { CHECK_SHEET_NAME, MARK_RE, personHash, readCheckSheet, type FinalCheck } from "./final-sheet"
+import { CHECK_SHEET_NAME, FINAL_SHEET_NAME, MARK_RE, NUMERIC_FIELDS, personHash, readCheckSheet, type FinalCheck } from "./final-sheet"
 
 /**
  * 直した最後の Excel を上げ直したときの取り込み。照合用の隠しシートの落としたときの値と、データのシートの今の値を比べ、
  * 職員が直したセルを変更案（出どころ excel）にする。
  * - 行は中身で対応させる（職員が行を足した・消した・並べ替えたときも）。同じ中身の行 → 14列のうち MATCH_FIELDS 列以上が同じで、
- *   互いにいちばん近い行、の順に当てる。決めきれない行は黙って当てず ambiguous に出す（その候補の行は「載せない」にもしない）
+ *   互いにいちばん近い行、の順に当てる。決めきれない行（近い行が2つ以上・CANDIDATE_FIELDS 列以上が同じだが当てるほどは近くない）は
+ *   黙って当てず ambiguous に出す（その候補の行は「載せない」にもしない）。落とした行が1つも見つからなければ（別のシートを上げたなど）読まない
  * - 当たらなかった今の行は足した工事、当たらなかった落とした行は「載せない」の変更案
  * - 値は CSV の値（匿名化のあと・業種などのコード・千円・YYYYMM）なので、変換と同じ決まった処理で表の値に直す。記号（Ａ・Ｂ…）は
  *   そのまま匿名化の値として、照合用のハッシュでその人に戻す。注文者・工事名に書いた実名は変換と同じ匿名化に通す（確かめられなければ取り込まない）
@@ -31,8 +32,12 @@ const FIELDS = KOJI_KEIREKI.fields
 export const MAX_EXCEL_CHANGES = 20_000
 /** 落とした行と今の行を同じ工事とみなす、同じ値の列の数（14列のうち。3列までの手直しは同じ工事） */
 export const MATCH_FIELDS = 11
-/** 当てる候補を探す列。MATCH_FIELDS 列以上が同じなら、違う列は3列までなので、この4列のどれかは必ず同じ */
-const INDEX_FIELDS: readonly F[] = ["client", "workName", "amount", "startYm"]
+/** 同じ工事かもしれない（決めきれない）とする、同じ値の列の数 */
+export const CANDIDATE_FIELDS = 8
+/** 候補を探す列。CANDIDATE_FIELDS 列以上が同じなら、違う列は6列までなので、この7列のどれかは必ず同じ */
+const INDEX_FIELDS: readonly F[] = ["client", "workName", "place", "engineer", "amount", "startYm", "endYm"]
+/** 数値の列の値は、Excel の書式の桁区切り・空白を除いて比べる（「1,234」と「1234」は同じ） */
+const comparable = (values: readonly string[]) => values.map((v, c) => (NUMERIC_FIELDS.has(FIELDS[c]!.id) ? v.replace(/[,，\s　]/g, "") : v))
 
 /** 取り込んだ値を項目の値にする決まった処理（AI に頼らない。注文者・工事名は変換と同じ匿名化） */
 const READ_AS: Record<F, TransformId | "personName" | "address"> = {
@@ -61,6 +66,8 @@ export type FinalReport = {
   alreadyAdded: number
   /** 落としたあとに表のその値が変わっていた（職員の手直しを上書きしないので、変更案にしない）。値は CSV の値（記号） */
   conflicts: { line: number; field: F; sent: string; now: string; uploaded: string }[]
+  /** 同じ中身の開いている変更案がもうある（承認する前に同じ Excel をもう一度上げた）ので、変更案を置かなかった */
+  duplicate?: true
   /** 読めない値（業種・年月など）。変更案にしない */
   invalid: { line: number; field: F; value: string; message: string }[]
   /** 個人名かもしれないのに匿名化を確かめられなかった値。変更案にしない */
@@ -93,7 +100,7 @@ const lettersIn = (marked: string) => new Set([...marked.matchAll(MARK_RE)].map(
 export async function readFinalSheet(
   sheets: readonly SheetGrid[],
   view: TableView,
-  id: { caseId: string; sourceFileId: string | null },
+  id: { caseId: string; sourceFileId: string | null; excelKey: string | null },
   ai: FinalAi,
 ): Promise<{ changes: ChatChange[]; report: FinalReport } | { error: string }> {
   const check = finalCheckOf(sheets)
@@ -101,7 +108,8 @@ export async function readFinalSheet(
   if ("error" in check) return check
   if (check.meta.caseId !== id.caseId) return { error: "別の案件で落とした Excel です" }
   if (check.meta.sourceFileId !== id.sourceFileId) return { error: "落としたあとに変換の元のファイルが変わったので、この Excel は表に戻せません。書き出し直してから直してください" }
-  const data = sheets.find((s) => s.name !== CHECK_SHEET_NAME)
+  if (!id.excelKey) return { error: "この案件で書き出した Excel の記録がありません。書き出し直してから直してください" }
+  const data = sheets.find((s) => s.name === FINAL_SHEET_NAME) ?? sheets.find((s) => s.name !== CHECK_SHEET_NAME)
   if (!data) return { error: "データのシートがありません" }
   const uploaded = data.rows.flatMap((r, i) => {
     const values = FIELDS.map((_, c) => (r[c] ?? "").trim())
@@ -111,7 +119,7 @@ export async function readFinalSheet(
 
   // 記号の人: 落としたときの記号 → 今の表の人（照合用のハッシュで見つける。記号が付け直されていても同じ人）
   const nameByHash = new Map<string, string>()
-  await Promise.all([...view.letters.personOf.values()].map(async (name) => nameByHash.set(await personHash(check.meta.salt, name), name)))
+  await Promise.all([...view.letters.personOf.values()].map(async (name) => nameByHash.set(await personHash(id.excelKey!, name), name)))
   const nameOfLetter = new Map(check.persons.flatMap((p) => (nameByHash.has(p.hash) ? [[p.letter, nameByHash.get(p.hash)!] as const] : [])))
   const letterOfPerson = new Map([...nameOfLetter].map(([letter, name]) => [personKey(name), letter]))
   /** 今の表のセルを、落としたときの記号の「〔Ａ〕」の形にする。落としたときにいなかった人がいれば undefined */
@@ -129,13 +137,17 @@ export async function readFinalSheet(
 
   const sent = check.rows.map((r) => ({ key: r.key, marked: r.marked, csv: FIELDS.map((f) => unmark(r.marked[f.id])) }))
   const match = matchRows(
-    uploaded.map((u) => u.values),
-    sent.map((s) => s.csv),
+    uploaded.map((u) => comparable(u.values)),
+    sent.map((s) => comparable(s.csv)),
   )
+  if (sent.length && !match.pairs.length && !match.candidates.size) return { error: "落としたときの工事が1つも見つかりません。書き出した Excel のデータのシートを上げてください" }
   const report: FinalReport = { cells: 0, added: 0, excluded: 0, alreadyAdded: 0, conflicts: [], invalid: [], refused: [], ambiguous: [], keptRows: 0, unknownRows: 0 }
   const now = new Map(view.shown.map((r) => [r.key, r]))
 
   const cellChanges: Cell[] = []
+  const suspects: { cell: Cell; sent: string }[] = []
+  /** 当てた行の、落としたときの値（場所名からそろえる都道府県名が、落としたあとに変わっていないかを見る） */
+  const sentOf = new Map(match.pairs.map(([, si]) => [sent[si]!.key, sent[si]!]))
   for (const [ui, si] of match.pairs) {
     const u = uploaded[ui]!
     const s = sent[si]!
@@ -144,17 +156,17 @@ export async function readFinalSheet(
       report.unknownRows++
       continue
     }
+    const up = comparable(u.values)
+    const was = comparable(s.csv)
     FIELDS.forEach((f, c) => {
-      const up = u.values[c]!
-      if (up === s.csv[c]) return
+      if (up[c] === was[c]) return
+      const cell: Cell = { line: u.line, rowKey: s.key, field: f.id, value: u.values[c]!, letters: lettersIn(s.marked[f.id]) }
       const cur = asSent(current.cells[f.id])
       // 前に上げて承認した値（同じ Excel を2回上げた）
-      if (cur !== undefined && unmark(cur) === up) return
-      if (cur !== s.marked[f.id]) {
-        report.conflicts.push({ line: u.line, field: f.id, sent: s.csv[c]!, now: current.cells[f.id].value, uploaded: up })
-        return
-      }
-      cellChanges.push({ line: u.line, rowKey: s.key, field: f.id, value: up, letters: lettersIn(s.marked[f.id]) })
+      if (cur !== undefined && unmark(cur) === u.values[c]) return
+      // 落としたあとに表が変わっていた。上げた値を読んで今の値と同じなら（承認した値を形を変えて読んだ）何もしない。違えば食い違い
+      if (cur !== s.marked[f.id]) suspects.push({ cell, sent: s.csv[c]! })
+      else cellChanges.push(cell)
     })
   }
   for (const ui of match.ambiguous) report.ambiguous.push({ line: uploaded[ui]!.line, candidates: match.candidates.get(ui)!.length })
@@ -187,7 +199,16 @@ export async function readFinalSheet(
   const planned = cellChanges.length + excludes.length + newRows.length * 2
   if (planned > MAX_EXCEL_CHANGES) return { error: `変更が ${planned} 件あります。1回に取り込めるのは ${MAX_EXCEL_CHANGES} 件までです（分けて上げ直してください）` }
 
-  const read = await readValues([...cellChanges, ...newRows.flatMap((r) => r.cells)], ai, nameOfLetter)
+  const read = await readValues([...cellChanges, ...suspects.map((x) => x.cell), ...newRows.flatMap((r) => r.cells)], ai, nameOfLetter)
+  const currentValue = (c: Cell) => {
+    const cell = now.get(c.rowKey)!.cells[c.field]
+    return cell.stored ?? cell.value
+  }
+  for (const { cell: c, sent: was } of suspects) {
+    const r = read.get(c)!
+    if (r.ok && r.edit.value === currentValue(c)) continue
+    report.conflicts.push({ line: c.line, field: c.field, sent: was, now: now.get(c.rowKey)!.cells[c.field].value, uploaded: c.value })
+  }
   // 場所名に書いた住所の都道府県で、都道府県名をそろえる（都道府県名も書き換えていて違えば、どちらも取り込まない）
   const align = (rowKey: string, cells: Cell[], add: (c: Cell) => void) => {
     const place = cells.find((c) => c.field === "place")
@@ -202,6 +223,14 @@ export async function readFinalSheet(
       return
     }
     if (pref) return
+    // 落としたあとに画面で都道府県名を変えていたら、黙って上書きしない
+    const s = sentOf.get(rowKey)
+    const current = now.get(rowKey)
+    if (s && current && current.cells.prefecture.value !== s.marked.prefecture) {
+      if (current.cells.prefecture.value !== r.prefecture)
+        report.conflicts.push({ line: place.line, field: "prefecture", sent: s.marked.prefecture, now: current.cells.prefecture.value, uploaded: r.prefecture })
+      return
+    }
     const synthetic: Cell = { line: place.line, rowKey, field: "prefecture", value: r.prefecture, letters: new Set() }
     read.set(synthetic, { ok: true, edit: { value: r.prefecture, by: "excel" } })
     add(synthetic)
@@ -216,8 +245,7 @@ export async function readFinalSheet(
       ;(r.refused ? report.refused : report.invalid).push({ line: c.line, field: c.field, value: c.value, message: r.message })
       continue
     }
-    const cell = now.get(c.rowKey)!.cells[c.field]
-    if (r.edit.value === (cell.stored ?? cell.value)) continue
+    if (r.edit.value === currentValue(c)) continue
     changes.push({ kind: "cell", rowKey: c.rowKey, field: c.field, edit: r.edit })
     report.cells++
   }
@@ -242,6 +270,9 @@ export async function readFinalSheet(
   return { changes, report }
 }
 
+/** 候補を探す手がかりにする値の、同じ値の行の数の上限（どの行にもある値で候補を探すと、行の数の2乗の手間になる） */
+const INDEX_LIMIT = 500
+
 export type RowMatch = {
   /** [今の行, 落とした行] */
   pairs: [number, number][]
@@ -255,7 +286,8 @@ export type RowMatch = {
 
 /**
  * 今の行と落とした行を中身で対応させる。1) 14列が同じ行を上から順に当てる。2) 残りは MATCH_FIELDS 列以上が同じ候補のうち、
- * 互いにいちばん近い（同じ列が多い）ただ1つの行どうしを当て、当てた分を除いて繰り返す。3) 候補があるのに決めきれない今の行は ambiguous
+ * 互いにいちばん近い（同じ列が多い）ただ1つの行どうしを当て、当てた分を除いて繰り返す。3) CANDIDATE_FIELDS 列以上が同じ候補が残るのに
+ * 決めきれない今の行は ambiguous。候補は INDEX_FIELDS のどれかが同じ行だけを数える（同じ値の行が INDEX_LIMIT を超える値は手がかりにしない）
  */
 export function matchRows(uploaded: readonly (readonly string[])[], sent: readonly (readonly string[])[]): RowMatch {
   const pairs: [number, number][] = []
@@ -276,7 +308,9 @@ export function matchRows(uploaded: readonly (readonly string[])[], sent: readon
     const m = new Map<string, number[]>()
     for (const si of restS) {
       const v = sent[si]![c]!
-      m.set(v, [...(m.get(v) ?? []), si])
+      const list = m.get(v)
+      if (list) list.push(si)
+      else m.set(v, [si])
     }
     return { c, m }
   })
@@ -286,8 +320,12 @@ export function matchRows(uploaded: readonly (readonly string[])[], sent: readon
   for (const ui of restU) {
     const u = uploaded[ui]!
     const near = new Map<number, number>()
-    for (const { c, m } of index) for (const si of m.get(u[c]!) ?? []) if (!near.has(si)) near.set(si, score(u, sent[si]!))
-    for (const [si, n] of near) if (n < MATCH_FIELDS) near.delete(si)
+    for (const { c, m } of index) {
+      const list = m.get(u[c]!) ?? []
+      if (list.length > INDEX_LIMIT) continue
+      for (const si of list) if (!near.has(si)) near.set(si, score(u, sent[si]!))
+    }
+    for (const [si, n] of near) if (n < CANDIDATE_FIELDS) near.delete(si)
     if (near.size) cand.set(ui, near)
   }
   const left = new Set(cand.keys())
@@ -297,7 +335,7 @@ export function matchRows(uploaded: readonly (readonly string[])[], sent: readon
     const bestOfU = new Map<number, { n: number; ss: number[] }>()
     for (const ui of left) {
       for (const [si, n] of cand.get(ui)!) {
-        if (!restS.has(si)) continue
+        if (!restS.has(si) || n < MATCH_FIELDS) continue
         const bu = bestOfU.get(ui)
         if (!bu || n > bu.n) bestOfU.set(ui, { n, ss: [si] })
         else if (n === bu.n) bu.ss.push(si)

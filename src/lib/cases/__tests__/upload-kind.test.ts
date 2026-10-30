@@ -29,7 +29,7 @@ const table: CaseTable = {
 describe("上げたファイルの種類", () => {
   test("最後の Excel・記入用Excel・元データ・PDF を見分ける", async () => {
     const view = deriveTable(table)
-    const final = readWorkbook("最後.xlsx", await finalXlsx(await finalSheet(view, { caseId: "case-1", sourceFileId: null })))
+    const final = readWorkbook("最後.xlsx", await finalXlsx(await finalSheet(view, { caseId: "case-1", sourceFileId: null, excelKey: "1".repeat(64) })))
     expect(uploadKind(final)).toBe("final")
     const cells = collectInquiries(view.output, { tax: "excluded" }).filter((q): q is CellInquiry => q.kind === "cell")
     expect(cells.length).toBeGreaterThan(0)
@@ -41,7 +41,7 @@ describe("上げたファイルの種類", () => {
 
   test("照合用のシートの無い最後の Excel の形の表と、前の編集用の Excel は、表に戻せない Excel", async () => {
     const view = deriveTable(table)
-    const final = readWorkbook("最後.xlsx", await finalXlsx(await finalSheet(view, { caseId: "case-1", sourceFileId: null })))
+    const final = readWorkbook("最後.xlsx", await finalXlsx(await finalSheet(view, { caseId: "case-1", sourceFileId: null, excelKey: "1".repeat(64) })))
     expect(uploadKind(final.slice(0, 1))).toBe("unlinked")
     const wb = new ExcelJS.Workbook()
     wb.addWorksheet("工事経歴（編集用）").addRows([["業種", "照合用"], ["8", "{}"]])

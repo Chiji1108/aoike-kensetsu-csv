@@ -12,6 +12,7 @@ import { EMPTY_INQUIRY_TEXT, inquiryTextSchema, type InquiryText } from "../inqu
 import { addedRowSchema, MAX_ADDED_ROWS, type AddedRow } from "./added"
 import { taxBySchema, type TaxBy } from "./tax"
 import { undoEntrySchema, type UndoEntry } from "./undo"
+import { excelKeySchema } from "../excel/final-sheet"
 import { basisSchema, cellEditSchema, fieldIdSchema, legacySelection, replacementsSchema, roundingSchema, rule7TaxSchema, selectionSchema, taxSchema } from "../schemas"
 import type { KojiFieldId } from "../spec/koji-keireki"
 
@@ -53,6 +54,8 @@ export type CaseWork = {
   reportAnswers: Record<string, string>
   /** 問い合わせの文面（承認した AI の質問の文・職員が直した文、メールの件名・前置き。lib/inquiry/text.ts）。前の作業には無いので、読むときは空 */
   inquiryText: InquiryText
+  /** 最後の Excel の照合用の鍵（記号の人のハッシュ。lib/excel/final-sheet.ts）。初めて書き出すときに作る。Excel には書かない */
+  excelKey: string | null
 }
 
 export type SavedPlan = { plan: MappingPlan<KojiFieldId>; source: "ai" | "rule"; notice?: string }
@@ -79,6 +82,7 @@ export const newWork = (sourceFileId: string | null = null, rule7Tax: Rule7Tax =
   undo: [],
   reportAnswers: {},
   inquiryText: EMPTY_INQUIRY_TEXT,
+  excelKey: null,
 })
 
 // ---- 保存する形（D1 の csv_case_states.json）。Map・Set は組の配列にする ----
@@ -139,6 +143,7 @@ export const savedWorkSchema = z
   undo: z.array(undoEntrySchema).default([]),
   reportAnswers: z.record(z.string(), z.string().max(100)).default({}),
   inquiryText: inquiryTextSchema.default(EMPTY_INQUIRY_TEXT),
+  excelKey: excelKeySchema.nullable().default(null),
   })
   .transform(({ alreadyApplied, selection, ...w }) => ({ ...w, selection: legacySelection(selection, alreadyApplied) ?? "rule7" }))
 export type SavedWork = z.infer<typeof savedWorkSchema>

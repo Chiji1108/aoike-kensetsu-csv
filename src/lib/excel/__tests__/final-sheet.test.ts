@@ -23,7 +23,7 @@ const output = view.output
 
 /** 最後の Excel を書き、SheetJS で読む（職員が Excel で開いたとき） */
 async function written() {
-  const book = XLSX.read(await finalXlsx(await finalSheet(view, { caseId: "case-1", sourceFileId: "file-1" })), { type: "array" })
+  const book = XLSX.read(await finalXlsx(await finalSheet(view, { caseId: "case-1", sourceFileId: "file-1", excelKey: "1".repeat(64) })), { type: "array" })
   return { book, ws: book.Sheets[book.SheetNames[0]!]! }
 }
 
@@ -83,5 +83,7 @@ describe("最後の Excel", () => {
     expect(rows.find((r) => r[1] === "s!1")).toContain("〔Ａ〕邸新築工事")
     expect(rows.filter((r) => r[0] === "person").map((r) => r[1])).toEqual(["Ａ"])
     expect(JSON.stringify(rows)).not.toContain("山田")
+    // 記号の人のハッシュの鍵は Excel に書かない
+    expect(JSON.stringify(rows)).not.toContain("1".repeat(64))
   })
 })

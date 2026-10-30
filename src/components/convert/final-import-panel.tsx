@@ -56,7 +56,13 @@ function ImportReport({ result }: { result: FinalImport }) {
     <div className="grid gap-2 text-xs" data-testid="final-import-report">
       <p>
         {result.name}:{" "}
-        {proposed ? `変更案にしました（セル ${r.cells} 件・足す ${r.added} 行・載せない ${r.excluded} 行）。` : "落としたときから変わったところはありませんでした。"}
+        {r.duplicate
+          ? "同じ変更案がもうあります（下の変更案）。"
+          : proposed
+            ? `変更案にしました（セル ${r.cells} 件・足す ${r.added} 行・載せない ${r.excluded} 行）。`
+            : problems.length
+              ? "変更案にできる変更はありませんでした。"
+              : "落としたときから変わったところはありませんでした。"}
         {r.alreadyAdded > 0 && ` 足した ${r.alreadyAdded} 行はもう表にあります。`}
         {r.keptRows > 0 && ` 決めきれない行の候補 ${r.keptRows} 行は「載せない」にしていません。`}
         {r.unknownRows > 0 && ` 今の表に無い行が ${r.unknownRows} 行あり、取り込んでいません。`}
