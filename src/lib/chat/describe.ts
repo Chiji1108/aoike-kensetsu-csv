@@ -6,7 +6,7 @@ import type { MappingPlan } from "../convert/plan"
 import { beforeOf, describePlanPatch } from "../convert/plan-patch"
 import { SOURCE_LABELS } from "../location/sites"
 import type { ChatChange } from "./proposals"
-import { CORRECTION_MESSAGE } from "../inquiry/inquiry"
+import { askLabel, CORRECTION_MESSAGE } from "../inquiry/inquiry"
 
 const fieldLabel = new Map(KOJI_KEIREKI.fields.map((f) => [f.id, f.label]))
 
@@ -58,6 +58,12 @@ export function describeChange(c: ChatChange, view: TableView, byKey: ReadonlyMa
       return { where: c.scope === "global" ? "全体ルール" : "顧客ルール", what: c.source === "review" ? "項目を足す（振り返り）" : "項目を足す", from: "", to: c.text }
     case "plan":
       return { where: "列の対応", what: "変換し直す", from: "", to: [...describePlanPatch(c.patch, c.before ?? (plan ? beforeOf(plan, c.patch) : undefined)), `理由: ${c.patch.reason}`].join(" / ") }
+    case "inquiry": {
+      const where = c.targets.map((t) => ("topic" in t ? "税込・税抜" : `${askLabel(t.field)}${t.keys ? `（${t.keys.length}行）` : ""}`))
+      return { where: `問い合わせ: ${[...new Set(where)].join("・")}`, what: "質問の文", from: "", to: c.text }
+    }
+    case "inquiryMail":
+      return { where: "問い合わせ", what: "メールの件名・前置き", from: "", to: `件名: ${c.subject} / ${c.intro}` }
     case "location": {
       const first = byKey.get(c.rowKeys[0]!)
       const now = first ? [first.cells.prefecture.value, first.cells.place.value].filter(Boolean).join(" ") : ""

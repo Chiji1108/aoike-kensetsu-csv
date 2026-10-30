@@ -1,10 +1,12 @@
+import { EMPTY_INQUIRY_TEXT } from "../../inquiry/text"
 import { describe, expect, test } from "bun:test"
 import { kojiRow } from "../../convert/__tests__/helpers"
 import { personToken } from "../../convert/persons"
 import { fromSaved, MAX_STATE_BYTES, newWork, savedWorkSchema, toSavedWork } from "../../cases/state"
 import { deriveTable } from "../../cases/view"
 import { collectInquiries } from "../../inquiry/inquiry"
-import { addedCountAfter, answer, applyChanges, decide, decisionOf, discard, newProposal, proposalRecordSchema, withRecorded, type ChatChange } from "../proposals"
+import { z } from "zod"
+import { addedCountAfter, answer, applyChanges, chatChangeSchema, decide, decisionOf, discard, newProposal, proposalRecordSchema, withRecorded, type ChatChange } from "../proposals"
 import { MAX_ADDED_ROWS } from "../../cases/added"
 
 const yamada = personToken("山田太郎")
@@ -12,7 +14,7 @@ const rows = [
   kojiRow({ gyoshu: "8", motoukeShitauke: "1", client: "株式会社テスト", workName: "テストビル電気工事", prefecture: "東京都", place: "千代田区", amount: "5000", engineer: "試験　太郎", startYm: "202404", endYm: "202409" }, 1),
   kojiRow({ gyoshu: "8", motoukeShitauke: "1", client: yamada, workName: `${yamada}邸新築工事`, prefecture: "東京都", place: "港区", amount: "3000", engineer: "試験　太郎", startYm: "202404", endYm: "202409" }, 2),
 ]
-const table = { rows, added: [], edits: new Map(), replacements: {}, manual: new Map(), tax: "excluded" as const, basis: {}, rule7Tax: "excluded" as const, selection: "all" as const, sorted: false }
+const table = { rows, added: [], edits: new Map(), replacements: {}, manual: new Map(), tax: "excluded" as const, basis: {}, rule7Tax: "excluded" as const, selection: "all" as const, sorted: false, dismissed: new Set<string>(), inquiryText: EMPTY_INQUIRY_TEXT }
 
 describe("変更案を表に重ねる", () => {
   test("セル・問い合わせ・入れ外し・7割の設定を、手直し・手動の入れ外し・設定として重ねる（ルールの追記は表を変えない）", () => {
@@ -134,5 +136,20 @@ describe("足した行の上限", () => {
     const add = (rowKey: string): ChatChange => ({ kind: "add", rowKey, by: "excel", cells: {} })
     expect(addedCountAfter([{ key: "add-1", by: "excel" }], [add("add-1"), add("add-2"), add("add-2")])).toBe(2)
     expect(MAX_ADDED_ROWS).toBe(5_000)
+  })
+})
+
+describe("問い合わせの文面の変更案", () => {
+  test("保存の形で読み直せる。表は変えず、問い合わせの文面に重ねる", () => {
+    const changes: ChatChange[] = [
+      { kind: "inquiry", id: "q1", text: "この工事は引渡日を完成日としてよいですか。", targets: [{ field: "endYm", reason: "needsReview", keys: ["s!2"] }, { topic: "tax" }] },
+      { kind: "inquiryMail", subject: "件名", intro: "前置き" },
+    ]
+    expect(z.array(chatChangeSchema).parse(JSON.parse(JSON.stringify(changes)))).toEqual(changes)
+    expect(chatChangeSchema.safeParse({ kind: "inquiry", id: "q", text: "", targets: [{ field: "endYm" }] }).success).toBe(false)
+    const target = { edits: new Map(), manual: new Map(), tax: "unknown" as const, basis: {}, selection: "rule7" as const, added: [], inquiryText: EMPTY_INQUIRY_TEXT }
+    const applied = applyChanges(target, [], changes)
+    expect({ ...applied, inquiryText: target.inquiryText }).toEqual(target)
+    expect(applied.inquiryText).toEqual({ subject: "件名", intro: "前置き", questions: [{ id: "q1", text: "この工事は引渡日を完成日としてよいですか。", targets: [{ field: "endYm", reason: "needsReview", keys: ["s!2"] }, { topic: "tax" }], by: "ai" }] })
   })
 })

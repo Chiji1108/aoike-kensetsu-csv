@@ -1,0 +1,328 @@
+import { z } from "zod"
+import { fieldIdSchema } from "../schemas"
+import type { KojiFieldId } from "../spec/koji-keireki"
+import { nfkc, removeSpaces } from "../convert/text"
+import { charCount } from "../chat/rules"
+import { columnOf, fixedQuestion, inquiryKey, type CaseTopic, type Inquiry, type InquiryReason } from "./inquiry"
+
+/**
+ * 問い合わせの文面（顧客に送る質問の文とメールの件名・前置き）。AI が書いた案を職員が承認したもの・職員が直したものを案件の作業に残す。
+ * 文の無い問い合わせは決まった文（fixedQuestion）のまま。似た問い合わせは1つの質問にまとめる（targets）。
+ * targets は項目と理由で選び、keys があればその行だけ（行の key）。今の問い合わせに当てはめて文を決めるので、答えが入って問い合わせが減っても、
+ * 同じ聞き方の問い合わせが増えても、そのまま使える
+ */
+
+export const MAX_QUESTION_LENGTH = 200
+export const MAX_SUBJECT_LENGTH = 100
+export const MAX_INTRO_LENGTH = 600
+/** 残す質問の数（古いものから捨てる。案件の作業は D1 の1行に入れるので） */
+export const MAX_QUESTIONS = 40
+const MAX_TARGETS = 20
+/** 1つの質問・残す文面全体で keys に書ける行の数（文面は案件の作業に入れるので、行を並べすぎない。多い行はふつう項目と理由で選べる） */
+export const MAX_QUESTION_KEYS = 2000
+export const MAX_TOTAL_KEYS = 5000
+
+export type QuestionTarget = { field: KojiFieldId; reason?: InquiryReason; keys?: string[] } | { topic: CaseTopic }
+export type InquiryQuestion = { id: string; text: string; targets: QuestionTarget[]; by: "ai" | "staff" }
+/** subject・intro は null なら決まった文 */
+export type InquiryText = { subject: string | null; intro: string | null; questions: InquiryQuestion[] }
+
+export const EMPTY_INQUIRY_TEXT: InquiryText = { subject: null, intro: null, questions: [] }
+
+/** チャットの「AI で文面を作る」で送る指示 */
+export const INQUIRY_TEXT_PROMPT = "今の問い合わせを、顧客に伝わる質問の文とメールの下書きにして（似た質問はまとめて）"
+
+const lengthAtMost = (n: number) => (s: string) => charCount(s) <= n
+export const questionTextSchema = z.string().trim().min(1).refine(lengthAtMost(MAX_QUESTION_LENGTH), `質問は${MAX_QUESTION_LENGTH}字まで`)
+export const subjectSchema = z.string().trim().min(1).refine(lengthAtMost(MAX_SUBJECT_LENGTH), `件名は${MAX_SUBJECT_LENGTH}字まで`)
+export const introSchema = z.string().trim().min(1).refine(lengthAtMost(MAX_INTRO_LENGTH), `前置きは${MAX_INTRO_LENGTH}字まで`)
+const reasonSchema = z.enum(["missing", "needsReview"])
+export const questionTargetSchema: z.ZodType<QuestionTarget> = z.union([
+  z.strictObject({ topic: z.literal("tax") }),
+  z.strictObject({ field: fieldIdSchema, reason: reasonSchema.optional(), keys: z.array(z.string().max(200)).min(1).max(MAX_QUESTION_KEYS).optional() }),
+])
+const keyCount = (targets: readonly QuestionTarget[]) => targets.reduce((n, t) => n + ("keys" in t && t.keys ? t.keys.length : 0), 0)
+export const questionTargetsSchema = z
+  .array(questionTargetSchema)
+  .min(1)
+  .max(MAX_TARGETS)
+  .refine((ts) => keyCount(ts) <= MAX_QUESTION_KEYS, `1つの質問の keys は合わせて${MAX_QUESTION_KEYS}行まで`)
+export const inquiryQuestionSchema: z.ZodType<InquiryQuestion> = z.object({ id: z.string().max(64), text: questionTextSchema, targets: questionTargetsSchema, by: z.enum(["ai", "staff"]) })
+export const inquiryTextSchema: z.ZodType<InquiryText> = z.object({
+  subject: subjectSchema.nullable(),
+  intro: introSchema.nullable(),
+  questions: z
+    .array(inquiryQuestionSchema)
+    .max(MAX_QUESTIONS)
+    .refine((qs) => qs.reduce((n, q) => n + keyCount(q.targets), 0) <= MAX_TOTAL_KEYS, `keys は合わせて${MAX_TOTAL_KEYS}行まで`),
+})
+
+/** keys の Set（問い合わせの数×行の数で探さない。同じ配列は作り直さない） */
+const keySets = new WeakMap<readonly string[], ReadonlySet<string>>()
+function keySet(keys: readonly string[]) {
+  let set = keySets.get(keys)
+  if (!set) keySets.set(keys, (set = new Set(keys)))
+  return set
+}
+
+/** 問い合わせへの当てはまり方（大きいほど強い）。keys で選んだ行 > 項目と理由 > 項目だけ。当てはまらなければ 0 */
+export function matchRank(t: QuestionTarget, q: Inquiry): number {
+  if ("topic" in t) return q.kind === "case" && q.topic === t.topic ? 3 : 0
+  if (q.kind !== "cell" || q.field !== t.field || (t.reason && t.reason !== q.reason)) return 0
+  if (t.keys) return keySet(t.keys).has(q.rowKey) ? 3 : 0
+  return t.reason ? 2 : 1
+}
+
+/**
+ * 質問の文のまとまり。fixed は決まった文（question は無い）。inquiries は今の問い合わせのうち、この文で聞くもの。
+ * aiBehind は、職員が直した文を使っているが、同じ問い合わせに承認した AI の文もある（職員が文を空にすると AI の文になる）
+ */
+export type QuestionGroup = { id: string; text: string; by: "ai" | "staff" | "fixed"; inquiries: Inquiry[]; question?: InquiryQuestion; aiBehind?: true }
+
+const fixedId = (q: Inquiry) => (q.kind === "case" ? `fixed:case:${q.topic}` : `fixed:${columnOf(q.field)?.header ?? q.field}:${q.reason}`)
+
+/** 問い合わせにいちばん強く当てはまる質問（同じ強さなら後のもの）。by を渡すとその質問だけから選ぶ */
+function bestQuestion(text: InquiryText, q: Inquiry, by?: InquiryQuestion["by"]) {
+  let best: { rank: number; question: InquiryQuestion } | null = null
+  for (const question of text.questions) {
+    if (by && question.by !== by) continue
+    const rank = Math.max(0, ...question.targets.map((t) => matchRank(t, q)))
+    if (rank > 0 && (!best || rank >= best.rank)) best = { rank, question }
+  }
+  return best?.question ?? null
+}
+
+/**
+ * 今の問い合わせ（外したものは除いて渡す）を質問の文でまとめる。問い合わせごとに、職員が直した文があればそれを（AI の案の承認で黙って上書きしない）、
+ * 無ければ AI の文を使う。どちらもいちばん強く当てはまる質問（同じ強さなら後のもの）。無ければ決まった文（同じ欄・同じ理由で1つ）。並びは問い合わせの順
+ */
+export function questionGroups(inquiries: readonly Inquiry[], text: InquiryText): { groups: QuestionGroup[]; groupOf: ReadonlyMap<string, QuestionGroup> } {
+  const groups = new Map<string, QuestionGroup>()
+  const groupOf = new Map<string, QuestionGroup>()
+  for (const q of inquiries) {
+    const staff = bestQuestion(text, q, "staff")
+    const ai = bestQuestion(text, q, "ai")
+    const best = staff ?? ai
+    const id = best ? best.id : fixedId(q)
+    let g = groups.get(id)
+    if (!g) {
+      g = best ? { id, text: best.text, by: best.by, inquiries: [], question: best } : { id, text: fixedQuestion(q), by: "fixed", inquiries: [] }
+      groups.set(id, g)
+    }
+    if (staff && ai) g.aiBehind = true
+    g.inquiries.push(q)
+    groupOf.set(inquiryKey(q), g)
+  }
+  return { groups: [...groups.values()], groupOf }
+}
+
+/** まとまりで聞く工事の数（工事場所の都道府県と場所名は1件。案件全体の質問は1件） */
+export const groupCount = (g: QuestionGroup) => new Set(g.inquiries.map((q) => (q.kind === "cell" ? q.rowKey : inquiryKey(q)))).size
+
+const totalKeys = (qs: readonly InquiryQuestion[]) => qs.reduce((n, q) => n + keyCount(q.targets), 0)
+/** 上限（数・keys の行）に収まるか */
+const fits = (qs: readonly InquiryQuestion[]) => qs.length <= MAX_QUESTIONS && totalKeys(qs) <= MAX_TOTAL_KEYS
+
+/** 2つの対象が同じ問い合わせに当てはまりうるか（項目が同じで理由が食い違わず、どちらも keys なら行が重なる。税込・税抜は同じ topic） */
+function overlaps(a: QuestionTarget, b: QuestionTarget) {
+  if ("topic" in a || "topic" in b) return "topic" in a && "topic" in b && a.topic === b.topic
+  if (a.field !== b.field || (a.reason && b.reason && a.reason !== b.reason)) return false
+  return !a.keys || !b.keys || a.keys.some((k) => keySet(b.keys!).has(k))
+}
+
+/**
+ * 質問を足す（承認した AI の案・職員が直した文）。AI の質問を足すときは、前の AI の質問のうち同じ問い合わせに当てはまりうる対象を外す
+ * （作り直した案の承認で前の案が強さで残らない。対象が無くなった質問は消す。職員が直した文は外さない）。数の上限を超えたら古いものから捨てる
+ */
+export function addQuestions(text: InquiryText, questions: readonly InquiryQuestion[]): InquiryText {
+  const ids = new Set(questions.map((q) => q.id))
+  const newAi = questions.filter((q) => q.by === "ai").flatMap((q) => q.targets)
+  const kept = text.questions.flatMap((q) => {
+    if (ids.has(q.id)) return []
+    if (q.by !== "ai" || !newAi.length) return [q]
+    const targets = q.targets.filter((t) => !newAi.some((n) => overlaps(t, n)))
+    return targets.length === q.targets.length ? [q] : targets.length ? [{ ...q, targets }] : []
+  })
+  const next = [...kept, ...questions].slice(-MAX_QUESTIONS)
+  // keys の行の数の上限を超えたら、古い質問から捨てる
+  let keys = totalKeys(next)
+  while (keys > MAX_TOTAL_KEYS) keys -= keyCount(next.shift()!.targets)
+  return { ...text, questions: next }
+}
+
+/**
+ * 変換の元を変えたとき（行が作り直される）に引き継ぐ文面。件名・前置きと、項目と理由で選んだ対象は行に依らないので残す。
+ * 行の key で選んだ対象は前の元の行を指す（新しい元で同じ key でも別の工事）ので外し、対象が無くなった質問は消す
+ */
+export function carryInquiryText(text: InquiryText): InquiryText {
+  return {
+    ...text,
+    questions: text.questions.flatMap((q) => {
+      const targets = q.targets.filter((t) => "topic" in t || !t.keys)
+      return targets.length ? [targets.length === q.targets.length ? q : { ...q, targets }] : []
+    }),
+  }
+}
+
+/**
+ * 職員が質問の文を直す。AI・職員の質問は文を変え（空にすると消して決まった文に戻す）、決まった文を直すと、
+ * そのまとまりにある項目と理由の問い合わせへの職員の質問にする（決まった文のまとまりは、どの質問も当てはまらなかった問い合わせなので、
+ * ほかの質問の問い合わせを取らない）
+ */
+export function editQuestion(text: InquiryText, group: QuestionGroup, next: string, newId: string): InquiryText {
+  const value = next.trim()
+  if (group.question) {
+    const id = group.question.id
+    if (!value) return { ...text, questions: text.questions.filter((q) => q.id !== id) }
+    return { ...text, questions: text.questions.map((q) => (q.id === id ? { ...q, text: value, by: "staff" } : q)) }
+  }
+  if (!value || value === group.text) return text
+  const targets = new Map<string, QuestionTarget>()
+  for (const q of group.inquiries) targets.set(q.kind === "case" ? `case:${q.topic}` : `${q.field}:${q.reason}`, q.kind === "case" ? { topic: q.topic } : { field: q.field, reason: q.reason })
+  return addQuestions(text, [{ id: newId, text: value, targets: [...targets.values()], by: "staff" }])
+}
+
+/**
+ * 文の中に、ほかの顧客の名前があるかを確かめる関数（会社の種類の語・空白・全角半角の違いは除いて比べる。3文字に満たない名前は見ない）。
+ * own はこの案件の顧客の名前（書いてよい）。文の頭から、その位置で始まるいちばん長い名前を照らす（自分の名前を含むほかの顧客の名前は見つけ、
+ * ほかの顧客の名前を含む自分の名前では断らない）
+ */
+export function otherCustomerTest(names: Iterable<string>, own = ""): (text: string) => boolean {
+  const core = (s: string) => removeSpaces(nfkc(s)).replace(/株式会社|有限会社|合同会社|合資会社|合名会社|\(株\)|\(有\)|㈱|㈲/g, "")
+  const self = core(own)
+  const others = [...new Set([...names].map(core))].filter((n) => [...n].length >= 3 && n !== self)
+  const all = [...others.map((name) => ({ name, other: true })), ...(self ? [{ name: self, other: false }] : [])].sort((a, b) => b.name.length - a.name.length)
+  return (text) => {
+    const t = core(text)
+    for (let i = 0; i < t.length; ) {
+      const hit = all.find((n) => t.startsWith(n.name, i))
+      if (hit?.other) return true
+      i += hit ? hit.name.length : 1
+    }
+    return false
+  }
+}
+
+/** 案の質問の id（変更案を作るときに決める） */
+export const newQuestionId = () => crypto.randomUUID()
+
+/** 変更案の問い合わせの文（lib/chat/proposals.ts の ChatChange のうち問い合わせの文面のもの）。id は案を作ったときに決める質問の id */
+export type InquiryTextChange = { kind: "inquiry"; id: string; text: string; targets: QuestionTarget[] } | { kind: "inquiryMail"; subject: string; intro: string }
+
+/** 承認した変更案の文を文面に重ねる（lib/chat/proposals.ts の applyChanges から）。同じ id の質問は置き換える（二重に足さない） */
+export function applyInquiryChange(text: InquiryText, change: InquiryTextChange): InquiryText {
+  if (change.kind === "inquiryMail") return { ...text, subject: change.subject, intro: change.intro }
+  return addQuestions(text, [{ id: change.id, text: change.text, targets: change.targets, by: "ai" }])
+}
+
+/**
+ * AI が出した質問の確かめ（チャットの propose_inquiry）。対象が今の問い合わせに当てはまらない・keys に聞いていない行がある・
+ * 1つの問い合わせに2つの質問が同じ強さで当てはまるなら problems。covered はこの案の文で聞く問い合わせ、fallback は決まった文のまま残る問い合わせの数
+ */
+export function checkQuestions(
+  questions: readonly { targets: readonly QuestionTarget[] }[],
+  inquiries: readonly Inquiry[],
+  /** 同じ指示でもう出した質問（対象は確かめ済み。重なりと数だけに入れる） */
+  earlier: readonly { targets: readonly QuestionTarget[] }[] = [],
+) {
+  const problems: string[] = []
+  questions.forEach((q, i) => {
+    // 案件全体の質問はメールに1つずつ載せるので、セルの問い合わせとまとめない
+    if (q.targets.some((t) => "topic" in t) && q.targets.some((t) => !("topic" in t))) problems.push(`questions[${i}]: 税込・税抜の質問は、ほかの問い合わせとまとめずに1つの質問にしてください`)
+    q.targets.forEach((t, j) => {
+      const where = `questions[${i}].targets[${j}]`
+      if (!inquiries.some((x) => matchRank(t, x) > 0)) problems.push(`${where}: 今の問い合わせに当てはまりません`)
+      else if (!("topic" in t) && t.keys) {
+        const asked = new Set(inquiries.flatMap((x) => (x.kind === "cell" && matchRank({ field: t.field, ...(t.reason ? { reason: t.reason } : {}) }, x) > 0 ? [x.rowKey] : [])))
+        const unknown = t.keys.filter((k) => !asked.has(k))
+        if (unknown.length) problems.push(`${where}: 聞いていない行の key があります（${unknown.slice(0, 5).join(", ")}${unknown.length > 5 ? " ほか" : ""}）`)
+      }
+    })
+  })
+  let covered = 0
+  const tied: string[] = []
+  const all = [...earlier, ...questions]
+  for (const x of inquiries) {
+    const ranks = all.map((q) => Math.max(0, ...q.targets.map((t) => matchRank(t, x))))
+    const top = Math.max(0, ...ranks)
+    if (top === 0) continue
+    covered++
+    if (ranks.filter((r) => r === top).length > 1) tied.push(inquiryKey(x))
+  }
+  if (tied.length) problems.push(`同じ問い合わせに2つの質問が当てはまります（${tied.slice(0, 5).join(", ")}${tied.length > 5 ? ` ほか${tied.length - 5}件` : ""}）。1つの問い合わせは1つの質問にしてください`)
+  return { problems, covered, fallback: inquiries.length - covered }
+}
+
+/**
+ * 承認の取り消しの記録に残す文面の違い（文面そのものを前と後で2つ残さない）。questions は [id, 前, 後]（null は無かった）、
+ * subject・intro は変わったときだけ [前, 後]
+ */
+export type InquiryTextDiff = {
+  questions: [id: string, before: InquiryQuestion | null, after: InquiryQuestion | null][]
+  subject?: [string | null, string | null]
+  intro?: [string | null, string | null]
+}
+
+const sameQuestion = (a: InquiryQuestion | null, b: InquiryQuestion | null) => a === b || JSON.stringify(a) === JSON.stringify(b)
+
+export function diffInquiryText(before: InquiryText, after: InquiryText): InquiryTextDiff | null {
+  const was = new Map(before.questions.map((q) => [q.id, q]))
+  const now = new Map(after.questions.map((q) => [q.id, q]))
+  const questions: InquiryTextDiff["questions"] = []
+  for (const q of after.questions) if (!sameQuestion(was.get(q.id) ?? null, q)) questions.push([q.id, was.get(q.id) ?? null, q])
+  for (const q of before.questions) if (!now.has(q.id)) questions.push([q.id, q, null])
+  const diff: InquiryTextDiff = {
+    questions,
+    ...(before.subject !== after.subject ? { subject: [before.subject, after.subject] as [string | null, string | null] } : {}),
+    ...(before.intro !== after.intro ? { intro: [before.intro, after.intro] as [string | null, string | null] } : {}),
+  }
+  return questions.length || diff.subject || diff.intro ? diff : null
+}
+
+/** 記録の「後」のままのものだけを「前」に戻す（承認のあとに職員が直した文は残して kept に数える） */
+export function revertInquiryText(now: InquiryText, diff: InquiryTextDiff): { text: InquiryText; reverted: number; kept: number } {
+  let reverted = 0
+  let kept = 0
+  let questions = [...now.questions]
+  for (const [id, before, after] of diff.questions) {
+    const current = questions.find((q) => q.id === id) ?? null
+    if (!sameQuestion(current, after)) {
+      kept++
+      continue
+    }
+    if (!before) questions = questions.filter((q) => q.id !== id)
+    else if (current) questions = questions.map((q) => (q.id === id ? before : q))
+    else {
+      // 上限で捨てた・対象を外した質問は古い方（前）に戻す。戻すと上限を超えるなら戻さない（作業を保存できなくしない）
+      const back = [before, ...questions]
+      if (!fits(back)) {
+        kept++
+        continue
+      }
+      questions = back
+    }
+    reverted++
+  }
+  // 置き換えで上限を超える取り消しも戻さない（古いものから外す）
+  while (!fits(questions)) {
+    questions = questions.slice(1)
+    kept++
+  }
+  const back = (pair: [string | null, string | null] | undefined, value: string | null) => {
+    if (!pair) return value
+    if (value !== pair[1]) {
+      kept++
+      return value
+    }
+    reverted++
+    return pair[0]
+  }
+  return { text: { subject: back(diff.subject, now.subject), intro: back(diff.intro, now.intro), questions }, reverted, kept }
+}
+
+const nullablePair = z.tuple([z.string().nullable(), z.string().nullable()])
+export const inquiryTextDiffSchema: z.ZodType<InquiryTextDiff> = z.object({
+  questions: z.array(z.tuple([z.string(), inquiryQuestionSchema.nullable(), inquiryQuestionSchema.nullable()])),
+  subject: nullablePair.optional(),
+  intro: nullablePair.optional(),
+})

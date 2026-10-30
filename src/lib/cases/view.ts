@@ -2,6 +2,7 @@ import { applyEdits, finalizeRows, type CellEdits, type Replacements, type RowRe
 import { orderKojiRows, selectKojiRows, type Basis, type Rule7Tax, type SelectionMode, type TaxMode } from "../convert/koji-selection"
 import { KOJI_KEIREKI, type KojiFieldId } from "../spec/koji-keireki"
 import { addedRowResults, type AddedRow } from "./added"
+import type { InquiryText } from "../inquiry/text"
 
 /** 案件の表を決めるもの: 変換の結果（手直しの前）と、それに重ねる手直し・置換・入れ外し・7割の設定 */
 export type CaseTable = {
@@ -20,6 +21,10 @@ export type CaseTable = {
   includeAtLeastYen?: number
   /** 業種ごとに元請→下請、金額の大きい順に並べる */
   sorted: boolean
+  /** 職員が外した問い合わせ（inquiryKey）。チャットの問い合わせの道具はこれを除く */
+  dismissed: ReadonlySet<string>
+  /** 問い合わせの文面（承認した AI の文・職員が直した文） */
+  inquiryText: InquiryText
 }
 
 /**

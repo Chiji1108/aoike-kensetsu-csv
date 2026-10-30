@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { applyChanges, type ChatChange } from "../../chat/proposals"
 import { editKey, type CellEdit } from "../../convert/convert"
 import { fromSaved, newWork, type SavedPlan, savedWorkSchema, toSavedWork, toSavedAiCache, type CaseWork } from "../state"
+import { applyInquiryChange, EMPTY_INQUIRY_TEXT } from "../../inquiry/text"
 import { canUndo, MAX_UNDO_BYTES, MAX_UNDO_ENTRIES, pushUndo, undo, undoEntry } from "../undo"
 
 const chat = (value: string): CellEdit => ({ value, by: "chat" })
@@ -123,5 +124,28 @@ describe("承認の取り消し", () => {
     const read = savedWorkSchema.parse(JSON.parse(JSON.stringify(old)))
     expect(read.undo).toEqual([])
     expect(read.reportAnswers).toEqual({})
+  })
+})
+
+describe("問い合わせの文面の承認の取り消し", () => {
+  const text = applyInquiryChange(EMPTY_INQUIRY_TEXT, { kind: "inquiry", id: "p1:0", text: "この工事に置いた主任技術者の氏名を教えてください。", targets: [{ field: "engineer" }] })
+
+  test("承認で足した文を取り消すと前の文面に戻る。前の作業（文面の無い保存）は空の文面として読む。承認のあとに職員が直していたら残す", () => {
+    const before = newWork("f")
+    const after = { ...before, inquiryText: text }
+    const entry = undoEntry(before, after, { id: "u", proposalId: "p1", label: "p1", at: 0 })!
+    expect(canUndo(entry)).toBe(true)
+    const w = reopen({ ...after, undo: [entry] })
+    expect(w.inquiryText).toEqual(text)
+    expect(undo(w, "u")!.work.inquiryText).toEqual(EMPTY_INQUIRY_TEXT)
+    // 承認のあとに直したもの（件名）は残し、承認で足した質問だけを外す
+    const withMail = { ...after, inquiryText: { ...text, subject: "AI の件名" } }
+    const e2 = undoEntry(before, withMail, { id: "u2", proposalId: "p1", label: "p1", at: 0 })!
+    const edited = { ...withMail, undo: [e2], inquiryText: { ...withMail.inquiryText, subject: "職員の件名" } }
+    const r = undo(edited, "u2")!
+    expect(r).toMatchObject({ kept: 1, reverted: 1 })
+    expect(r.work.inquiryText).toEqual({ ...EMPTY_INQUIRY_TEXT, subject: "職員の件名" })
+    const { inquiryText: _, ...old } = toSavedWork(newWork("f"))
+    expect(savedWorkSchema.parse(old).inquiryText).toEqual(EMPTY_INQUIRY_TEXT)
   })
 })

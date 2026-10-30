@@ -52,7 +52,7 @@ export const REASONS: Record<InquiryReason, { label: string; applies: (cell: Cel
   needsReview: { label: "推定に自信がない", applies: (c) => c.guessed === true },
 }
 
-/** 案件全体の問い合わせ。question はメールにそのまま載せる */
+/** 案件全体の問い合わせ。question は決まった質問の文（AI の文が無いときにメールに載せる） */
 export const CASE_TOPICS: Record<CaseTopic, { label: string; applies: (s: InquirySettings) => boolean; question: string }> = {
   tax: {
     label: "金額の税込・税抜",
@@ -154,7 +154,22 @@ export const SHEET_COLUMNS: readonly SheetColumn[] = [
 
 const PERSON_FIELDS = KOJI_KEIREKI.fields.filter((f) => f.valueType.type === "personName").map((f) => f.id)
 
-const columnOf = (field: KojiFieldId) => SHEET_COLUMNS.find((c) => c.fields.includes(field))
+export const columnOf = (field: KojiFieldId) => SHEET_COLUMNS.find((c) => c.fields.includes(field))
+
+/** 顧客に見せる項目の呼び名（記入用Excelの欄の見出しから括弧の説明を除いたもの。工事場所は都道府県・場所名をまとめて「工事場所」） */
+export const askLabel = (field: KojiFieldId) => (columnOf(field)?.header ?? fieldLabel(field)).replace(/（.*）$/, "")
+
+/** 記入用Excelの、行ごとの質問の欄の見出し */
+export const QUESTION_HEADER = "ご質問"
+
+/**
+ * 決まった質問の文（AI の文が無いとき・AI を使えないときの予備）。同じ欄・同じ理由の問い合わせは同じ文になる（まとめる単位）
+ */
+export function fixedQuestion(q: Inquiry): string {
+  if (q.kind === "case") return CASE_TOPICS[q.topic].question
+  const label = askLabel(q.field)
+  return q.reason === "missing" ? `資料に${label}が見当たりませんでした。ご記入ください。` : `${label}は資料から推定しました。正しいかご確認ください。`
+}
 
 /** 問い合わせられる項目: CSV の必須か書類に要る項目のうち、記入用Excelに列があるもの */
 const ASKABLE = new Set(KOJI_KEIREKI.fields.filter((f) => (f.required || f.filing) && columnOf(f.id)).map((f) => f.id))
@@ -179,8 +194,11 @@ export function collectInquiries(rows: readonly KojiRow[], settings: InquirySett
   return [...cases, ...cells]
 }
 
-/** 記入用Excelの1行に書いておく照合用の情報（隠し列）。何を聞いたかを、パネルの状態に頼らずファイルから読めるようにする */
-export type AskedRow = { asked: Omit<CellInquiry, "kind" | "rowKey">[] }
+/**
+ * 記入用Excelの1行に書いておく照合用の情報（隠し列）。何を聞いたかを、パネルの状態に頼らずファイルから読めるようにする。
+ * question はその行の「ご質問」の欄に書いた文（顧客がその欄に書き足したかを outsideCells が見分ける。この項目より前の Excel には無い）
+ */
+export type AskedRow = { asked: Omit<CellInquiry, "kind" | "rowKey">[]; question?: string }
 
 export const ASKED_HEADER = "照合用"
 
@@ -188,6 +206,7 @@ export const ASKED_HEADER = "照合用"
 const SHEET_FIELD_IDS = SHEET_COLUMNS.flatMap((c) => c.fields) as [KojiFieldId, ...KojiFieldId[]]
 const AskedRowSchema = z.object({
   asked: z.array(z.object({ field: z.enum(SHEET_FIELD_IDS), reason: z.enum(["missing", "needsReview"]), current: z.string() })).min(1),
+  question: z.string().optional(),
 })
 
 function parseAskedRow(cell: string): AskedRow | undefined {
@@ -201,31 +220,41 @@ function parseAskedRow(cell: string): AskedRow | undefined {
 
 export type InquirySheet = {
   columns: { header: string; width: number; hidden?: true }[]
-  rows: { cells: { value: string; ask: boolean; note?: string }[] }[]
+  /** question は行ごとの質問の欄（灰色にせず読ませる） */
+  rows: { cells: { value: string; ask: boolean; note?: string; question?: true }[] }[]
   /** 記入してほしいセルの数 */
   askCount: number
   hints: string[]
 }
 
-/** 記入用Excelの中身（書式は inquiry-xlsx.ts）。問い合わせのある行だけを、渡した行の順に並べる。最後の列は照合用（隠し列） */
-export function inquirySheet(rows: readonly KojiRow[], inquiries: readonly CellInquiry[]): InquirySheet {
+/**
+ * 記入用Excelの中身（書式は inquiry-xlsx.ts）。問い合わせのある行だけを、渡した行の順に並べる。管理番号の次は行ごとの質問の欄
+ * （questionOf はその問い合わせの質問の文。既定は決まった文。同じ行の同じ文は1つにする）。最後の列は照合用（隠し列）
+ */
+export function inquirySheet(rows: readonly KojiRow[], inquiries: readonly CellInquiry[], questionOf: (q: CellInquiry) => string = fixedQuestion): InquirySheet {
   const byRow = groupBy(inquiries, (q) => q.rowKey)
   const isAsked = (r: KojiRow, c: SheetColumn) => c.fields.some((f) => byRow.get(r.key)?.some((q) => q.field === f))
   const target = rows.filter((r) => SHEET_COLUMNS.some((c) => isAsked(r, c)))
   const columns = SHEET_COLUMNS.filter((c) => !c.askOnly || target.some((r) => isAsked(r, c)))
-  const sheetRows = target.map((r) => {
-    const asked: AskedRow = { asked: (byRow.get(r.key) ?? []).map(({ kind: _, rowKey: __, ...a }) => a) }
+  const sheetRows = target.map((r): InquirySheet["rows"][number] => {
+    const qs = byRow.get(r.key) ?? []
+    // 質問は欄の並び（左から）の順
+    const byColumn = [...qs].sort((a, b) => SHEET_COLUMNS.indexOf(columnOf(a.field)!) - SHEET_COLUMNS.indexOf(columnOf(b.field)!))
+    const question = [...new Set(byColumn.map(questionOf))].join("\n")
+    const asked: AskedRow = { asked: qs.map(({ kind: _, rowKey: __, ...a }) => a), question }
     const note = (c: SheetColumn) => (c.reviewNote && asked.asked.some((q) => q.reason === "needsReview" && c.fields.includes(q.field)) ? { note: `推定です。${c.reviewNote}` } : {})
-    return { cells: [...columns.map((c) => ({ value: c.show(r), ask: isAsked(r, c), ...note(c) })), { value: JSON.stringify(asked), ask: false }] }
+    const [key, ...rest] = columns.map((c) => ({ value: c.show(r), ask: isAsked(r, c), ...note(c) }))
+    return { cells: [key!, { value: question, ask: false, question: true }, ...rest, { value: JSON.stringify(asked), ask: false }] }
   })
+  const [keyColumn, ...restColumns] = columns.map(({ header, width }) => ({ header, width }))
   return {
-    columns: [...columns.map(({ header, width }) => ({ header, width })), { header: ASKED_HEADER, width: 4, hidden: true }],
+    columns: [keyColumn!, { header: QUESTION_HEADER, width: 40 }, ...restColumns, { header: ASKED_HEADER, width: 4, hidden: true }],
     rows: sheetRows,
     askCount: sheetRows.reduce((n, r) => n + r.cells.filter((c) => c.ask).length, 0),
     hints: [
       ...columns.flatMap((c) => (c.hint && target.some((r) => isAsked(r, c)) ? [c.hint] : [])),
-      ...columns.flatMap((c, i) =>
-        sheetRows.some((r) => r.cells[i]!.note) ? [`${c.header}の欄にすでに値があるものは推定です。${c.reviewNote}（正しければそのままで構いません）。`] : [],
+      ...columns.flatMap((c) =>
+        c.reviewNote && sheetRows.some((r) => r.cells.some((x) => x.note === `推定です。${c.reviewNote}`)) ? [`${c.header}の欄にすでに値があるものは推定です。${c.reviewNote}（正しければそのままで構いません）。`] : [],
       ),
     ],
   }
@@ -480,7 +509,7 @@ export async function readAiAnswers(items: readonly AiAnswer[], rows: readonly K
 /**
  * 記入用Excelの、決まった欄（聞いた欄）の外にある記入の数。決まった欄で読めなかった答えを AI に読ませるかを決める（readAnswers は聞いた欄だけを読む）。
  * 数えるもの: ほかのシートの記入、見出しより上のお願いの文（A列）の外、知らない見出し・見出しの無い列、表示だけの欄（業種・請負代金・聞いていない欄）が
- * 出したときの値から変わったもの、顧客が付けたセルのメモ（この画面が付けた「推定です。」のメモは除く）。rows は今の全行
+ * 出したときの値から変わったもの、「ご質問」の欄の書き足し、顧客が付けたセルのメモ（この画面が付けた「推定です。」のメモは除く）。rows は今の全行
  */
 export function outsideCells(sheets: readonly SheetGrid[], rows: readonly KojiRow[]): number {
   const now = new Map(rows.map((r) => [r.key, r]))
@@ -506,6 +535,12 @@ export function outsideCells(sheets: readonly SheetGrid[], rows: readonly KojiRo
       const sent = meta && row ? meta.asked.map((a): CellInquiry => ({ kind: "cell", rowKey: row.key, ...a })) : []
       cells.forEach((value, i) => {
         if (i === keyCol || i === askedCol) return
+        // 質問の欄は、書いた文から変わっていれば顧客の書き足し（照合用に文が無い前の Excel にはこの欄が無い）。消しただけ（空）は書き足しではない。
+        // 行や照合用が読めない行は取り込みが一覧に出す
+        if (header[i] === QUESTION_HEADER) {
+          if (row && meta && value.trim() && value.trim() !== (meta.question ?? "").trim()) n++
+          return
+        }
         const column = SHEET_COLUMNS.find((c) => c.header === header[i])
         if (!column) {
           if (value.trim()) n++

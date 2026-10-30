@@ -8,6 +8,7 @@ import type { MappingPlan } from "../convert/plan"
 import { savedPlanSchema } from "../convert/plan-schema"
 import type { AnswerReport, CellInquiry } from "../inquiry/inquiry"
 import { proposalSchema, type Proposal } from "../chat/proposals"
+import { EMPTY_INQUIRY_TEXT, inquiryTextSchema, type InquiryText } from "../inquiry/text"
 import { addedRowSchema, MAX_ADDED_ROWS, type AddedRow } from "./added"
 import { undoEntrySchema, type UndoEntry } from "./undo"
 import { basisSchema, cellEditSchema, fieldIdSchema, legacySelection, replacementsSchema, roundingSchema, rule7TaxSchema, selectionSchema, taxSchema } from "../schemas"
@@ -48,6 +49,8 @@ export type CaseWork = {
   undo: UndoEntry[]
   /** 変換の報告の聞き返しへの答え（聞き返しの id → 答え。例: 金額の税込・税抜を「顧客に聞く」）。前の作業には無いので、読むときは空 */
   reportAnswers: Record<string, string>
+  /** 問い合わせの文面（承認した AI の質問の文・職員が直した文、メールの件名・前置き。lib/inquiry/text.ts）。前の作業には無いので、読むときは空 */
+  inquiryText: InquiryText
 }
 
 export type SavedPlan = { plan: MappingPlan<KojiFieldId>; source: "ai" | "rule"; notice?: string }
@@ -74,6 +77,7 @@ export const newWork = (sourceFileId: string | null = null, rule7Tax: Rule7Tax =
   added: [],
   undo: [],
   reportAnswers: {},
+  inquiryText: EMPTY_INQUIRY_TEXT,
 })
 
 // ---- 保存する形（D1 の csv_case_states.json）。Map・Set は組の配列にする ----
@@ -134,6 +138,7 @@ export const savedWorkSchema = z
   added: z.array(addedRowSchema).max(MAX_ADDED_ROWS).default([]),
   undo: z.array(undoEntrySchema).default([]),
   reportAnswers: z.record(z.string(), z.string().max(100)).default({}),
+  inquiryText: inquiryTextSchema.default(EMPTY_INQUIRY_TEXT),
   })
   .transform(({ alreadyApplied, selection, ...w }) => ({ ...w, selection: legacySelection(selection, alreadyApplied) ?? "rule7" }))
 export type SavedWork = z.infer<typeof savedWorkSchema>

@@ -1,3 +1,4 @@
+import { EMPTY_INQUIRY_TEXT } from "../../inquiry/text"
 import { describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { kojiRow } from "../../convert/__tests__/helpers"
@@ -26,7 +27,7 @@ function aiWarning(row: RowResult<KojiFieldId>) {
   return row
 }
 
-const tableOf = (rows: RowResult<KojiFieldId>[], over: Partial<CaseTable> = {}): CaseTable => ({ rows, added: [], edits: new Map(), replacements: {}, manual: new Map(), tax: "excluded", basis: {}, rule7Tax: "excluded" as const, selection: "all", sorted: false, ...over })
+const tableOf = (rows: RowResult<KojiFieldId>[], over: Partial<CaseTable> = {}): CaseTable => ({ rows, added: [], edits: new Map(), replacements: {}, manual: new Map(), tax: "excluded", basis: {}, rule7Tax: "excluded" as const, selection: "all", sorted: false, dismissed: new Set<string>(), inquiryText: EMPTY_INQUIRY_TEXT, ...over })
 
 describe("調べる現場を集める", () => {
   const rows = () => [
