@@ -2,7 +2,6 @@ import { Database } from "bun:sqlite"
 import { beforeEach, describe, expect, test } from "bun:test"
 import { eq } from "drizzle-orm"
 import * as schema from "@/db/schema"
-import { DEFAULT_GLOBAL_RULES } from "@/lib/chat/rules"
 import {
   addCaseCost,
   addFile,
@@ -16,19 +15,11 @@ import {
   getCaseWorkJson,
   previousCase,
   getFileRow,
-  getRules,
   listCases,
   listFiles,
   listCustomers,
   saveCaseState,
-  saveRules,
-  appendRuleOnce,
   endChatsBeforeDelete,
-  MAX_RULES_LENGTH,
-  RulesTooLongError,
-  getCustomer,
-  saveCustomerRules,
-  StaleTextError,
   type Bucket,
   type Db,
 } from "../case-store"
@@ -295,49 +286,13 @@ describe("ファイルを付けるのと削除が重なったとき", () => {
   })
 })
 
-describe("費用と全体ルール", () => {
+describe("費用", () => {
   test("費用は案件の合計に足していく（同時に足しても失わない）", async () => {
     const customer = await createCustomer(db, "合成建設")
     const c = await createCase(db, customer.id, 2026)
     await Promise.all([addCaseCost(db, c.id, 0.25), addCaseCost(db, c.id, 0.5)])
     await addCaseCost(db, c.id, 1)
     expect((await getCase(db, c.id))!.costUsd).toBeCloseTo(1.75)
-  })
-
-  test("全体ルールは保存するまで初期値。読んだときの文章のままなら書き換える", async () => {
-    expect(await getRules(db)).toBe(DEFAULT_GLOBAL_RULES)
-    await saveRules(db, "", DEFAULT_GLOBAL_RULES)
-    expect(await getRules(db)).toBe("")
-  })
-
-  test("変更案のルールの追記は同じ項目を二度足さない（開き直して承認し直しても、同時に押しても）。古い文章からの保存は断る", async () => {
-    const customer = await createCustomer(db, "合成建設")
-    const c = await createCase(db, customer.id, 2026)
-    const target = { scope: "customer" as const, customerId: customer.id }
-    const add = (item: number, text: string) => appendRuleOnce(db, target, { caseId: c.id, proposalId: "p1", item, text })
-    expect(await add(0, "工事名の読点は取る")).toBe("added")
-    expect(await add(0, "工事名の読点は取る")).toBe("already")
-    expect((await Promise.all([add(1, "A"), add(1, "A")])).sort()).toEqual(["added", "already"])
-    expect((await getCustomer(db, customer.id))!.rules).toBe("工事名の読点は取る\nA")
-    await expect(saveCustomerRules(db, customer.id, "上書き", "")).rejects.toBeInstanceOf(StaleTextError)
-
-    const loaded = await getRules(db)
-    expect(await appendRuleOnce(db, { scope: "global" }, { caseId: c.id, proposalId: "p1", item: 2, text: "注文者の株式会社は㈱" })).toBe("added")
-    await expect(saveRules(db, "上書き", loaded)).rejects.toBeInstanceOf(StaleTextError)
-    expect(await getRules(db)).toBe(`${DEFAULT_GLOBAL_RULES}\n注文者の株式会社は㈱`)
-
-    await deleteCase(db, bucket, c.id)
-    expect(sqlite.query("select count(*) as n from csv_rule_appends").get()).toEqual({ n: 0 })
-  })
-
-  test("追記で長さの上限を超えるなら、足さずに知らせる（印も付けない）", async () => {
-    const customer = await createCustomer(db, "合成建設")
-    const c = await createCase(db, customer.id, 2026)
-    await saveCustomerRules(db, customer.id, "あ".repeat(MAX_RULES_LENGTH - 2), "")
-    const target = { scope: "customer" as const, customerId: customer.id }
-    await expect(appendRuleOnce(db, target, { caseId: c.id, proposalId: "p", item: 0, text: "長い追記" })).rejects.toBeInstanceOf(RulesTooLongError)
-    expect((await getCustomer(db, customer.id))!.rules.length).toBe(MAX_RULES_LENGTH - 2)
-    expect(await appendRuleOnce(db, target, { caseId: c.id, proposalId: "p", item: 0, text: "a" })).toBe("added")
   })
 })
 

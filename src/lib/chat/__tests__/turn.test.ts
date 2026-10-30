@@ -160,11 +160,11 @@ describe("チャットの道具（決まった入力で）", () => {
     expect(state.pending).toEqual([])
   })
 
-  test("聞き返し・ルールの追記案・7割の設定も変更案になる", async () => {
+  test("聞き返し・ルールの項目の案（1項目ずつ）・7割の設定も変更案になる", async () => {
     const state = newTurnState(table)
     const tools = chatTools(state)
     await call(tools, "ask_staff", { question: "(仮称)も取ってよいですか" })
-    await call(tools, "propose_rule", { scope: "customer", text: "注文者の株式会社は㈱にする" })
+    await call(tools, "propose_rule", { scope: "customer", items: ["注文者の株式会社は㈱にする", "完成年月は引渡日"] })
     // 前の形の引数（already_applied）や知らない引数は黙って捨てず、形の誤りとして AI に返す
     const schema = tools.set_selection.inputSchema as unknown as { safeParse: (v: unknown) => { success: boolean } }
     expect(schema.safeParse({ already_applied: true }).success).toBe(false)
@@ -173,6 +173,7 @@ describe("チャットの道具（決まった入力で）", () => {
     expect(state.question).toBe("(仮称)も取ってよいですか")
     expect(state.pending).toEqual([
       { kind: "rule", scope: "customer", text: "注文者の株式会社は㈱にする" },
+      { kind: "rule", scope: "customer", text: "完成年月は引渡日" },
       { kind: "settings", tax: "included", selection: "rule7", basis: undefined },
     ])
   })

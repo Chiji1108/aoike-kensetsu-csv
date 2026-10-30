@@ -103,7 +103,7 @@ async function runTurn(request: Request, caseId: string): Promise<Response> {
   const db = getDb()
   const kase = await store.getCase(db, caseId)
   if (!kase || kase.deleting) return text("案件が見つかりません", 404)
-  const [customer, files, rules] = await Promise.all([store.getCustomer(db, kase.customerId), store.listFiles(db, caseId), store.getRules(db)])
+  const [customer, files, rules] = await Promise.all([store.getCustomer(db, kase.customerId), store.listFiles(db, caseId), store.rulesForAi(db, kase.customerId)])
   // 「去年のやり方で直す」: 前の年度の案件があるかだけ先に見る（去年の会話・作業は、印を取ってこの会話でまだ添えていないと分かってから読む）
   const previous = body.carryover ? await store.previousCase(db, kase) : undefined
   if (body.carryover && !previous) return text("前の年度の案件が見つかりません", 404)
@@ -132,7 +132,7 @@ async function runTurn(request: Request, caseId: string): Promise<Response> {
       return text("この会話にはもう去年のコードを添えています（会話を終えると、もう一度添えられます）", 409)
     }
     try {
-      const words = knownWords(body.table, [rules, customer?.rules ?? ""], body.carryoverHeaders ?? [])
+      const words = knownWords(body.table, [rules.global, rules.customer], body.carryoverHeaders ?? [])
       carryover = await carryoverOf(db, previous, { previousEngineers: body.carryoverNames, current: body.table }, words)
     } catch (e) {
       await endTurn(caseId, loaded, { ...loaded.doc, turn: null })
@@ -189,7 +189,7 @@ async function runTurn(request: Request, caseId: string): Promise<Response> {
   }
   const userUi: ChatMessage = { id: body.id, role: "user", parts: [{ type: "text", text: body.text }] }
   const containerFiles: ContainerFile[] = session.files.map((f) => ({ name: f.name, original: f.original, isSource: f.caseFileId === body.sourceFileId }))
-  const system = systemPrompt({ global: rules, customerName: customer?.name ?? "", customer: customer?.rules ?? "" }, body.context, containerFiles)
+  const system = systemPrompt({ ...rules, customerName: customer?.name ?? "" }, body.context, containerFiles)
   // 止める: 画面の「止める」（止める印を R2 に置く）か、タブを閉じた（request.signal。本番の enable_request_signal）で AI の呼び出しを止める（工事場所の検索も）
   const abort = new AbortController()
   request.signal.addEventListener("abort", () => abort.abort(request.signal.reason), { once: true })

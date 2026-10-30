@@ -9,16 +9,49 @@ import { createdAt, updatedAt } from "./auth-schema"
 export const csvCustomers = sqliteTable("csv_customers", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
+  /** @deprecated 顧客ルールの前の形（1つの文章）。0004 で csv_rule_items に移した。使わない（次のマイグレーションで消す） */
   rules: text("rules").notNull().default(""),
   formatNote: text("format_note").notNull().default(""),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 })
 
-/** 全体ルール。id は "global" の1行だけ */
+/** @deprecated 全体ルールの前の形（id "global" の1行の文章）。0004 で csv_rule_items に移した。使わない（次のマイグレーションで消す） */
 export const csvRules = sqliteTable("csv_rules", {
   id: text("id").primaryKey(),
   rules: text("rules").notNull().default(""),
+  updatedAt: updatedAt(),
+})
+
+/**
+ * 全体ルール・顧客ルールの項目（1項目1行）。並びは position（同じ一覧の中で小さい順）。customer_id は顧客ルールのときだけ（全体ルールは null）。
+ * source は誰が足したか（staff: 職員が画面で・移した前の文章、chat: チャットの変更案の承認、review: 案件を終えるときの見直し）、case_id は由来の案件（無ければ null。案件を消すと null にする）。
+ * version は文章を直すたびに1つ上げ、同じ項目を2つの画面で直したときに後の保存を断る（並べ替えでは上げない）。顧客を消すと顧客ルールの項目も消す
+ */
+export const RULE_SCOPES = ["global", "customer"] as const
+export const RULE_SOURCES = ["staff", "chat", "review"] as const
+export const csvRuleItems = sqliteTable(
+  "csv_rule_items",
+  {
+    id: text("id").primaryKey(),
+    scope: text("scope", { enum: RULE_SCOPES }).notNull(),
+    customerId: text("customer_id").references(() => csvCustomers.id),
+    text: text("text").notNull(),
+    position: integer("position").notNull(),
+    source: text("source", { enum: RULE_SOURCES }).notNull(),
+    caseId: text("case_id"),
+    version: integer("version").notNull().default(1),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index("csv_rule_items_list_idx").on(t.scope, t.customerId, t.position), index("csv_rule_items_case_id_idx").on(t.caseId)],
+)
+
+/** 事務所の設定（id は "global" の1行だけ）。rule7_tax は7割の計算を税抜・税込のどちらでするか（新しい案件の初期値）。行を作るときに全体ルールの初期値の項目も入れる */
+export const RULE7_TAXES = ["excluded", "included"] as const
+export const csvSettings = sqliteTable("csv_settings", {
+  id: text("id").primaryKey(),
+  rule7Tax: text("rule7_tax", { enum: RULE7_TAXES }).notNull().default("excluded"),
   updatedAt: updatedAt(),
 })
 
@@ -33,6 +66,8 @@ export const csvRuleAppends = sqliteTable(
     item: integer("item").notNull(),
     caseId: text("case_id").notNull(),
     token: text("token").notNull(),
+    /** 足した項目（csv_rule_items の id）。0004 より前の印は null */
+    itemId: text("item_id"),
     createdAt: createdAt(),
   },
   (t) => [primaryKey({ columns: [t.proposalId, t.item] }), index("csv_rule_appends_case_id_idx").on(t.caseId)],
