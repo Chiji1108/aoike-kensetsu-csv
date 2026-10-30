@@ -41,13 +41,13 @@ import { CASE_STATUSES, CASE_STATUS_LABELS, contentTypeOf, FILE_KIND_LABELS, fil
 import { convertRows, countByStatus, editKey, editSession, resolveRows, staffEdit, type CellEdit, type RowResult } from "@/lib/convert/convert"
 import { csvFileName, datedFileName, toCsvBytes } from "@/lib/convert/csv"
 import { personLetters } from "@/lib/convert/persons"
-import { heuristicPlan } from "@/lib/convert/heuristic-plan"
+import { heuristicPlan, primarySheet } from "@/lib/convert/heuristic-plan"
 import { SELECTION_LABELS, SELECTION_MODES, summarizeKoji, TAX_LABELS, type Inclusion, type TaxMode } from "@/lib/convert/koji-selection"
 import { addressInputs, fillAiCache, type AiCache, type AiCaller } from "@/lib/convert/pipeline"
 import { ADDRESS_API_PATH, addressCache, addressKey, lookupAddresses, NO_ADDRESSES, type AddressBook, type AddressLookup } from "@/lib/convert/address"
 import { acceptAiPlan, reviewPlanTransforms, type MappingPlan, type SheetGrid } from "@/lib/convert/plan"
 import { planExcerpt, previousPlanContext } from "@/lib/convert/prompt"
-import { collectSourceRows, primarySheet, sameHeader, sourceKey } from "@/lib/convert/sources"
+import { collectSourceRows, sameHeader, sourceKey } from "@/lib/convert/sources"
 import { compareFormats, describeFormatDiff } from "@/lib/convert/format-diff"
 import { parseInputNumber } from "@/lib/convert/text"
 import type { Rounding } from "@/lib/convert/transforms"
@@ -92,7 +92,7 @@ type PreviousCase = NonNullable<NonNullable<Awaited<ReturnType<typeof getCasePag
 
 /** 去年の比べるシートと見出しの行（去年の計画のもの。計画が無い・シートが無ければ見出しから推定する）。比べるシートが無ければ null */
 function previousSideOf(previous: PreviousCase, sheets: SheetGrid[]) {
-  const prevGrid = sheets.find((s) => s.name === previous.sheet) ?? primarySheet(sheets)
+  const prevGrid = sheets.find((s) => s.name === previous.sheet) ?? primarySheet(SPEC, KOJI_PLAN_HINTS, sheets)
   if (!prevGrid) return null
   const headerRow = prevGrid.name === previous.sheet && previous.headerRow !== null ? previous.headerRow : heuristicPlan(SPEC, KOJI_PLAN_HINTS, prevGrid, sheets).headerRow
   return { sheets, sheet: prevGrid.name, headerRow }
@@ -275,7 +275,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
     try {
       const { readWorkbook } = await import("@/lib/convert/workbook")
       const sheets = readWorkbook(file.name, await fetchCaseFile(file.id))
-      const primary = primarySheet(sheets)
+      const primary = primarySheet(SPEC, KOJI_PLAN_HINTS, sheets)
       if (!primary) throw new Error("シートが空です")
       const src = { fileId: file.id, name: file.name, sheets }
       setSource(src)

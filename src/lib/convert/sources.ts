@@ -110,17 +110,6 @@ export function defaultSheetSelection(sheets: readonly SheetGrid[], primary: She
   return kept.map((s) => s.name)
 }
 
-/** データが一番多いシート（計画の元にする） */
-export function primarySheet(sheets: readonly SheetGrid[]): SheetGrid | undefined {
-  let best: SheetGrid | undefined
-  let bestCount = 0
-  for (const s of sheets) {
-    const n = s.rows.filter((r) => !rowIsBlank(r)).length
-    if (n > bestCount) [best, bestCount] = [s, n]
-  }
-  return best
-}
-
 /** 行を出力しない理由（除外しないなら undefined） */
 export function excludedReason(row: SourceRow, filter: RowFilter): string | undefined {
   if (filter.excludeHidden && row.hidden) return "非表示の行"
