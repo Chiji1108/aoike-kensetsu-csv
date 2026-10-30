@@ -10,7 +10,8 @@ import { TRANSFORM_IDS, getTransform, preferredTransform, transformFits, type Tr
  * ブラウザで読んだシート。セルは表示値（日付は YYYY-MM-DD）、結合セルは左上の値で埋めてある。
  * hidden[i] はその行が非表示（オートフィルタで隠れた行など）か。
  */
-export type SheetGrid = { name: string; rows: string[][]; hidden: boolean[] }
+/** notes はセルのメモ（row・column は rows の位置）。記入用Excelの取り込みが、顧客がメモに書いた答えを見つけるのに使う */
+export type SheetGrid = { name: string; rows: string[][]; hidden: boolean[]; notes?: { row: number; column: number; text: string }[] }
 
 /** 計画で選んだシートから取り出した1行（見出し行・合計行などは含まない） */
 export type SourceRow = { sheet: string; row: number; cells: string[]; hidden: boolean }

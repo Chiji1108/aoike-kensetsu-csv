@@ -478,22 +478,44 @@ export async function readAiAnswers(items: readonly AiAnswer[], rows: readonly K
 }
 
 /**
- * 記入用Excelの、決まった欄（管理番号・照合用と記入の欄の見出しの列）の外にある記入の数（別の列・別のシートに書いた答え）。
- * 決まった欄で読めなかった答えを AI に読ませるかを決める（readAnswers は決まった欄だけを読む）
+ * 記入用Excelの、決まった欄（聞いた欄）の外にある記入の数。決まった欄で読めなかった答えを AI に読ませるかを決める（readAnswers は聞いた欄だけを読む）。
+ * 数えるもの: ほかのシートの記入、見出しより上のお願いの文（A列）の外、知らない見出し・見出しの無い列、表示だけの欄（業種・請負代金・聞いていない欄）が
+ * 出したときの値から変わったもの、顧客が付けたセルのメモ（この画面が付けた「推定です。」のメモは除く）。rows は今の全行
  */
-export function outsideCells(sheets: readonly SheetGrid[]): number {
-  const known = new Set([ASKED_HEADER, ...SHEET_COLUMNS.map((c) => c.header)])
+export function outsideCells(sheets: readonly SheetGrid[], rows: readonly KojiRow[]): number {
+  const now = new Map(rows.map((r) => [r.key, r]))
+  const ours = new Set(SHEET_COLUMNS.flatMap((c) => (c.reviewNote ? [`推定です。${c.reviewNote}`] : [])))
+  const filled = (cells: readonly string[], from = 0) => cells.slice(from).filter((c) => c.trim()).length
   let n = 0
   let found = false
   for (const s of sheets) {
+    n += (s.notes ?? []).filter((x) => !ours.has(x.text)).length
     const headerRow = found ? -1 : s.rows.findIndex((r) => r.some((c) => c.trim() === MANAGEMENT_HEADER))
     if (headerRow < 0) {
-      n += s.rows.reduce((k, r) => k + r.filter((c) => c.trim()).length, 0)
+      n += s.rows.reduce((k, r) => k + filled(r), 0)
       continue
     }
     found = true
+    for (const r of s.rows.slice(0, headerRow)) n += filled(r, 1)
     const header = s.rows[headerRow]!.map((c) => c.trim())
-    for (const r of s.rows.slice(headerRow + 1)) r.forEach((c, i) => c.trim() && !known.has(header[i] ?? "") && n++)
+    const keyCol = header.indexOf(MANAGEMENT_HEADER)
+    const askedCol = header.indexOf(ASKED_HEADER)
+    for (const cells of s.rows.slice(headerRow + 1)) {
+      const row = now.get(cells[keyCol]?.trim() ?? "")
+      const meta = askedCol < 0 ? undefined : parseAskedRow(cells[askedCol] ?? "")
+      const sent = meta && row ? meta.asked.map((a): CellInquiry => ({ kind: "cell", rowKey: row.key, ...a })) : []
+      cells.forEach((value, i) => {
+        if (i === keyCol || i === askedCol) return
+        const column = SHEET_COLUMNS.find((c) => c.header === header[i])
+        if (!column) {
+          if (value.trim()) n++
+          return
+        }
+        // 聞いた欄は readAnswers が読む。行や照合用が読めない行は取り込みが一覧に出す（AI に読ませる候補になる）
+        if (!row || !meta || sent.some((q) => column.fields.includes(q.field))) return
+        if (value.trim() !== column.show(asSent(row, sent)).trim()) n++
+      })
+    }
   }
   return n
 }

@@ -4,6 +4,8 @@ import { kojiRow } from "../../convert/__tests__/helpers"
 import { personToken } from "../../convert/persons"
 import type { AiBatchRequest } from "../../convert/ai-tasks"
 import type { KojiFieldId } from "../../spec/koji-keireki"
+import type { SheetGrid } from "../../convert/plan"
+import { codeLabel } from "../../spec/code-sets"
 import { CORRECTION_MESSAGE, outsideCells, readAiAnswers } from "../inquiry"
 
 const full = {
@@ -126,18 +128,35 @@ describe("AI が読んだ顧客の回答", () => {
 })
 
 describe("記入用Excelの決まった欄の外の記入", () => {
-  test("見出しの無い列・知らない見出しの列・ほかのシートの記入を数える（記入の欄・表示の欄・照合用は数えない）", () => {
-    const sheet = {
-      name: "ご記入のお願い",
-      rows: [
-        ["お願い"],
-        ["管理番号", "工事名", "配置技術者", "照合用", "", "備考"],
-        ["s!2", "テストビル電気工事", "", "{}", "試験次郎です", ""],
-        ["s!3", "テスト倉庫改修工事", "", "{}", "", "場所は合っています"],
-      ],
-      hidden: [],
-    }
-    expect(outsideCells([sheet])).toBe(2)
-    expect(outsideCells([sheet, { name: "メモ", rows: [["完成は10月"], [""]], hidden: [] }])).toBe(3)
+  const meta = (fields: string[]) => JSON.stringify({ asked: fields.map((field) => ({ field, reason: "missing", current: "" })) })
+  const header = ["管理番号", "業種", "工事名", "請負代金（千円）", "配置技術者", "照合用", "", "備考"]
+  /** 出したときのまま（工事名・請負代金は表示だけ、配置技術者は聞いた欄で空のまま） */
+  const sent = (r: typeof noEngineer, extra: string[] = []) => [r.key, codeLabel("gyoshu", r.cells.gyoshu.value) ?? r.cells.gyoshu.value, r.cells.workName.value, r.cells.amount.value, "", meta(["engineer"]), ...extra]
+  const sheet = (rows: string[][], notes: SheetGrid["notes"] = []): SheetGrid => ({ name: "ご記入のお願い", rows: [["お願いの文"], [], header, ...rows], hidden: [], notes })
+
+  test("出したときのままなら数えない", () => {
+    expect(outsideCells([sheet([sent(noEngineer)])], rows)).toBe(0)
   })
+
+  test("見出しの無い列・知らない見出しの列・ほかのシート・見出しより上（お願いの文の外）・顧客が付けたメモ・表示だけの欄の書き換えを数える", () => {
+    const changed = [...sent(noEngineer)]
+    changed[3] = "6000"
+    const grid = sheet([sent(noEngineer, ["試験次郎です", "完成は10月"]), changed], [
+      { row: 3, column: 4, text: "担当は試験 次郎" },
+      { row: 3, column: 2, text: "推定です。正しいか確認し、違えば書き直してください" },
+    ])
+    grid.rows[0]!.push("工事場所は全部東京です")
+    expect(outsideCells([grid, { name: "メモ", rows: [["完成は10月"], [""]], hidden: [] }], rows)).toBe(2 + 1 + 1 + 1 + 1)
+  })
+})
+
+test("返ってきた Excel のセルのメモを読む（顧客がメモに書いた答え）", async () => {
+  const ExcelJS = (await import("exceljs")).default
+  const wb = new ExcelJS.Workbook()
+  const ws = wb.addWorksheet("ご記入のお願い")
+  ws.addRows([["管理番号", "配置技術者", "照合用"], ["s!2", "", "{}"]])
+  ws.getCell(2, 2).note = "担当は試験 次郎"
+  const { readWorkbook } = await import("../../convert/workbook")
+  const [grid] = readWorkbook("回答.xlsx", new Uint8Array(await wb.xlsx.writeBuffer()))
+  expect(grid!.notes).toEqual([{ row: 1, column: 1, text: "担当は試験 次郎" }])
 })

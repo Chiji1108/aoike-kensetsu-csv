@@ -859,7 +859,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
     })
     // 決まった欄の外（別の列・別のシート）に記入があるか、読めなかった記入があれば、まだ聞いている項目の答えを AI に読ませられる
     const left = report.unanswered.length + report.invalid.length + report.unreadable.length
-    const readable = outsideCells(sheets) > 0 || report.invalid.length > 0 || report.unreadable.length > 0
+    const readable = outsideCells(sheets, against) > 0 || report.invalid.length > 0 || report.unreadable.length > 0
     const forAi = left > 0 && readable && (await saving) !== undefined ? left : 0
     return { aiFailures: [...failures], forAi }
   }
