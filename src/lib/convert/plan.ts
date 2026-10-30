@@ -193,8 +193,9 @@ export function acceptAiPlan<F extends string>(
   }
 }
 
-function fieldPlanProblem(
-  p: z.infer<typeof fieldPlanWire>,
+/** 項目の計画1つが項目の型とシートの幅に合わない理由（合えば undefined）。AI の計画の取り込みとチャットの計画の変更で同じ決まり */
+export function fieldPlanProblem(
+  p: z.infer<typeof fieldPlanWire> | FieldPlan,
   vt: ValueType,
   nCols: number,
 ): string | undefined {
