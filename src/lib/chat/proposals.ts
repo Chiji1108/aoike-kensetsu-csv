@@ -6,13 +6,14 @@ import { basisSchema, cellEditSchema, fieldIdSchema, legacySelection, selectionS
 import type { KojiFieldId } from "../spec/koji-keireki"
 import { foundSchema, siteRefSchema, SOURCE_LABELS, type Found } from "../location/sites"
 import { planPatchSchema, type PlanPatch } from "../convert/plan-patch"
+import { ruleScopeSchema, type RuleScope } from "./rules"
 
 /**
  * 変更案。AI（チャット）や返ってきた Excel が出した変更は、すぐには表に入れず、職員が項目ごとかまとめて承認したものだけを
  * 手直し（edits）・手動の入れ外し（manual）・7割の設定に重ねる。検証・7割・問い合わせ・CSV は今の仕組みのまま。
  */
 
-export type RuleScope = "global" | "customer"
+export type { RuleScope }
 
 /** 変更の1項目。cell の edit は個人名を印にした値（記号の表に依らないので、承認するまでに記号が付け直されても同じ人） */
 export type ChatChange =
@@ -199,7 +200,7 @@ export const chatChangeSchema: z.ZodType<ChatChange> = z.discriminatedUnion("kin
       const s = legacySelection(selection, alreadyApplied)
       return { ...c, ...(s ? { selection: s } : {}) }
     }),
-  z.object({ kind: z.literal("rule"), scope: z.enum(["global", "customer"]), text: z.string() }),
+  z.object({ kind: z.literal("rule"), scope: ruleScopeSchema, text: z.string() }),
   z.object({ kind: z.literal("plan"), patch: planPatchSchema, before: planPatchSchema.optional() }),
   foundSchema.extend({
     kind: z.literal("location"),

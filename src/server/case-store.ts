@@ -1,9 +1,9 @@
-import { and, count, desc, eq, exists, inArray, lt, sql } from "drizzle-orm"
+import { and, asc, count, desc, eq, exists, gt, inArray, isNull, lt, sql, type SQL } from "drizzle-orm"
 import type { BatchItem, BatchResponse } from "drizzle-orm/batch"
-import type { BaseSQLiteDatabase } from "drizzle-orm/sqlite-core"
-import { csvCaseAiCaches, csvCaseFiles, csvCases, csvCaseStates, csvCustomers, csvRuleAppends, csvRules } from "@/db/cases-schema"
+import { alias, type BaseSQLiteDatabase } from "drizzle-orm/sqlite-core"
+import { csvCaseAiCaches, csvCaseFiles, csvCases, csvCaseStates, csvCustomers, csvRuleAppends, csvRuleItems, csvSettings } from "@/db/cases-schema"
 import type * as schema from "@/db/schema"
-import { DEFAULT_GLOBAL_RULES } from "@/lib/chat/rules"
+import { charCount, MAX_RULE_ITEMS, MAX_RULES_TOTAL, rulesText, type Rule7Tax, type RuleItem, type RuleScope, type RuleSource, type RuleTarget } from "@/lib/chat/rules"
 import { deleteMemoryOfCustomer, deleteRunsOfCase } from "./location-store"
 import { casePrefix, r2KeyOf, type Case, type CaseFile, type CaseStatus, type Customer, type CustomerSummary, type DeletionCounts, type FileKind } from "@/lib/cases/types"
 
@@ -24,10 +24,8 @@ export type Bucket = {
   list(options: { prefix: string; cursor?: string }): Promise<{ objects: { key: string }[] } & ({ truncated: true; cursor: string } | { truncated: false })>
 }
 
-const GLOBAL_RULES_ID = "global"
-
 const ms = (d: Date) => d.getTime()
-const toCustomer = (r: typeof csvCustomers.$inferSelect): Customer => ({ ...r, createdAt: ms(r.createdAt), updatedAt: ms(r.updatedAt) })
+const toCustomer = ({ rules: _, ...r }: typeof csvCustomers.$inferSelect): Customer => ({ ...r, createdAt: ms(r.createdAt), updatedAt: ms(r.updatedAt) })
 const toCase = (r: typeof csvCases.$inferSelect): Case => ({ ...r, createdAt: ms(r.createdAt), updatedAt: ms(r.updatedAt) })
 const toFile = ({ r2Key: _, status: __, ...r }: typeof csvCaseFiles.$inferSelect): CaseFile => ({ ...r, createdAt: ms(r.createdAt) })
 
@@ -61,61 +59,169 @@ export async function updateCustomer(db: Db, id: string, patch: Partial<Pick<Cus
   await db.update(csvCustomers).set({ ...patch, updatedAt: new Date() }).where(eq(csvCustomers.id, id))
 }
 
-// ---- 全体ルール ----
+// ---- ルール（全体ルール・顧客ルールの項目）と事務所の設定 ----
 
-/** 全体ルール。まだ保存していなければ初期値（事務所のやり方の下書き） */
-export async function getRules(db: Db): Promise<string> {
-  const [row] = await db.select().from(csvRules).where(eq(csvRules.id, GLOBAL_RULES_ID))
-  return row?.rules ?? DEFAULT_GLOBAL_RULES
+const SETTINGS_ID = "global"
+
+/** 事務所の設定（行はマイグレーション 0004 が作る。読むだけで書かない） */
+export async function getSettings(db: Db): Promise<{ rule7Tax: Rule7Tax }> {
+  const [row] = await db.select({ rule7Tax: csvSettings.rule7Tax }).from(csvSettings).where(eq(csvSettings.id, SETTINGS_ID))
+  return { rule7Tax: row?.rule7Tax ?? "excluded" }
 }
 
-/** ルールの文章を、読んだときの文章（previous）のままなら書き換える。ほかの画面・チャットの追記で変わっていたら StaleTextError */
-export class StaleTextError extends Error {
-  constructor() {
-    super("ほかの画面でこの文章が変わりました。再読み込みしてから直してください（今の入力は消えます）")
-  }
+export async function saveSettings(db: Db, patch: { rule7Tax: Rule7Tax }) {
+  await db
+    .insert(csvSettings)
+    .values({ id: SETTINGS_ID, ...patch })
+    .onConflictDoUpdate({ target: csvSettings.id, set: { ...patch, updatedAt: new Date() } })
 }
 
-/** まだ行が無ければ初期値の行を作る（読み書きのどちらも、保存した文章を相手にする） */
-const ensureRulesRow = (db: Db) => db.insert(csvRules).values({ id: GLOBAL_RULES_ID, rules: DEFAULT_GLOBAL_RULES }).onConflictDoNothing()
+export type { RuleTarget }
 
-export async function saveRules(db: Db, rules: string, previous: string) {
-  await ensureRulesRow(db)
-  const saved = await db
-    .update(csvRules)
-    .set({ rules, updatedAt: new Date() })
-    .where(and(eq(csvRules.id, GLOBAL_RULES_ID), eq(csvRules.rules, previous)))
-    .returning({ id: csvRules.id })
-  if (!saved.length) throw new StaleTextError()
+
+const inList = (target: RuleTarget) =>
+  target.scope === "global" ? and(eq(csvRuleItems.scope, "global"), isNull(csvRuleItems.customerId)) : and(eq(csvRuleItems.scope, "customer"), eq(csvRuleItems.customerId, target.customerId))
+
+/** 一覧の項目（並びの順。由来の案件の年度と顧客名つき。案件が消えていれば由来は無し） */
+export async function listRuleItems(db: Db, target: RuleTarget): Promise<RuleItem[]> {
+  const originCustomer = alias(csvCustomers, "origin_customer")
+  const rows = await db
+    .select({ item: csvRuleItems, fiscalYear: csvCases.fiscalYear, customerName: originCustomer.name })
+    .from(csvRuleItems)
+    .leftJoin(csvCases, eq(csvCases.id, csvRuleItems.caseId))
+    .leftJoin(originCustomer, eq(originCustomer.id, csvCases.customerId))
+    .where(inList(target))
+    .orderBy(asc(csvRuleItems.position), asc(csvRuleItems.createdAt), asc(csvRuleItems.id))
+  return rows.map(({ item, fiscalYear, customerName }) => ({
+    id: item.id,
+    text: item.text,
+    source: item.source,
+    version: item.version,
+    origin: item.caseId && fiscalYear !== null && customerName !== null ? { caseId: item.caseId, fiscalYear, customerName } : null,
+  }))
 }
 
-/** 末尾に1行足した文章（SQL の中で作るので、同時に足してもほかの画面で保存しても消えない。空なら足すものだけ） */
-const appended = (column: typeof csvRules.rules | typeof csvCustomers.rules, text: string) =>
-  sql`case when trim(${column}, ' ' || char(10) || char(13)) = '' then ${text} else rtrim(${column}, ' ' || char(10) || char(13)) || char(10) || ${text} end`
-
-/** 全体ルール・顧客ルールの長さの上限（画面から保存できる長さと同じ） */
-export const MAX_RULES_LENGTH = 20_000
-
+/** 一覧の上限（項目の数・合計の字数）を超えたので足せない・直せない */
 export class RulesTooLongError extends Error {
   constructor() {
-    super(`ルールが長すぎて追記できません（${MAX_RULES_LENGTH.toLocaleString("ja-JP")}字まで）。ルールを短くしてから承認してください`)
+    super(`ルールが多すぎて足せません（${MAX_RULE_ITEMS}項目・合計${MAX_RULES_TOTAL.toLocaleString("ja-JP")}字まで）。ほかの項目を短くするか消してから足してください`)
   }
 }
 
-export type RuleTarget = { scope: "global" } | { scope: "customer"; customerId: string }
+/** 同じ項目をほかの画面（・チャットの承認）が先に直した・消した */
+export class StaleRuleError extends Error {
+  constructor(readonly current: string | null) {
+    super(current === null ? "この項目はほかの画面で消されました" : "この項目はほかの画面で直されました。今の文章を確かめてから直してください")
+  }
+}
+
+const listCount = (target: RuleTarget) => sql<number>`(select count(*) from ${csvRuleItems} where ${inList(target)})`
+const listLength = (target: RuleTarget, except?: string) =>
+  sql<number>`(select coalesce(sum(length(${csvRuleItems.text})), 0) from ${csvRuleItems} where ${inList(target)}${except ? sql` and ${csvRuleItems.id} <> ${except}` : sql``})`
+/** 足せるか（数と合計の字数）と、一覧の持ち主がいるか（顧客ルールは顧客の行がある） */
+const canAdd = (target: RuleTarget, text: string) =>
+  and(
+    sql`${listCount(target)} < ${MAX_RULE_ITEMS}`,
+    sql`${listLength(target)} + ${charCount(text)} <= ${MAX_RULES_TOTAL}`,
+    target.scope === "customer" ? sql`exists (select 1 from ${csvCustomers} where ${csvCustomers.id} = ${target.customerId})` : undefined,
+  )
+
+/** 足す項目の行（一覧の末尾。位置は SQL の中で決めるので、同時に足しても並びが重ならない）。足せないときは行にならない */
+function newItemRow(db: Db, target: RuleTarget, add: { id: string; text: string; source: RuleSource; caseId: string | null }, extra?: SQL) {
+  return db
+    .insert(csvRuleItems)
+    .select(
+      db
+        .select({
+          id: sql<string>`${add.id}`.as("id"),
+          scope: sql<RuleScope>`${target.scope}`.as("scope"),
+          customerId: sql<string | null>`${target.scope === "customer" ? target.customerId : null}`.as("customer_id"),
+          text: sql<string>`${add.text}`.as("text"),
+          position: sql<number>`(select coalesce(max(${csvRuleItems.position}), 0) + 1 from ${csvRuleItems} where ${inList(target)})`.as("position"),
+          source: sql<RuleSource>`${add.source}`.as("source"),
+          caseId: sql<string | null>`${add.caseId}`.as("case_id"),
+          version: sql<number>`1`.as("version"),
+          createdAt: sql<Date>`${Date.now()}`.as("created_at"),
+          updatedAt: sql<Date>`${Date.now()}`.as("updated_at"),
+        })
+        .from(sql`(select 1)`)
+        .where(and(canAdd(target, add.text), extra)),
+    )
+    .returning({ id: csvRuleItems.id })
+}
+
+const ownerMissing = async (db: Db, target: RuleTarget) => target.scope === "customer" && !(await getCustomer(db, target.customerId))
+
+/** 職員が項目を末尾に足す。足した項目の id */
+export async function addRuleItem(db: Db, target: RuleTarget, text: string): Promise<string> {
+  const [added] = await newItemRow(db, target, { id: crypto.randomUUID(), text, source: "staff", caseId: null })
+  if (added) return added.id
+  throw (await ownerMissing(db, target)) ? new Error("顧客が見つかりません") : new RulesTooLongError()
+}
+
+/** 一覧の中の項目（ほかの一覧の id なら無いのと同じ） */
+async function itemRow(db: Db, target: RuleTarget, id: string) {
+  const [row] = await db.select().from(csvRuleItems).where(and(eq(csvRuleItems.id, id), inList(target)))
+  return row
+}
+
+/** 項目の文章を直す。version は読んだときの版（ほかで直されていたら StaleRuleError。黙って上書きしない） */
+export async function updateRuleItem(db: Db, target: RuleTarget, id: string, version: number, text: string) {
+  if (!(await itemRow(db, target, id))) throw new StaleRuleError(null)
+  const saved = await db
+    .update(csvRuleItems)
+    .set({ text, version: sql`${csvRuleItems.version} + 1`, updatedAt: new Date() })
+    .where(and(eq(csvRuleItems.id, id), eq(csvRuleItems.version, version), sql`${listLength(target, id)} + ${charCount(text)} <= ${MAX_RULES_TOTAL}`))
+    .returning({ id: csvRuleItems.id })
+  if (saved.length) return
+  const now = await itemRow(db, target, id)
+  if (!now || now.version !== version) throw new StaleRuleError(now?.text ?? null)
+  throw new RulesTooLongError()
+}
+
+/** 項目を消す。version は読んだときの版（ほかで直されていたら消さずに StaleRuleError。もう消えていれば何もしない） */
+export async function deleteRuleItem(db: Db, target: RuleTarget, id: string, version: number) {
+  const deleted = await db
+    .delete(csvRuleItems)
+    .where(and(eq(csvRuleItems.id, id), eq(csvRuleItems.version, version), inList(target)))
+    .returning({ id: csvRuleItems.id })
+  if (deleted.length) return
+  const now = await itemRow(db, target, id)
+  if (now) throw new StaleRuleError(now.text)
+}
 
 /**
- * 変更案の項目（proposalId・item）のルールの追記を、一度だけ足す。足した印と追記を1つの処理（D1 の batch）で書くので、
- * 同じ項目を二度承認しても（保存前に開き直しても、同時に押しても）二度足さない。長さの上限を超えるなら足さずに RulesTooLongError。
+ * 項目を1つ上・下の項目と入れ替える（今の並びで隣を決める。並べ替えは版を上げないので、隣の項目をほかの画面で直していても消し合わない）。
+ * 端なら何もしない。入れ替える間にほかの画面が並びを変えたら、入れ替えずに StaleRuleError（並びを読み直してもう一度）
+ */
+export async function moveRuleItem(db: Db, target: RuleTarget, id: string, direction: "up" | "down") {
+  const row = await itemRow(db, target, id)
+  if (!row) throw new StaleRuleError(null)
+  const [neighbor] = await db
+    .select({ id: csvRuleItems.id, position: csvRuleItems.position })
+    .from(csvRuleItems)
+    .where(and(inList(target), direction === "up" ? lt(csvRuleItems.position, row.position) : gt(csvRuleItems.position, row.position)))
+    .orderBy(direction === "up" ? desc(csvRuleItems.position) : asc(csvRuleItems.position))
+    .limit(1)
+  if (!neighbor) return
+  // 2つの行の位置を1つの文で入れ替える（読んだときの位置のままの2行だけ）
+  const unchanged = sql`(select count(*) from ${csvRuleItems} where (${csvRuleItems.id} = ${row.id} and ${csvRuleItems.position} = ${row.position}) or (${csvRuleItems.id} = ${neighbor.id} and ${csvRuleItems.position} = ${neighbor.position})) = 2`
+  const swapped = await db
+    .update(csvRuleItems)
+    .set({ position: sql`case when ${csvRuleItems.id} = ${row.id} then ${neighbor.position} else ${row.position} end` })
+    .where(and(inArray(csvRuleItems.id, [row.id, neighbor.id]), unchanged))
+    .returning({ id: csvRuleItems.id })
+  if (swapped.length !== 2) throw new StaleRuleError((await itemRow(db, target, id))?.text ?? null)
+}
+
+/**
+ * 変更案の項目（proposalId・item）のルールの追記を、一度だけ項目として足す。足した印と項目を1つの処理（D1 の batch）で書くので、
+ * 同じ項目を二度承認しても（保存前に開き直しても、同時に押しても）二度足さない。上限を超えるなら足さずに RulesTooLongError。
  * 足したら "added"、もう足してあれば "already"
  */
 export async function appendRuleOnce(db: Db, target: RuleTarget, add: { caseId: string; proposalId: string; item: number; text: string }): Promise<"added" | "already"> {
-  if (target.scope === "global") await ensureRulesRow(db)
-  const text = add.text.trim()
+  const text = add.text
   const token = crypto.randomUUID()
-  const table = target.scope === "global" ? csvRules : csvCustomers
-  const whereTarget = target.scope === "global" ? eq(csvRules.id, GLOBAL_RULES_ID) : eq(csvCustomers.id, target.customerId)
-  const fits = sql`length(${appended(table.rules, text)}) <= ${MAX_RULES_LENGTH}`
   const mark = db
     .insert(csvRuleAppends)
     .select(
@@ -127,8 +233,8 @@ export async function appendRuleOnce(db: Db, target: RuleTarget, add: { caseId: 
           token: sql<string>`${token}`.as("token"),
           createdAt: sql<Date>`${Date.now()}`.as("created_at"),
         })
-        .from(table)
-        .where(and(whereTarget, fits)),
+        .from(sql`(select 1)`)
+        .where(canAdd(target, text)),
     )
     .onConflictDoNothing()
   const marked = exists(
@@ -137,31 +243,25 @@ export async function appendRuleOnce(db: Db, target: RuleTarget, add: { caseId: 
       .from(csvRuleAppends)
       .where(and(eq(csvRuleAppends.proposalId, add.proposalId), eq(csvRuleAppends.item, add.item), eq(csvRuleAppends.token, token))),
   )
-  const update = db
-    .update(table)
-    .set({ rules: appended(table.rules, text), updatedAt: new Date() })
-    .where(and(whereTarget, marked))
-    .returning({ id: table.id })
-  const [, updated] = await db.batch([mark, update])
-  if (updated.length) return "added"
+  const [, added] = await db.batch([mark, newItemRow(db, target, { id: crypto.randomUUID(), text, source: "chat", caseId: add.caseId }, marked)])
+  if (added.length) return "added"
   const [already] = await db
     .select({ one: sql`1` })
     .from(csvRuleAppends)
     .where(and(eq(csvRuleAppends.proposalId, add.proposalId), eq(csvRuleAppends.item, add.item)))
   if (already) return "already"
-  const [found] = await db.select({ id: table.id }).from(table).where(whereTarget)
-  throw found ? new RulesTooLongError() : new Error("顧客が見つかりません")
+  throw (await ownerMissing(db, target)) ? new Error("顧客が見つかりません") : new RulesTooLongError()
 }
 
-export async function saveCustomerRules(db: Db, id: string, rules: string, previous: string) {
-  const saved = await db
-    .update(csvCustomers)
-    .set({ rules, updatedAt: new Date() })
-    .where(and(eq(csvCustomers.id, id), eq(csvCustomers.rules, previous)))
-    .returning({ id: csvCustomers.id })
-  if (!saved.length) throw (await getCustomer(db, id)) ? new StaleTextError() : new Error("顧客が見つかりません")
-}
+/** 一覧の項目の文章だけ（並びの順。AI に渡す） */
+const itemTexts = (db: Db, target: RuleTarget) =>
+  db.select({ text: csvRuleItems.text }).from(csvRuleItems).where(inList(target)).orderBy(asc(csvRuleItems.position), asc(csvRuleItems.createdAt), asc(csvRuleItems.id))
 
+/** AI に渡すルールの文章（全体ルールと、顧客があればその顧客ルール）と事務所の設定 */
+export async function rulesForAi(db: Db, customerId: string | null) {
+  const [global, customer, settings] = await Promise.all([itemTexts(db, { scope: "global" }), customerId ? itemTexts(db, { scope: "customer", customerId }) : [], getSettings(db)])
+  return { global: rulesText(global), customer: rulesText(customer), rule7Tax: settings.rule7Tax }
+}
 
 // ---- 案件 ----
 
@@ -406,6 +506,8 @@ export async function deleteCase(db: Db, bucket: Bucket, caseId: string) {
   await db.delete(csvCaseStates).where(eq(csvCaseStates.caseId, caseId))
   await db.delete(csvCaseAiCaches).where(eq(csvCaseAiCaches.caseId, caseId))
   await db.delete(csvRuleAppends).where(eq(csvRuleAppends.caseId, caseId))
+  // ルールの項目は残す（由来の案件だけ外す）
+  await db.update(csvRuleItems).set({ caseId: null }).where(eq(csvRuleItems.caseId, caseId))
   await deleteRunsOfCase(db, caseId)
   await db.delete(csvCases).where(eq(csvCases.id, caseId))
 }
@@ -414,5 +516,9 @@ export async function deleteCustomer(db: Db, bucket: Bucket, customerId: string)
   const cases = await db.select({ id: csvCases.id }).from(csvCases).where(eq(csvCases.customerId, customerId))
   for (const c of cases) await deleteCase(db, bucket, c.id)
   await deleteMemoryOfCustomer(db, customerId)
-  await db.delete(csvCustomers).where(eq(csvCustomers.id, customerId))
+  // 顧客ルールの項目と顧客の行を1つの処理で消す（消している間にチャットの承認で足した項目も残らない。足すのは顧客の行があるときだけ）
+  await db.batch([
+    db.delete(csvRuleItems).where(and(eq(csvRuleItems.scope, "customer"), eq(csvRuleItems.customerId, customerId))),
+    db.delete(csvCustomers).where(eq(csvCustomers.id, customerId)),
+  ])
 }

@@ -14,7 +14,8 @@ import { authMiddleware } from "./middleware"
 
 const id = z.string().min(1).max(64)
 const name = z.string().trim().min(1).max(100)
-const longText = z.string().max(store.MAX_RULES_LENGTH)
+/** 元データの形式のメモの長さの上限 */
+const longText = z.string().max(20_000)
 
 export const listCustomersFn = createServerFn({ method: "GET" })
   .middleware([authMiddleware])
@@ -40,7 +41,8 @@ export const getCustomerPageFn = createServerFn({ method: "GET" })
     const db = getDb()
     const customer = await store.getCustomer(db, data.id)
     if (!customer) return null
-    return { customer, cases: await store.listCases(db, customer.id) }
+    const [cases, rules] = await Promise.all([store.listCases(db, customer.id), store.listRuleItems(db, { scope: "customer", customerId: customer.id })])
+    return { customer, cases, rules }
   })
 
 export const createCaseFn = createServerFn({ method: "POST" })
@@ -63,7 +65,7 @@ export const getCasePageFn = createServerFn({ method: "GET" })
     const db = getDb()
     const kase = await store.getCase(db, data.id)
     if (!kase) return null
-    const [customer, files, row] = await Promise.all([store.getCustomer(db, kase.customerId), store.listFiles(db, kase.id), store.getCaseState(db, kase.id)])
+    const [customer, files, row, settings] = await Promise.all([store.getCustomer(db, kase.customerId), store.listFiles(db, kase.id), store.getCaseState(db, kase.id), store.getSettings(db)])
     let state: { version: number; work: SavedWork; aiCache: SavedAiCache } | null = null
     if (row) {
       const work = savedWorkSchema.safeParse(JSON.parse(row.json))
@@ -73,7 +75,7 @@ export const getCasePageFn = createServerFn({ method: "GET" })
     }
     // 変更案の記録（R2）のうち、案件の作業で決め終わっていないもの（作業にまだ無いもの＝画面が受け取り損ねたものも）
     const [proposals, previous] = await Promise.all([readOpenProposals(kase.id, new Set(state?.work.proposals.filter((p) => p.state === "closed").map((p) => p.id))), previousOf(db, kase)])
-    return { kase, customer: customer!, files, state, chatEnabled: !!env.ANTHROPIC_API_KEY, proposals, previous }
+    return { kase, customer: customer!, files, state, chatEnabled: !!env.ANTHROPIC_API_KEY, proposals, previous, settings }
   })
 
 /**
@@ -113,26 +115,6 @@ export const saveCaseStateFn = createServerFn({ method: "POST" })
     const aiCache = data.aiCache && JSON.stringify(data.aiCache)
     if (tooLarge(json) || tooLarge(aiCache)) return { ok: false as const, reason: "tooLarge" as const }
     return store.saveCaseState(getDb(), data.caseId, data.version, { json, aiCache })
-  })
-
-export const getRulesFn = createServerFn({ method: "GET" })
-  .middleware([authMiddleware])
-  .handler(async () => ({ rules: await store.getRules(getDb()) }))
-
-/** 全体ルールを保存する。previous は画面が読んだときの文章（変わっていたら断る。チャットの追記を上書きで消さない） */
-export const saveRulesFn = createServerFn({ method: "POST" })
-  .middleware([authMiddleware])
-  .validator(z.object({ rules: longText, previous: longText }))
-  .handler(async ({ data }) => {
-    await store.saveRules(getDb(), data.rules, data.previous)
-  })
-
-/** 顧客ルールを保存する。previous は画面が読んだときの文章 */
-export const saveCustomerRulesFn = createServerFn({ method: "POST" })
-  .middleware([authMiddleware])
-  .validator(z.object({ id, rules: longText, previous: longText }))
-  .handler(async ({ data }) => {
-    await store.saveCustomerRules(getDb(), data.id, data.rules, data.previous)
   })
 
 const target = z.union([z.object({ customerId: id }), z.object({ caseId: id })])

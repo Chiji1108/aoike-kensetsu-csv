@@ -1,7 +1,7 @@
 import { z } from "zod"
 import { AI_TASKS, type AiItemResult } from "../convert/ai-tasks"
 import type { CellEdits, Replacements } from "../convert/convert"
-import type { Basis, SelectionMode, TaxMode } from "../convert/koji-selection"
+import type { Basis, Rule7Tax, SelectionMode, TaxMode } from "../convert/koji-selection"
 import type { AiCache } from "../convert/pipeline"
 import type { Rounding } from "../convert/transforms"
 import type { MappingPlan } from "../convert/plan"
@@ -10,7 +10,7 @@ import type { AnswerReport, CellInquiry } from "../inquiry/inquiry"
 import { proposalSchema, type Proposal } from "../chat/proposals"
 import { addedRowSchema, MAX_ADDED_ROWS, type AddedRow } from "./added"
 import { undoEntrySchema, type UndoEntry } from "./undo"
-import { basisSchema, cellEditSchema, fieldIdSchema, legacySelection, replacementsSchema, selectionSchema, taxSchema } from "../schemas"
+import { basisSchema, cellEditSchema, fieldIdSchema, legacySelection, replacementsSchema, rule7TaxSchema, selectionSchema, taxSchema } from "../schemas"
 import type { KojiFieldId } from "../spec/koji-keireki"
 
 /**
@@ -33,6 +33,8 @@ export type CaseWork = {
   answers: AnswerReport | null
   tax: TaxMode
   basis: Basis
+  /** 7割の計算（基準額が税抜か税込か）。新しい案件は事務所の設定、この項目より前に保存した作業は税抜（前はいつも税抜） */
+  rule7Tax: Rule7Tax
   /** 載せる工事の選び方（koji-selection.ts の SelectionMode） */
   selection: SelectionMode
   rounding: Rounding
@@ -50,7 +52,7 @@ export type CaseWork = {
 
 export type SavedPlan = { plan: MappingPlan<KojiFieldId>; source: "ai" | "rule"; notice?: string }
 
-export const newWork = (sourceFileId: string | null = null): CaseWork => ({
+export const newWork = (sourceFileId: string | null = null, rule7Tax: Rule7Tax = "excluded"): CaseWork => ({
   sourceFileId,
   plan: null,
   converted: false,
@@ -63,6 +65,7 @@ export const newWork = (sourceFileId: string | null = null): CaseWork => ({
   answers: null,
   tax: "unknown",
   basis: {},
+  rule7Tax,
   selection: "rule7",
   rounding: "floor",
   sorted: true,
@@ -120,6 +123,7 @@ export const savedWorkSchema = z
   answers: answerReport.nullable(),
   tax: taxSchema,
   basis: basisSchema,
+  rule7Tax: rule7TaxSchema.default("excluded"),
   selection: selectionSchema.optional(),
   /** 前の形（7割適用済み＝全行を載せる）。読むときに selection にそろえる */
   alreadyApplied: z.boolean().optional(),

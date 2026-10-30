@@ -89,6 +89,13 @@ describe("案件の状態の保存と読み出し", () => {
     expect(chatChangeSchema.parse({ kind: "settings", tax: "included" })).toEqual({ kind: "settings", tax: "included" })
   })
 
+  test("7割の計算は新しい作業なら渡した初期値。この項目より前の保存は税抜（前はいつも税抜で計算していた）", () => {
+    expect(newWork(null, "included").rule7Tax).toBe("included")
+    const { rule7Tax: _, ...old } = toSavedWork(newWork(null, "included"))
+    expect(savedWorkSchema.parse(old).rule7Tax).toBe("excluded")
+    expect(savedWorkSchema.parse(toSavedWork(newWork(null, "included"))).rule7Tax).toBe("included")
+  })
+
   test("形の違う保存は読まない", () => {
     const saved = toSavedWork(newWork())
     expect(savedWorkSchema.safeParse({ ...saved, tax: "both" }).success).toBe(false)

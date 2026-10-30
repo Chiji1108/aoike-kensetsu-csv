@@ -26,7 +26,7 @@ function aiWarning(row: RowResult<KojiFieldId>) {
   return row
 }
 
-const tableOf = (rows: RowResult<KojiFieldId>[], over: Partial<CaseTable> = {}): CaseTable => ({ rows, added: [], edits: new Map(), replacements: {}, manual: new Map(), tax: "excluded", basis: {}, selection: "all", sorted: false, ...over })
+const tableOf = (rows: RowResult<KojiFieldId>[], over: Partial<CaseTable> = {}): CaseTable => ({ rows, added: [], edits: new Map(), replacements: {}, manual: new Map(), tax: "excluded", basis: {}, rule7Tax: "excluded" as const, selection: "all", sorted: false, ...over })
 
 describe("調べる現場を集める", () => {
   const rows = () => [

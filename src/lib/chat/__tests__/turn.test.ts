@@ -17,7 +17,7 @@ const rows = [
   kojiRow({ ...base, client: suzuki, workName: `${suzuki}様邸改修工事`, amount: "3000" }, 2),
   kojiRow({ ...base, client: "株式会社　テスト", workName: "テストビル電気工事", amount: "1000" }, 3),
 ]
-const table = { rows, added: [], edits: new Map(), replacements: {}, manual: new Map(), tax: "excluded" as const, basis: {}, selection: "all" as const, sorted: false }
+const table = { rows, added: [], edits: new Map(), replacements: {}, manual: new Map(), tax: "excluded" as const, basis: {}, rule7Tax: "excluded" as const, selection: "all" as const, sorted: false }
 
 /** 匿名化の決まった応答（変換のテストと同じ）: 注文者は全体、工事名は「様邸」「邸」の前を個人名として印にする。asked に聞いた値を溜める */
 function cannedAnonymize(asked: string[] = []): AnonymizeCaller {
@@ -160,11 +160,11 @@ describe("チャットの道具（決まった入力で）", () => {
     expect(state.pending).toEqual([])
   })
 
-  test("聞き返し・ルールの追記案・7割の設定も変更案になる", async () => {
+  test("聞き返し・ルールの項目の案（1項目ずつ）・7割の設定も変更案になる", async () => {
     const state = newTurnState(table)
     const tools = chatTools(state)
     await call(tools, "ask_staff", { question: "(仮称)も取ってよいですか" })
-    await call(tools, "propose_rule", { scope: "customer", text: "注文者の株式会社は㈱にする" })
+    await call(tools, "propose_rule", { scope: "customer", items: ["注文者の株式会社は㈱にする", "完成年月は引渡日"] })
     // 前の形の引数（already_applied）や知らない引数は黙って捨てず、形の誤りとして AI に返す
     const schema = tools.set_selection.inputSchema as unknown as { safeParse: (v: unknown) => { success: boolean } }
     expect(schema.safeParse({ already_applied: true }).success).toBe(false)
@@ -173,6 +173,7 @@ describe("チャットの道具（決まった入力で）", () => {
     expect(state.question).toBe("(仮称)も取ってよいですか")
     expect(state.pending).toEqual([
       { kind: "rule", scope: "customer", text: "注文者の株式会社は㈱にする" },
+      { kind: "rule", scope: "customer", text: "完成年月は引渡日" },
       { kind: "settings", tax: "included", selection: "rule7", basis: undefined },
     ])
   })

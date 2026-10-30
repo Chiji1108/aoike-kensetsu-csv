@@ -25,7 +25,7 @@ import { caseContext } from "../src/lib/chat/context"
 import { applyChanges } from "../src/lib/chat/proposals"
 import { carryoverPrompt, cleanCarryoverCodes, codesFromModel, knownWords, namesForCarryover } from "../src/lib/chat/carryover"
 import { compareFormats, describeFormatDiff, similarity } from "../src/lib/convert/format-diff"
-import { DEFAULT_GLOBAL_RULES } from "../src/lib/chat/rules"
+import { DEFAULT_GLOBAL_RULE_ITEMS, rulesText, ruleTextSchema } from "../src/lib/chat/rules"
 import { checkReport, newTurnState, startTurn, systemPrompt } from "../src/lib/chat/turn"
 import type { RowResult } from "../src/lib/convert/convert"
 import { heuristicPlan, planSheets, sheetByNames } from "../src/lib/convert/heuristic-plan"
@@ -52,6 +52,8 @@ if (!OUT || !CASES_FILE) throw new Error("EVAL_CASES（案件定義の JSON）�
 if (!["baseline", "edit", "rules", "nextyear", "location", "plan"].includes(variant)) throw new Error("variant: baseline | edit | rules | nextyear | location | plan")
 mkdirSync(OUT, { recursive: true })
 const BUDGET_USD = 5
+/** 全体ルールは初期値の項目（新しい事務所と同じ）。7割の計算は事務所の初期値（税抜） */
+const GLOBAL_RULES = rulesText(DEFAULT_GLOBAL_RULE_ITEMS.map((text) => ({ text })))
 
 type CaseDef = {
   /** ROOT からの相対パスか絶対パス */
@@ -61,6 +63,7 @@ type CaseDef = {
   /** 職員が作った完成 CSV（CP932） */
   staffCsv: string
   customerName: string
+  /** 顧客ルール（1行1項目） */
   customerRules: string
   /** 職員の誤りと分かっているセル（金額千円で行を特定）と、元データから決まらない列（一致率に入れない） */
   staffErrors: { amount: string; field: KojiFieldId; why: string }[]
@@ -166,7 +169,7 @@ function previousPlanOf() {
 
 const tableOf = (rows: RowResult<KojiFieldId>[]): CaseTable => {
   const w = newWork()
-  return { rows, added: w.added, edits: w.edits, replacements: w.replacements, manual: w.manual, tax: w.tax, basis: w.basis, selection: w.selection, sorted: w.sorted }
+  return { rows, added: w.added, edits: w.edits, replacements: w.replacements, manual: w.manual, tax: w.tax, basis: w.basis, rule7Tax: w.rule7Tax, selection: w.selection, sorted: w.sorted }
 }
 
 /** 文字の2つ組の重なり（行の対応づけに使う。法人格と空白は除いて比べ、2文字に満たなければ 0） */
@@ -245,15 +248,17 @@ try {
 
   if (variant === "location") await locationEval()
   else if (variant !== "baseline") {
-    let customerRules = def.customerRules
+    /** 顧客ルールの項目（画面の箇条書き）。案件定義の customerRules は1行1項目 */
+    let customerItems = def.customerRules.split("\n").map((t) => t.trim()).filter(Boolean)
     /** 翌年分: 去年のコードの文（最初の指示の前に添える）と、去年の Excel との違い */
     let carryText: string | null = null
     let previousFormat: { fiscalYear: number; lines: string[] } | undefined
     const lastYearId = def.editFrom ?? caseId
     if (variant === "rules" || variant === "nextyear") {
       const edit = JSON.parse(readFileSync(join(OUT, `${lastYearId}-edit.json`), "utf8")) as { log: { rules: string[] }[]; messages?: ModelMessage[] }
-      customerRules = edit.log.flatMap((t) => t.rules).join("\n")
-      if (!customerRules) throw new Error("edit の結果に顧客ルールの追記案が無い")
+      // edit で承認した顧客ルールの項目（画面の承認と同じく1項目ずつ足す）
+      customerItems = edit.log.flatMap((t) => t.rules).map((t) => ruleTextSchema.parse(t))
+      if (!customerItems.length) throw new Error("edit の結果に顧客ルールの追記案が無い")
       if (variant === "nextyear") {
         if (!edit.messages) throw new Error("edit の結果に会話が無い（edit を流し直す）")
         const last = JSON.parse(readFileSync(join(OUT, `${lastYearId}-baseline.json`), "utf8")) as Baseline
@@ -263,7 +268,7 @@ try {
         const header = (g: ReturnType<typeof readWorkbook>[number] | undefined, row: number) => g?.rows[row] ?? []
         const headers = [...header(diff.prevSheets.find((s) => s.name === last.plan.sheets[0]), last.plan.headerRow), ...header(gridOf(base.plan), base.plan.headerRow)]
         // 知っている語は画面と同じ: 今年の表（ここでは今年の変換の結果）・ルール・去年と今年の見出し
-        const words = knownWords({ rows: base.rows, edits: [] }, [DEFAULT_GLOBAL_RULES, customerRules], headers)
+        const words = knownWords({ rows: base.rows, edits: [] }, [GLOBAL_RULES, rulesText(customerItems.map((text) => ({ text })))], headers)
         const codes = cleanCarryoverCodes(codesFromModel(edit.messages), names, words)
         carryText = carryoverPrompt({ fiscalYear: diff.fiscalYear, codes }).text
         previousFormat = { fiscalYear: diff.fiscalYear, lines: diff.lines }
@@ -296,7 +301,7 @@ try {
       }
       for (const [i, text] of turns.entries()) {
         // 画面は指示のたびに今の列の対応で文脈を作る
-        const system = systemPrompt({ global: DEFAULT_GLOBAL_RULES, customerName: def.customerName, customer: customerRules }, caseContext(sheets, gridOf(plan), plan, previousFormat), uploads)
+        const system = systemPrompt({ global: GLOBAL_RULES, customerName: def.customerName, customer: rulesText(customerItems.map((text) => ({ text }))), rule7Tax: "excluded" }, caseContext(sheets, gridOf(plan), plan, previousFormat), uploads)
         if (total > BUDGET_USD) {
           status = "stopped"
           reason = `費用が $${total.toFixed(2)} で上限 $${BUDGET_USD} を超え、${turns.length - i} 回の指示を送っていない`

@@ -12,7 +12,7 @@ const rows = [
   kojiRow({ gyoshu: "8", motoukeShitauke: "1", client: "株式会社テスト", workName: "テストビル電気工事", prefecture: "東京都", place: "千代田区", amount: "5000", engineer: "試験　太郎", startYm: "202404", endYm: "202409" }, 1),
   kojiRow({ gyoshu: "8", motoukeShitauke: "1", client: yamada, workName: `${yamada}邸新築工事`, prefecture: "東京都", place: "港区", amount: "3000", engineer: "試験　太郎", startYm: "202404", endYm: "202409" }, 2),
 ]
-const table = { rows, added: [], edits: new Map(), replacements: {}, manual: new Map(), tax: "excluded" as const, basis: {}, selection: "all" as const, sorted: false }
+const table = { rows, added: [], edits: new Map(), replacements: {}, manual: new Map(), tax: "excluded" as const, basis: {}, rule7Tax: "excluded" as const, selection: "all" as const, sorted: false }
 
 describe("変更案を表に重ねる", () => {
   test("セル・問い合わせ・入れ外し・7割の設定を、手直し・手動の入れ外し・設定として重ねる（ルールの追記は表を変えない）", () => {

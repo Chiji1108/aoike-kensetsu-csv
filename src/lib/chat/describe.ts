@@ -48,7 +48,7 @@ export function describeChange(c: ChatChange, view: TableView, byKey: ReadonlyMa
       return { where: "案件", what: "7割の設定", from: "", to: parts.join(" / ") }
     }
     case "rule":
-      return { where: c.scope === "global" ? "全体ルール" : "顧客ルール", what: "追記", from: "", to: c.text }
+      return { where: c.scope === "global" ? "全体ルール" : "顧客ルール", what: "項目を足す", from: "", to: c.text }
     case "plan":
       return { where: "列の対応", what: "変換し直す", from: "", to: [...describePlanPatch(c.patch, c.before ?? (plan ? beforeOf(plan, c.patch) : undefined)), `理由: ${c.patch.reason}`].join(" / ") }
     case "location": {

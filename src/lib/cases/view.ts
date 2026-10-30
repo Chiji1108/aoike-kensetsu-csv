@@ -1,5 +1,5 @@
 import { applyEdits, finalizeRows, type CellEdits, type Replacements, type RowResult } from "../convert/convert"
-import { orderKojiRows, selectKojiRows, type Basis, type SelectionMode, type TaxMode } from "../convert/koji-selection"
+import { orderKojiRows, selectKojiRows, type Basis, type Rule7Tax, type SelectionMode, type TaxMode } from "../convert/koji-selection"
 import { KOJI_KEIREKI, type KojiFieldId } from "../spec/koji-keireki"
 import { addedRowResults, type AddedRow } from "./added"
 
@@ -13,6 +13,8 @@ export type CaseTable = {
   manual: ReadonlyMap<string, boolean>
   tax: TaxMode
   basis: Basis
+  /** 7割の計算（基準額が税抜か税込か） */
+  rule7Tax: Rule7Tax
   selection: SelectionMode
   /** この金額（円）以上の行も載せる */
   includeAtLeastYen?: number
@@ -35,8 +37,8 @@ export const editRows = (t: Pick<CaseTable, "rows" | "added" | "edits" | "replac
 type Edited = ReturnType<typeof editRows>
 
 /** CSV に載せる行を選ぶ（入れ外し・7割の設定が変わったときだけ作り直せばよい。並べ替えでは変わらない） */
-export const selectRows = (t: Pick<CaseTable, "tax" | "basis" | "selection" | "includeAtLeastYen" | "manual">, edited: Edited) =>
-  selectKojiRows(edited, { tax: t.tax, basis: t.basis, selection: t.selection, includeAtLeastYen: t.includeAtLeastYen, manual: t.manual })
+export const selectRows = (t: Pick<CaseTable, "tax" | "basis" | "rule7Tax" | "selection" | "includeAtLeastYen" | "manual">, edited: Edited) =>
+  selectKojiRows(edited, { tax: t.tax, basis: t.basis, rule7Tax: t.rule7Tax, selection: t.selection, includeAtLeastYen: t.includeAtLeastYen, manual: t.manual })
 
 /** edited（editRows の結果）から、選ぶ・並べる・記号と検証を当てる */
 export const viewOf = (t: CaseTable, edited: Edited) => orderAndFinalize(t, edited, selectRows(t, edited))

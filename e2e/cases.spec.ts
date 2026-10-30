@@ -164,26 +164,6 @@ test("列の対応を考えている途中で閉じても、開き直すと変�
   await deleteCustomer(page, customer)
 })
 
-test("全体ルールと顧客ルールを保存して、開き直しても残る", async ({ page }) => {
-  await open(page, "/rules")
-  const rule = `全体ルールE2E-${Date.now()}`
-  await page.getByTestId("global-rules-text").fill(rule)
-  await page.getByTestId("global-rules-save").click()
-  await expect(page.getByTestId("global-rules-save")).toBeDisabled()
-  await reload(page)
-  await expect(page.getByTestId("global-rules-text")).toHaveValue(rule)
-
-  const { customer } = await openNewCase(page)
-  await page.getByRole("link", { name: customer }).click()
-  await page.getByTestId("customer-rules-text").fill("備考に「除外」とある行は載せない")
-  await page.getByTestId("customer-rules-save").click()
-  await expect(page.getByTestId("customer-rules-save")).toBeDisabled()
-  await reload(page)
-  await expect(page.getByTestId("customer-rules-text")).toHaveValue("備考に「除外」とある行は載せない")
-  await deleteCustomer(page, customer)
-})
-
-
 test("ブラウザで同梱の住所データを読み、住所を都道府県・市区町村に分ける（@geolonia/normalize-japanese-addresses）", async ({ page }) => {
   await open(page, "/")
   const book = await page.evaluate(async () => {

@@ -14,6 +14,7 @@ import type { Basis, SelectionMode, TaxMode } from "../convert/koji-selection"
 import { basisSchema, fieldIdSchema, selectionSchema, taxSchema } from "../schemas"
 import { KOJI_ANONYMIZE, KOJI_KEIREKI, type KojiFieldId } from "../spec/koji-keireki"
 import { applyChanges, type ChatChange } from "./proposals"
+import { charCount, MAX_RULE_ITEM_LENGTH, RULE7_TAX_LABELS, ruleScopeSchema, type Rule7Tax, type RuleScope } from "./rules"
 import { CHAT_ACTIONS, type ChatAction } from "./messages"
 import { outcomeChanges } from "../location/changes"
 import { askReason, estimateUsd, MAX_SITES_PER_RUN, runSitesOf, siteOfRow, SOURCE_LABELS, type Outcome, type Site } from "../location/sites"
@@ -28,6 +29,8 @@ export const MODEL = "claude-opus-5-5"
 export const MAX_TOOL_CALLS = 20
 /** 1回の指示の往復の上限（安全装置。道具の回数の上限で先に止まる） */
 const MAX_STEPS = 40
+/** 1回の propose_rule で出せる項目の数 */
+const MAX_RULE_PROPOSALS = 10
 
 const FIELD_IDS = fieldIdSchema.options
 /**
@@ -37,7 +40,8 @@ const FIELD_IDS = fieldIdSchema.options
 /** コードからだけ呼ぶ道具 */
 const FROM_CODE = { anthropic: { allowedCallers: ["code_execution_20260120" as const] } }
 
-export type ChatRules = { global: string; customerName: string; customer: string }
+/** global・customer は箇条書きにしたルールの文章（lib/chat/rules.ts の rulesText）、rule7Tax は事務所の7割の計算（税抜・税込） */
+export type ChatRules = { global: string; customerName: string; customer: string; rule7Tax: Rule7Tax }
 /** コンテナに置いたファイル（name はコンテナの中の名前） */
 export type ContainerFile = { name: string; original: string; isSource: boolean }
 
@@ -51,7 +55,9 @@ function fieldsDoc() {
     .join("\n")
 }
 
-export function systemPrompt(rules: ChatRules, caseContext: string, files: readonly ContainerFile[]) {
+/** caseRule7Tax はこの案件の7割の計算（事務所の設定と違えば「この案件」に書く） */
+export function systemPrompt(rules: ChatRules, caseContext: string, files: readonly ContainerFile[], caseRule7Tax: Rule7Tax = rules.rule7Tax) {
+  const caseRule7 = caseRule7Tax === rules.rule7Tax ? "" : `- この案件の7割の計算は${RULE7_TAX_LABELS[caseRule7Tax]}（決算書の完成工事高＝基準額も${RULE7_TAX_LABELS[caseRule7Tax]}）。\n`
   const fileLines = files.map((f) => `- $INPUT_DIR/${f.name}: ${f.original}${f.isSource ? "（変換の元）" : ""}`).join("\n")
   return `あなたは行政書士事務所の職員と一緒に、顧客から受け取った工事経歴の Excel を、建設業.NET に取り込む工事経歴書CSV（14列）にする。
 職員はチャットで指示する。表は画面に常に見えていて、あなたの変更は変更案として職員に見せ、職員が承認したものだけが表に入る。
@@ -69,8 +75,9 @@ ${fileLines || "（なし）"}
 - 列の対応（どの列からどの項目を作るか・見出しの行・データの開始・飛ばす行・金額の単位）を変えるときは set_plan を直接呼ぶ（例:「金額は税込の列で」「工事名は B 列と C 列をつなげて」）。全行に同じ直しをセルの変更で当てるより、列の対応で直せるものは set_plan にする。承認すると変換し直す（この指示の get_table の表は変わらない）。使うシートは変えられないので、変えたいときは職員に画面のファイルの欄で選び直してもらう。職員にどの列を使っているか聞かれたら「この案件」の列の対応で答える。
 - 職員が CSV・取り込み用の Excel を出したい、問い合わせの Excel・編集用の Excel が欲しいと言ったら offer_action でボタンを出す（書き出す前の確認は画面が出す。あなたはファイルを作らない）。
 - 直したら await check_table({}) で決まった検査（エラー・警告・字数の上限・個人名らしい値・7割）を確かめ、直せるものは直す。
+- 分からないこと・データに無いこと（配置技術者・分からない工事場所など）は推測で埋めず、ask_customer で顧客への問い合わせに回す。住所の分割・工事名の補い・調べられる工事場所は問い合わせに回さず事務所でやる。
 - 指示があいまいで、どちらにも取れるときや、決める前に職員の答えが要るときは、ask_staff で聞き返す（答えるまで変更案は反映されない）。
-- 職員が「顧客ルールに追加して」「全体ルールに追加して」と言ったら propose_rule で追記の案を出す（保存は職員の承認後）。
+- 職員が「顧客ルールに追加して」「全体ルールに追加して」と言ったら propose_rule で足す項目の案を出す（1つの決まりを1項目に。今のルールと同じ項目は出さない。保存は職員の承認後）。
 - 工事場所（都道府県・場所名）を調べるときは find_location を直接呼ぶ（コードからは呼ばない）。「この現場ってどこ？」のように1件なら key を渡す。「場所が空いている行を調べて」のようにまとめてなら key を省き、返った件数と費用の目安を職員に伝える（一括の検索は職員が画面のボタンで始める）。自分で Web の知識から場所を書き込まない。
 - CSV は書かない（CSV の形式・7割の計算・字数・個人名の検査は決まった処理がやる）。
 - 最後に、何を何件変えたか、残った問題、職員に確かめたいことを短い日本語で返す。コードや JSON は返事に貼らない。
@@ -83,13 +90,13 @@ ${fieldsDoc()}
 ${KOJI_KEIREKI.writingRules.map((r) => `- ${r}`).join("\n")}
 
 ## 全体ルール（事務所のやり方）
-${rules.global || "（なし）"}
+${[`- 事務所の7割の計算は${RULE7_TAX_LABELS[rules.rule7Tax]}。`, rules.global].filter(Boolean).join("\n")}
 
 ## 顧客ルール（${rules.customerName}）
 ${rules.customer || "（なし）"}
 
 ## この案件
-${caseContext}`
+${caseRule7}${caseContext}`
 }
 
 export type TurnLog = { tool: string; summary: string }
@@ -394,7 +401,7 @@ export function chatTools(state: TurnState) {
     }),
     set_selection: tool({
       description:
-        "7割の設定を変える案を出す。tax: 元データの金額が税込(included)・税抜(excluded)・不明(unknown)。selection: 載せる工事の選び方。rule7＝記入例どおり（業種ごとに元請→全体の順に金額の大きい順で7割を超えるまで。軽微な工事は10件まで）、all＝全件を載せる（除外と手動で外した行のほか。7割以上なら件数は自由なので、7割を超えて多く載せてよいときや、顧客がすでに7割で絞ったデータのとき）。basis: 業種コード→{total, motouke}（千円、税抜の完成工事高）。",
+        "7割の設定を変える案を出す。tax: 元データの金額が税込(included)・税抜(excluded)・不明(unknown)。selection: 載せる工事の選び方。rule7＝記入例どおり（業種ごとに元請→全体の順に金額の大きい順で7割を超えるまで。軽微な工事は10件まで）、all＝全件を載せる（除外と手動で外した行のほか。7割以上なら件数は自由なので、7割を超えて多く載せてよいときや、顧客がすでに7割で絞ったデータのとき）。basis: 業種コード→{total, motouke}（千円、決算書の完成工事高。税抜・税込はこの案件の7割の計算に合わせる）。",
       inputSchema: z.strictObject({
         tax: taxSchema.optional(),
         selection: selectionSchema.optional(),
@@ -495,12 +502,15 @@ export function chatTools(state: TurnState) {
       }),
     }),
     propose_rule: tool({
-      description: "全体ルール（global）か顧客ルール（customer）への追記案を出す。職員が承認すると保存される。text は追記する1〜5文。",
-      inputSchema: z.strictObject({ scope: z.enum(["global", "customer"]), text: z.string().min(1).max(2000) }),
-      execute: counted<{ scope: "global" | "customer"; text: string }>(({ scope, text }) => {
-        state.pending.push({ kind: "rule", scope, text })
-        state.log.push({ tool: "propose_rule", summary: `${scope}: ${text}` })
-        return "職員に追記案を見せました（承認待ち）。"
+      description: `全体ルール（global）か顧客ルール（customer）に足す項目の案を出す。ルールは箇条書きで、1つの決まりを1項目（1〜2文、${MAX_RULE_ITEM_LENGTH}字まで）にする。職員が項目ごとに承認すると保存される。`,
+      inputSchema: z.strictObject({
+        scope: ruleScopeSchema,
+        items: z.array(z.string().min(1).refine((s) => charCount(s) <= MAX_RULE_ITEM_LENGTH, `1項目は${MAX_RULE_ITEM_LENGTH}字まで`)).min(1).max(MAX_RULE_PROPOSALS),
+      }),
+      execute: counted<{ scope: RuleScope; items: string[] }>(({ scope, items }) => {
+        for (const text of items) state.pending.push({ kind: "rule", scope, text })
+        state.log.push({ tool: "propose_rule", summary: `${scope}: ${items.join(" / ")}` })
+        return `職員に${items.length}項目の案を見せました（承認待ち）。`
       }),
     }),
   }
