@@ -174,8 +174,8 @@ describe("チャットの道具（決まった入力で）", () => {
     await call(tools, "set_selection", { tax: "included", selection: "rule7" })
     expect(state.question).toBe("(仮称)も取ってよいですか")
     expect(state.pending).toEqual([
-      { kind: "rule", scope: "customer", text: "注文者の株式会社は㈱にする" },
-      { kind: "rule", scope: "customer", text: "完成年月は引渡日" },
+      { kind: "rule", scope: "customer", text: "注文者の株式会社は㈱にする", source: "chat" },
+      { kind: "rule", scope: "customer", text: "完成年月は引渡日", source: "chat" },
       { kind: "settings", tax: "included", selection: "rule7", basis: undefined },
     ])
   })

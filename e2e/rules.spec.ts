@@ -161,7 +161,7 @@ test("チャットのルールの項目の案を承認すると、顧客ルー�
   created.push(customer)
   const caseId = caseUrl.split("/").at(-1)!
   const rule = `注文者の株式会社は㈱にする（E2E${Date.now()}）`
-  const changes: ChatChange[] = [{ kind: "rule", scope: "customer", text: rule }]
+  const changes: ChatChange[] = [{ kind: "rule", scope: "customer", text: rule, source: "chat" }]
   const proposal: Proposal = { id: `rule-${Date.now()}`, origin: { kind: "chat", messageId: "m1" }, question: null, state: "open", count: 1, applied: [], rejected: [] }
   putProposalRecord(caseId, { proposal, changes })
   // チャットのサーバーの代わり（返事と変更案だけ。記録は上で置いた）

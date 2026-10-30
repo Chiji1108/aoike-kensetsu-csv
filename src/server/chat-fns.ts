@@ -21,7 +21,7 @@ export const stopChatFn = createServerFn({ method: "POST" })
   .handler(({ data }) => stopChat(data.caseId, data.turnId))
 
 /**
- * 変更案のルールの追記を承認する。中身はサーバーの変更案の記録から読み、ルールの項目と「足した」印を1つの処理で書く（同じ項目は二度足さない）。
+ * 変更案のルールの追記を承認する。中身（由来も）はサーバーの変更案の記録から読み、ルールの項目と「足した」印を1つの処理で書く（同じ項目は二度足さない）。
  * 足したか、もう足してあれば ok（画面はその項目に承認の印を付ける）
  */
 export const approveRuleFn = createServerFn({ method: "POST" })
@@ -35,7 +35,7 @@ export const approveRuleFn = createServerFn({ method: "POST" })
     const target: store.RuleTarget = change.scope === "global" ? { scope: "global" } : { scope: "customer", customerId: kase.customerId }
     const text = ruleTextSchema.safeParse(change.text)
     if (!text.success) throw new Error(text.error.issues[0]?.message ?? "ルールの追記の形が正しくありません")
-    return store.appendRuleOnce(db, target, { caseId: kase.id, proposalId: data.proposalId, item: data.item, text: text.data })
+    return store.appendRuleOnce(db, target, { caseId: kase.id, proposalId: data.proposalId, item: data.item, text: text.data, source: change.source })
   })
 
 /** 返ってきた編集用の Excel の変更案を置く（画面が作った差分。形はここで確かめる） */

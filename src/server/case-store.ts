@@ -3,7 +3,7 @@ import type { BatchItem, BatchResponse } from "drizzle-orm/batch"
 import { alias, type BaseSQLiteDatabase } from "drizzle-orm/sqlite-core"
 import { csvCaseAiCaches, csvCaseFiles, csvCases, csvCaseStates, csvCustomers, csvRuleAppends, csvRuleItems, csvSettings } from "@/db/cases-schema"
 import type * as schema from "@/db/schema"
-import { charCount, MAX_RULE_ITEMS, MAX_RULES_TOTAL, rulesText, type Rule7Tax, type RuleItem, type RuleScope, type RuleSource, type RuleTarget } from "@/lib/chat/rules"
+import { charCount, MAX_RULE_ITEMS, MAX_RULES_TOTAL, rulesText, type ProposedRuleSource, type Rule7Tax, type RuleItem, type RuleScope, type RuleSource, type RuleTarget } from "@/lib/chat/rules"
 import { deleteMemoryOfCustomer, deleteRunsOfCase } from "./location-store"
 import { casePrefix, r2KeyOf, type Case, type CaseFile, type CaseStatus, type Customer, type CustomerSummary, type DeletionCounts, type FileKind } from "@/lib/cases/types"
 
@@ -219,7 +219,11 @@ export async function moveRuleItem(db: Db, target: RuleTarget, id: string, direc
  * 同じ項目を二度承認しても（保存前に開き直しても、同時に押しても）二度足さない。上限を超えるなら足さずに RulesTooLongError。
  * 足したら "added"、もう足してあれば "already"
  */
-export async function appendRuleOnce(db: Db, target: RuleTarget, add: { caseId: string; proposalId: string; item: number; text: string }): Promise<"added" | "already"> {
+export async function appendRuleOnce(
+  db: Db,
+  target: RuleTarget,
+  add: { caseId: string; proposalId: string; item: number; text: string; source: ProposedRuleSource },
+): Promise<"added" | "already"> {
   const text = add.text
   const token = crypto.randomUUID()
   const mark = db
@@ -243,7 +247,7 @@ export async function appendRuleOnce(db: Db, target: RuleTarget, add: { caseId: 
       .from(csvRuleAppends)
       .where(and(eq(csvRuleAppends.proposalId, add.proposalId), eq(csvRuleAppends.item, add.item), eq(csvRuleAppends.token, token))),
   )
-  const [, added] = await db.batch([mark, newItemRow(db, target, { id: crypto.randomUUID(), text, source: "chat", caseId: add.caseId }, marked)])
+  const [, added] = await db.batch([mark, newItemRow(db, target, { id: crypto.randomUUID(), text, source: add.source, caseId: add.caseId }, marked)])
   if (added.length) return "added"
   const [already] = await db
     .select({ one: sql`1` })
