@@ -80,38 +80,55 @@ export function collectSourceRows<F extends string>(
   return { rows, duplicates }
 }
 
+/** データの行（見出し行より後の、空行・合計行でない行）の内容。右端の空セルは列の範囲の違いなので比べない */
+function dataRowKeys(grid: SheetGrid, headerRow: number) {
+  const all = Array.from({ length: columnCountOf(grid) }, (_, c) => c)
+  const key = (r: string[]) => {
+    const cells = r.map((c) => c.trim())
+    while (cells.length && !cells[cells.length - 1]) cells.pop()
+    return JSON.stringify(cells)
+  }
+  return new Set(grid.rows.slice(headerRow + 1).filter((r) => !isSkippableRow(r, all)).map(key))
+}
+
+/** a のデータの行のうち、b にもある行の割合（0〜1。a にデータの行が無ければ 0） */
+function sharedRatio(mine: Set<string>, theirs: Set<string>) {
+  if (!mine.size) return 0
+  let shared = 0
+  for (const row of mine) if (theirs.has(row)) shared++
+  return shared / mine.size
+}
+
+/** データの行がこの割合以上ほかのシートにあれば、そのシートの写し（フィルタをかけて一部を手直ししたものを含む）とみなす */
+export const COPY_RATIO = 0.9
+
 /**
- * シートごとに、行の内容がいちばん多く重なる別のシートと、その割合（0〜1）。重なる行が無ければ undefined。
+ * シートごとに、データの行（それぞれの見出し行より後）がいちばん多く重なる別のシートと、その割合（0〜1）。重なる行が無ければ入れない。
  * 業種ごとにフィルタをかけた写しのシートを、計画の AI が見分けるための手がかり（抜粋だけでは分からない）。
  * 空行・合計行は比べない（合計行はシートごとに値が変わる。SUBTOTAL など）
  */
-export function sheetOverlaps(sheets: readonly SheetGrid[]): Map<string, { sheet: string; ratio: number }> {
-  const contents = sheets.map((s) => {
-    const all = Array.from({ length: columnCountOf(s) }, (_, c) => c)
-    // 右端の空セルは列の範囲の違いなので比べない
-    const key = (r: string[]) => {
-      const cells = r.map((c) => c.trim())
-      while (cells.length && !cells[cells.length - 1]) cells.pop()
-      return JSON.stringify(cells)
-    }
-    return new Set(s.rows.filter((r) => !isSkippableRow(r, all)).map(key))
-  })
+export function sheetOverlaps(sheets: readonly { grid: SheetGrid; headerRow: number }[]): Map<string, { sheet: string; ratio: number }> {
+  const contents = sheets.map((s) => dataRowKeys(s.grid, s.headerRow))
   const result = new Map<string, { sheet: string; ratio: number }>()
   sheets.forEach((s, i) => {
-    const mine = contents[i]!
-    if (!mine.size) return
     let best: { sheet: string; ratio: number } | undefined
     sheets.forEach((o, j) => {
-      if (i === j) return
-      const theirs = contents[j]!
-      let shared = 0
-      for (const row of mine) if (theirs.has(row)) shared++
-      const ratio = shared / mine.size
-      if (shared && (!best || ratio > best.ratio)) best = { sheet: o.name, ratio }
+      const ratio = i === j ? 0 : sharedRatio(contents[i]!, contents[j]!)
+      if (ratio > 0 && (!best || ratio > best.ratio)) best = { sheet: o.grid.name, ratio }
     })
-    if (best) result.set(s.name, best)
+    if (best) result.set(s.grid.name, best)
   })
   return result
+}
+
+/** grid がほかのシート（others）のどれかの写しなら、そのシートと割合（見出し行はどれも headerRow。計画で足す2枚目以降のシートを確かめる） */
+export function copiedFrom(grid: SheetGrid, others: readonly SheetGrid[], headerRow: number): { sheet: string; ratio: number } | undefined {
+  const mine = dataRowKeys(grid, headerRow)
+  for (const o of others) {
+    const ratio = sharedRatio(mine, dataRowKeys(o, headerRow))
+    if (ratio >= COPY_RATIO) return { sheet: o.name, ratio }
+  }
+  return undefined
 }
 
 /** 行を出力しない理由（除外しないなら undefined） */

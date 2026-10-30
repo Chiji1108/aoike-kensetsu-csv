@@ -127,11 +127,17 @@ describe("シートの選択と重複", () => {
     const part = sheet("一部", [[...HEADER, "", ""], ROWS[1]!])
     const other = sheet("別", [HEADER, ["9", "田中　三郎", "別会社", "元請", "民間物件", "20250101", "20250301", "別現場", "", "900,000", "", "", "", "〇", "", "", ""]])
     const unrelated = sheet("メモ", [["メモ"], ["何か"]])
-    const o = sheetOverlaps([all, kan, part, other, unrelated])
+    const o = sheetOverlaps([all, kan, part, other, unrelated].map((grid) => ({ grid, headerRow: 0 })))
     expect(o.get("管工事")).toEqual({ sheet: "全件", ratio: 1 })
     expect(o.get("一部")).toEqual({ sheet: "全件", ratio: 1 })
-    expect(o.get("別")).toEqual({ sheet: "全件", ratio: 0.5 })
+    expect(o.get("別")).toBeUndefined()
     expect(o.get("メモ")).toBeUndefined()
+  })
+
+  test("重なりはデータの行だけで比べる（表題・見出しが同じでも、データが違えば重ならない）", () => {
+    const a = sheet("2024", [["工事経歴"], HEADER, ROWS[0]!])
+    const b = sheet("2025", [["工事経歴"], HEADER, ROWS[1]!])
+    expect(sheetOverlaps([{ grid: a, headerRow: 1 }, { grid: b, headerRow: 1 }]).size).toBe(0)
   })
 
   test("合計行の値が違うだけ・一部の行を手直ししただけの写しのシートも、ほとんど重なると分かる", () => {
@@ -139,7 +145,7 @@ describe("シートの選択と重複", () => {
     const base = sheet("全件", [HEADER, ...many, [...TOTAL.slice(0, 9), "20,000,000", ...TOTAL.slice(10)]])
     const edited = many.map((r, i) => (i === 3 ? r.map((c, j) => (j === 7 ? "手直しした現場名" : c)) : r))
     const copy = sheet("電気工事", [HEADER, ...edited, [...TOTAL.slice(0, 9), "1,000,000", ...TOTAL.slice(10)]])
-    expect(sheetOverlaps([base, copy]).get("電気工事")!.ratio).toBeCloseTo(20 / 21)
+    expect(sheetOverlaps([base, copy].map((grid) => ({ grid, headerRow: 0 }))).get("電気工事")!.ratio).toBeCloseTo(19 / 20)
   })
 
   test("選んだシートをまたいで同じ行は1件にまとめ、件数を数える", () => {

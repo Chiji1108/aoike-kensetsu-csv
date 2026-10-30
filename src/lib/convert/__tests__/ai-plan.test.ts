@@ -136,15 +136,15 @@ describe("プロンプト", () => {
     expect(text).toContain("去年（2025年度）の列の対応")
     expect(text).toContain("- 足された列: L列「担当部署」")
     expect(text).toContain("今年の見出しと値で確かめて決める")
-    expect(planUserMessage({ ...planExcerpt(book), previous: text })).toContain(text)
-    expect(planUserMessage(planExcerpt(book))).not.toContain("去年")
+    expect(planUserMessage({ ...planExcerpt(book, () => 0), previous: text })).toContain(text)
+    expect(planUserMessage(planExcerpt(book, () => 0))).not.toContain("去年")
     // 長くても上限で切る
     expect(previousPlanContext(KOJI_KEIREKI, { fiscalYear: 2025, grid: grid!, plan: fallback, diff: Array.from({ length: 2000 }, (_, i) => `違い${i}`) }).length).toBeLessThan(MAX_PREVIOUS_CONTEXT + 50)
   })
 
   test("計画用に送るのは先頭30行と末尾10行だけ", () => {
     const rows = Array.from({ length: 100 }, (_, i) => [`r${i}`])
-    const [ex] = planExcerpt([{ name: "s", rows, hidden: rows.map(() => false) }]).sheets
+    const [ex] = planExcerpt([{ name: "s", rows, hidden: rows.map(() => false) }], () => 0).sheets
     expect(ex!.rows.map((r) => r.index)).toEqual([...Array.from({ length: 30 }, (_, i) => i), ...Array.from({ length: 10 }, (_, i) => 90 + i)])
   })
 })

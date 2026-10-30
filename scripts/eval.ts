@@ -27,7 +27,7 @@ import { compareFormats, describeFormatDiff, similarity } from "../src/lib/conve
 import { DEFAULT_GLOBAL_RULES } from "../src/lib/chat/rules"
 import { checkReport, newTurnState, startTurn, systemPrompt } from "../src/lib/chat/turn"
 import type { RowResult } from "../src/lib/convert/convert"
-import { heuristicPlan, sheetByNames } from "../src/lib/convert/heuristic-plan"
+import { headerMatch, heuristicPlan, sheetByNames } from "../src/lib/convert/heuristic-plan"
 import { runConversion } from "../src/lib/convert/pipeline"
 import { fileAddressLookup } from "../src/lib/convert/address-file"
 import { acceptAiPlan, type MappingPlan } from "../src/lib/convert/plan"
@@ -102,7 +102,7 @@ async function baseline(): Promise<Baseline> {
   const t0 = Date.now()
   const fallbackFor = (g: (typeof sheets)[number]) => heuristicPlan(KOJI_KEIREKI, KOJI_PLAN_HINTS, g)
   // 翌年分の案件（editFrom）は、画面と同じく去年の列の対応と去年の Excel との違いを計画の AI に添える
-  const res = await planWithClaude(anthropic, { ...planExcerpt(sheets, def!.sheet), ...(def!.editFrom ? { previous: previousPlanOf() } : {}) })
+  const res = await planWithClaude(anthropic, { ...planExcerpt(sheets, (g) => headerMatch(KOJI_KEIREKI, KOJI_PLAN_HINTS, g).headerRow, def!.sheet), ...(def!.editFrom ? { previous: previousPlanOf() } : {}) })
   conversionUsd += res.usd
   spend("plan", res.usd)
   if (!res.ok) throw new Error(res.message)

@@ -41,7 +41,7 @@ import { CASE_STATUSES, CASE_STATUS_LABELS, contentTypeOf, FILE_KIND_LABELS, fil
 import { convertRows, countByStatus, editKey, editSession, resolveRows, staffEdit, type CellEdit, type RowResult } from "@/lib/convert/convert"
 import { csvFileName, datedFileName, toCsvBytes } from "@/lib/convert/csv"
 import { personLetters } from "@/lib/convert/persons"
-import { heuristicPlan, primarySheet, sheetByNames } from "@/lib/convert/heuristic-plan"
+import { headerMatch, heuristicPlan, primarySheet, sheetByNames } from "@/lib/convert/heuristic-plan"
 import { SELECTION_LABELS, SELECTION_MODES, summarizeKoji, TAX_LABELS, type Inclusion, type TaxMode } from "@/lib/convert/koji-selection"
 import { addressInputs, fillAiCache, type AiCache, type AiCaller } from "@/lib/convert/pipeline"
 import { ADDRESS_API_PATH, addressCache, addressKey, lookupAddresses, NO_ADDRESSES, type AddressBook, type AddressLookup } from "@/lib/convert/address"
@@ -258,7 +258,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
     try {
       const previousContext = await previousPlanFor(src, requiredSheet)
       if (id !== caseGeneration.current) return
-      const res = await planWithAi({ data: { caseId: kase.id, ...planExcerpt(src.sheets, requiredSheet), ...(previousContext ? { previous: previousContext } : {}) } })
+      const res = await planWithAi({ data: { caseId: kase.id, ...planExcerpt(src.sheets, (g) => headerMatch(SPEC, KOJI_PLAN_HINTS, g).headerRow, requiredSheet), ...(previousContext ? { previous: previousContext } : {}) } })
       addCost(res.usd)
       if (res.ok) {
         const accepted = acceptAiPlan(SPEC, src.sheets, res.json, fallbackFor, requiredSheet)

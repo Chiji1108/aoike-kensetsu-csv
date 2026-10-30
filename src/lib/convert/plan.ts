@@ -2,7 +2,7 @@ import { z } from "zod"
 import { CODE_SETS } from "../spec/code-sets"
 import type { CsvSpec } from "../spec/types"
 import type { ValueType } from "../spec/types"
-import { rowIsBlank, sameHeader } from "./sources"
+import { copiedFrom, rowIsBlank, sameHeader } from "./sources"
 import { TRANSFORM_IDS, getTransform, preferredTransform, transformFits, type TransformId } from "./transforms"
 
 /**
@@ -129,6 +129,11 @@ export function acceptAiPlan<F extends string>(
   const dataRows = rowsOk ? { start: wire.dataStart, end } : fallback.dataRows
 
   const sheets = [grid.name]
+  // 写しのシートを足すと同じ工事が二重に出る（CSV の誤り）ので、AI が足しても決まった処理で外す
+  const copyReason = (s: SheetGrid) => {
+    const copy = copiedFrom(s, sheets.map((n) => workbook.find((x) => x.name === n)!), headerRow)
+    return copy ? `データの行の${Math.floor(copy.ratio * 100)}%が「${copy.sheet}」にもある写しの` : undefined
+  }
   for (const name of extraNames) {
     const s = workbook.find((x) => x.name === name)
     const reason = !s
@@ -139,7 +144,7 @@ export function acceptAiPlan<F extends string>(
           ? "空の"
           : !sameHeader(s, grid, headerRow)
             ? `見出しが「${grid.name}」と違う`
-            : undefined
+            : copyReason(s)
     if (reason) problems.push(`AI が足したシート「${name}」は${reason}ため外しました`)
     else if (!sheets.includes(name)) sheets.push(name)
   }

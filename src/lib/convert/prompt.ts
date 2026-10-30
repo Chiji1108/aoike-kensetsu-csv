@@ -216,9 +216,10 @@ function sheetExcerpt(grid: SheetGrid, head: number, tail: number, overlap?: { s
  * 計画の AI に送るブックの抜粋。全部のシート（MAX_EXCERPT_SHEETS 枚まで）の先頭30行・末尾10行と列ごとの値の例。
  * セルの合計が MAX_EXCERPT_CELLS を超えるときは、どのシートも同じ割合で行を減らす（どのシートが工事の一覧かは AI が決めるので、シートで差をつけない）
  */
-export function planExcerpt(sheets: readonly SheetGrid[], requiredSheet?: string): PlanExcerpt {
+export function planExcerpt(sheets: readonly SheetGrid[], headerRowOf: (grid: SheetGrid) => number, requiredSheet?: string): PlanExcerpt {
   const listed = sheets.slice(0, MAX_EXCERPT_SHEETS)
-  const overlaps = sheetOverlaps(listed)
+  // 重なりはデータの行だけで比べる（見出しの行は見出しからの推定）
+  const overlaps = sheetOverlaps(listed.map((grid) => ({ grid, headerRow: headerRowOf(grid) })))
   const cells = (head: number, tail: number) => listed.reduce((sum, g) => sum + Math.min(g.rows.length, head + tail) * columnCount(g), 0)
   const scale = Math.min(1, MAX_EXCERPT_CELLS / Math.max(1, cells(HEAD, TAIL)))
   let head = Math.max(MIN_HEAD, Math.floor(HEAD * scale))

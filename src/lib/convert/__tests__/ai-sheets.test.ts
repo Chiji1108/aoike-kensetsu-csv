@@ -1,13 +1,14 @@
 import { describe, expect, test } from "bun:test"
 import { newWork, savedWorkSchema, toSavedWork } from "../../cases/state"
 import { KOJI_KEIREKI, KOJI_PLAN_HINTS } from "../../spec/koji-keireki"
-import { heuristicPlan, primarySheet } from "../heuristic-plan"
+import { headerMatch, heuristicPlan, primarySheet } from "../heuristic-plan"
 import { acceptAiPlan, type FieldPlan, type MappingPlan, type SheetGrid } from "../plan"
 import { MAX_EXCERPT_CELLS, planExcerpt, planUserMessage, systemPrompt } from "../prompt"
 import { collectSourceRows } from "../sources"
 
 const grid = (name: string, rows: string[][]): SheetGrid => ({ name, rows, hidden: rows.map(() => false) })
 const fallbackFor = (g: SheetGrid) => heuristicPlan(KOJI_KEIREKI, KOJI_PLAN_HINTS, g)
+const headerRowOf = (g: SheetGrid) => headerMatch(KOJI_KEIREKI, KOJI_PLAN_HINTS, g).headerRow
 
 const HEADER = ["工種", "工事件名", "発注者", "施工場所", "契約金額（円）", "完成日"]
 const works = grid("工事", [
@@ -68,6 +69,17 @@ describe("計画の AI が選んだシートの取り込み（決まった応答
     expect(collectSourceRows(book, r.plan).rows.map((s) => `${s.sheet}!${s.row}`)).toEqual(["工事!3", "工事!4", "工事2!3"])
   })
 
+  test("AI が足した2枚目以降でも、データの行のほとんどが使うシートにある写し（一部を直したもの）は、同じ工事が二重に出るので外す", () => {
+    const many = (name: string, edit: boolean) =>
+      grid(name, [["表題"], [], HEADER, ...Array.from({ length: 20 }, (_, i) => ["電気工事", edit && i === 3 ? "手直しした工事" : `テスト工事${i}`, "株式会社テスト", "東京都千代田区", "1000000", "2025-06-30"])])
+    const full = many("全件", false)
+    const copy = many("電気工事", true)
+    const r = acceptAiPlan(KOJI_KEIREKI, [full, copy], wireOf(fallbackFor(full), ["全件", "電気工事"]), fallbackFor)
+    if (!r.ok) throw new Error(r.message)
+    expect(r.plan.sheets).toEqual(["全件"])
+    expect(r.plan.notes).toContain("AI が足したシート「電気工事」はデータの行の95%が「全件」にもある写しのため外しました")
+  })
+
   test("計画の元のシートが無い・空・選ばれていない・職員の指定と違うなら、計画全体を使わない（呼び出し側が見出しからの推定に戻す）", () => {
     for (const [sheets, message] of [
       [["無いシート"], "AI が選んだシート「無いシート」がファイルにありません"],
@@ -111,7 +123,7 @@ describe("計画の AI が選んだシートの取り込み（決まった応答
 describe("計画の AI に渡すブックの抜粋", () => {
   test("全部のシートの名前・行数・列数・先頭の行と、行の内容が重なるシートを渡す", () => {
     const copy = grid("電気工事", works.rows.slice(0, 4))
-    const ex = planExcerpt([...book, copy])
+    const ex = planExcerpt([...book, copy], headerRowOf)
     expect(ex.sheets.map((s) => [s.name, s.rowCount, s.columnCount])).toEqual([
       ["顧客一覧", 201, 2],
       ["工事", 5, 6],
@@ -131,14 +143,14 @@ describe("計画の AI に渡すブックの抜粋", () => {
   })
 
   test("職員が指定したシートを伝える", () => {
-    const ex = planExcerpt(book, "工事2")
+    const ex = planExcerpt(book, headerRowOf, "工事2")
     expect(ex.requiredSheet).toBe("工事2")
     expect(planUserMessage(ex)).toContain("職員がシート「工事2」を計画の元に指定しました")
   })
 
   test("シートが多くて大きいときは、どのシートも同じように行を減らして上限に収める", () => {
     const big = (name: string) => grid(name, Array.from({ length: 500 }, (_, r) => Array.from({ length: 60 }, (_, c) => `${name}${r}-${c}`)))
-    const ex = planExcerpt(Array.from({ length: 8 }, (_, i) => big(`s${i}`)))
+    const ex = planExcerpt(Array.from({ length: 8 }, (_, i) => big(`s${i}`)), headerRowOf)
     const cells = ex.sheets.reduce((n, s) => n + s.rows.reduce((m, r) => m + r.cells.length, 0), 0)
     expect(cells).toBeLessThanOrEqual(MAX_EXCERPT_CELLS)
     expect(new Set(ex.sheets.map((s) => s.rows.length)).size).toBe(1)
