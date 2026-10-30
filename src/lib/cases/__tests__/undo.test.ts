@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { applyChanges, type ChatChange } from "../../chat/proposals"
 import { editKey, type CellEdit } from "../../convert/convert"
 import { fromSaved, newWork, type SavedPlan, savedWorkSchema, toSavedWork, toSavedAiCache, type CaseWork } from "../state"
-import { applyInquiryChanges, EMPTY_INQUIRY_TEXT } from "../../inquiry/text"
+import { applyInquiryChange, EMPTY_INQUIRY_TEXT } from "../../inquiry/text"
 import { canUndo, MAX_UNDO_BYTES, MAX_UNDO_ENTRIES, pushUndo, undo, undoEntry } from "../undo"
 
 const chat = (value: string): CellEdit => ({ value, by: "chat" })
@@ -128,7 +128,7 @@ describe("承認の取り消し", () => {
 })
 
 describe("問い合わせの文面の承認の取り消し", () => {
-  const text = applyInquiryChanges(EMPTY_INQUIRY_TEXT, "p1", [{ index: 0, change: { kind: "inquiry", text: "この工事に置いた主任技術者の氏名を教えてください。", targets: [{ field: "engineer" }] } }])
+  const text = applyInquiryChange(EMPTY_INQUIRY_TEXT, { kind: "inquiry", id: "p1:0", text: "この工事に置いた主任技術者の氏名を教えてください。", targets: [{ field: "engineer" }] })
 
   test("承認で足した文を取り消すと前の文面に戻る。前の作業（文面の無い保存）は空の文面として読む。承認のあとに職員が直していたら残す", () => {
     const before = newWork("f")

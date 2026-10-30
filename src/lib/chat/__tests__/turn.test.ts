@@ -1,3 +1,4 @@
+import { EMPTY_INQUIRY_TEXT } from "../../inquiry/text"
 import { describe, expect, test } from "bun:test"
 import type { ModelMessage } from "ai"
 import { kojiRow } from "../../convert/__tests__/helpers"
@@ -19,7 +20,7 @@ const rows = [
   kojiRow({ ...base, client: suzuki, workName: `${suzuki}様邸改修工事`, amount: "3000" }, 2),
   kojiRow({ ...base, client: "株式会社　テスト", workName: "テストビル電気工事", amount: "1000" }, 3),
 ]
-const table = { rows, added: [], edits: new Map(), replacements: {}, manual: new Map(), tax: "excluded" as const, basis: {}, rule7Tax: "excluded" as const, selection: "all" as const, sorted: false }
+const table = { rows, added: [], edits: new Map(), replacements: {}, manual: new Map(), tax: "excluded" as const, basis: {}, rule7Tax: "excluded" as const, selection: "all" as const, sorted: false, dismissed: new Set<string>(), inquiryText: EMPTY_INQUIRY_TEXT }
 
 /** 匿名化の決まった応答（変換のテストと同じ）: 注文者は全体、工事名は「様邸」「邸」の前を個人名として印にする。asked に聞いた値を溜める */
 function cannedAnonymize(asked: string[] = []): AnonymizeCaller {
@@ -425,11 +426,40 @@ describe("問い合わせの文面（propose_inquiry）", () => {
     })
     expect(out).toEqual({ ok: true, questions: 2, covered: 3, fallback: 1 })
     expect(state.pending).toEqual([
-      { kind: "inquiry", text: "この工事に置いた主任技術者の氏名を教えてください。", targets: [{ field: "engineer" }] },
-      { kind: "inquiry", text: "この工事は引渡日を完成日としてよいですか。", targets: [{ field: "endYm", reason: "needsReview", keys: ["s!3"] }] },
+      { kind: "inquiry", id: expect.any(String), text: "この工事に置いた主任技術者の氏名を教えてください。", targets: [{ field: "engineer" }] },
+      { kind: "inquiry", id: expect.any(String), text: "この工事は引渡日を完成日としてよいですか。", targets: [{ field: "endYm", reason: "needsReview", keys: ["s!3"] }] },
       { kind: "inquiryMail", ...mail },
     ])
     expect(state.current).toBe(asked)
+  })
+
+  test("同じ指示で2回出すと、前の質問と重なる案は断り、件名と前置きは置き換える", async () => {
+    const state = newTurnState(asked, undefined, undefined, null, null, null, others)
+    const tools = chatTools(state)
+    await call(tools, "propose_inquiry", { ...mail, questions: [{ text: "この工事の技術者を教えてください。", targets: [{ field: "engineer" }] }] })
+    const again = await call(tools, "propose_inquiry", { ...mail, questions: [{ text: "技術者をもう一度。", targets: [{ field: "engineer" }] }] })
+    expect(again).toMatchObject({ ok: false })
+    expect(again.problems[0]).toContain("同じ問い合わせに2つの質問が当てはまります")
+    const ok = await call(tools, "propose_inquiry", { subject: "新しい件名", intro: mail.intro, questions: [{ text: "完成年月を確かめてください。", targets: [{ field: "endYm" }] }] })
+    expect(ok).toMatchObject({ ok: true, covered: 3 })
+    expect(state.pending.filter((c) => c.kind === "inquiryMail")).toEqual([{ kind: "inquiryMail", subject: "新しい件名", intro: mail.intro }])
+  })
+
+  test("職員が外した問い合わせは、get_inquiries にも propose_inquiry の確かめにも入れない", async () => {
+    const dismissedTable = { ...asked, dismissed: new Set(["s!2:engineer", "s!3:engineer"]) }
+    const out = await call(chatTools(newTurnState(dismissedTable)), "get_inquiries", {})
+    expect(out.cells.map((c: { field: string }) => c.field)).toEqual(["endYm"])
+    const res = await call(chatTools(newTurnState(dismissedTable, undefined, undefined, null, null, null, others)), "propose_inquiry", { ...mail, questions: [{ text: "技術者を教えてください。", targets: [{ field: "engineer" }] }] })
+    expect(res).toMatchObject({ ok: false, problems: ["questions[0].targets[0]: 今の問い合わせに当てはまりません"] })
+  })
+
+  test("get_inquiries のメモは値と同じ記号で出し、分かっている名前も伏せる。今の質問の文も返す", async () => {
+    const withNote = { ...asked, rows: asked.rows.map((r) => (r.key === "s!2" ? { ...r, cells: { ...r.cells, endYm: { ...r.cells.endYm, value: "202409", guessed: true as const, status: "warning" as const, message: `${yamada}様の引渡日から推定（担当 新顔一郎）` } } } : r)) }
+    const review = { turns: async () => [], names: async () => ["新顔一郎"], taken: async () => ({ rules: [], pending: [] }), rounding: "floor" as const }
+    const out = await call(chatTools(newTurnState(withNote, undefined, undefined, null, null, review)), "get_inquiries", {})
+    const c = out.cells.find((x: { key: string; field: string }) => x.key === "s!2" && x.field === "endYm")
+    expect(c.note).toBe("〔Ａ〕様の引渡日から推定（担当 〔個人名〕）")
+    expect(c.question).toEqual({ text: "完成年月は資料から推定しました。正しいかご確認ください。", by: "fixed" })
   })
 
   test("個人名・表の記号・ほかの顧客の名前の入った文と、当てはまらない対象は何も受け取らない", async () => {

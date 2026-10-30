@@ -1,3 +1,4 @@
+import { EMPTY_INQUIRY_TEXT } from "../../inquiry/text"
 import { describe, expect, test } from "bun:test"
 import { deriveTable, type CaseTable } from "../../cases/view"
 import { kojiRow } from "../../convert/__tests__/helpers"
@@ -21,6 +22,8 @@ const table: CaseTable = {
   rule7Tax: "excluded",
   selection: "all",
   sorted: false,
+  dismissed: new Set<string>(),
+  inquiryText: EMPTY_INQUIRY_TEXT,
 }
 
 describe("上げたファイルの種類", () => {

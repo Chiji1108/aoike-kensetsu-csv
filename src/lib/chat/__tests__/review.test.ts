@@ -1,3 +1,4 @@
+import { EMPTY_INQUIRY_TEXT } from "../../inquiry/text"
 import { describe, expect, test } from "bun:test"
 import { kojiRow } from "../../convert/__tests__/helpers"
 import { personToken } from "../../convert/persons"
@@ -35,6 +36,8 @@ const table: CaseTable = {
   rule7Tax: "excluded",
   selection: "all",
   sorted: false,
+  dismissed: new Set<string>(),
+  inquiryText: EMPTY_INQUIRY_TEXT,
 }
 
 const user = (id: string, text: string): ChatMessage => ({ id, role: "user", parts: [{ type: "text", text }] })

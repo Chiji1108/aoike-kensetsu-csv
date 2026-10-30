@@ -7,7 +7,7 @@ import type { KojiFieldId } from "../spec/koji-keireki"
 import { foundSchema, siteRefSchema, SOURCE_LABELS, type Found } from "../location/sites"
 import { planPatchSchema, type PlanPatch } from "../convert/plan-patch"
 import { proposedRuleSourceSchema, ruleScopeSchema, type ProposedRuleSource, type RuleScope } from "./rules"
-import { introSchema, questionTargetsSchema, questionTextSchema, subjectSchema, type QuestionTarget } from "../inquiry/text"
+import { applyInquiryChange, introSchema, questionTargetsSchema, questionTextSchema, subjectSchema, type InquiryText, type QuestionTarget } from "../inquiry/text"
 
 /**
  * 変更案。AI（チャット）や返ってきた Excel が出した変更は、すぐには表に入れず、職員が項目ごとかまとめて承認したものだけを
@@ -41,10 +41,10 @@ export type ChatChange =
    */
   | ({ kind: "location"; site: { key: string; workName: string; client: string }; rowKeys: string[] } & Found)
   /**
-   * 顧客への問い合わせの質問の文（lib/inquiry/text.ts）。targets の問い合わせをこの文で聞く。承認すると案件の作業の問い合わせの文面に足す
-   * （表の変更ではないので、ここ〔applyChanges〕では何もしない）
+   * 顧客への問い合わせの質問の文（lib/inquiry/text.ts）。targets の問い合わせをこの文で聞く。承認すると問い合わせの文面に足す
+   * （id は案を作るときに決める質問の id。前の AI の質問の同じ対象は置き換える）
    */
-  | { kind: "inquiry"; text: string; targets: QuestionTarget[] }
+  | { kind: "inquiry"; id: string; text: string; targets: QuestionTarget[] }
   /** 問い合わせのメールの件名と前置き（承認すると案件の作業の問い合わせの文面にする） */
   | { kind: "inquiryMail"; subject: string; intro: string }
 
@@ -133,7 +133,16 @@ function mergeBasis(now: Basis, patch: Basis): Basis {
 }
 
 /** 承認した変更を重ねる先（案件の作業とチャットの表に共通の部分） */
-export type Overlay = { edits: CellEdits; manual: ReadonlyMap<string, boolean>; tax: TaxMode; basis: Basis; selection: SelectionMode; added: readonly AddedRow[] }
+export type Overlay = {
+  edits: CellEdits
+  manual: ReadonlyMap<string, boolean>
+  tax: TaxMode
+  basis: Basis
+  selection: SelectionMode
+  added: readonly AddedRow[]
+  /** 問い合わせの文面（lib/inquiry/text.ts） */
+  inquiryText: InquiryText
+}
 
 /**
  * 変更を重ねる。edited は今の手直しまで当てた行（ask の今の値を読む）。rule は保存する側が受け持つので、ここでは何もしない
@@ -142,7 +151,7 @@ export function applyChanges<T extends Overlay>(target: T, edited: readonly RowR
   if (!changes.length) return target
   const edits = new Map(target.edits)
   const manual = new Map(target.manual)
-  let { tax, basis, selection } = target
+  let { tax, basis, selection, inquiryText } = target
   const added = [...target.added]
   const rowOf = new Map(edited.map((r) => [r.key, r]))
   for (const c of changes) {
@@ -179,16 +188,18 @@ export function applyChanges<T extends Overlay>(target: T, edited: readonly RowR
         }
         break
       }
-      case "rule":
-      case "plan":
       case "inquiry":
       case "inquiryMail":
+        inquiryText = applyInquiryChange(inquiryText, c)
+        break
+      case "rule":
+      case "plan":
         break
       default:
         c satisfies never
     }
   }
-  return { ...target, edits, manual, tax, basis, selection, added }
+  return { ...target, edits, manual, tax, basis, selection, added, inquiryText }
 }
 
 /** 調べた工事場所のセルに添える文（出どころ・根拠の URL・AI の迷った点） */
@@ -218,7 +229,7 @@ export const chatChangeSchema: z.ZodType<ChatChange> = z.discriminatedUnion("kin
     site: siteRefSchema,
     rowKeys: z.array(z.string()).min(1).max(20_000),
   }),
-  z.object({ kind: z.literal("inquiry"), text: questionTextSchema, targets: questionTargetsSchema }),
+  z.object({ kind: z.literal("inquiry"), id: z.string().min(1).max(64), text: questionTextSchema, targets: questionTargetsSchema }),
   z.object({ kind: z.literal("inquiryMail"), subject: subjectSchema, intro: introSchema }),
 ])
 

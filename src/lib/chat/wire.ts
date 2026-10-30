@@ -3,17 +3,19 @@ import type { CellResult, RowResult } from "../convert/convert"
 import { basisSchema, cellEditSchema, fieldIdSchema, replacementsSchema, rule7TaxSchema, selectionSchema, taxSchema } from "../schemas"
 import type { CaseTable } from "../cases/view"
 import { addedRowSchema, MAX_ADDED_ROWS } from "../cases/added"
+import { EMPTY_INQUIRY_TEXT, inquiryTextSchema } from "../inquiry/text"
 import type { KojiFieldId } from "../spec/koji-keireki"
 
 /** 画面からチャットのサーバーへ送る案件の表（CaseTable の Map を組の配列にしたもの） */
-export type CaseTableWire = Omit<CaseTable, "rows" | "edits" | "manual"> & {
+export type CaseTableWire = Omit<CaseTable, "rows" | "edits" | "manual" | "dismissed"> & {
   rows: RowResult<KojiFieldId>[]
   edits: [string, z.infer<typeof cellEditSchema>][]
   manual: [string, boolean][]
+  dismissed: string[]
 }
 
-export const toWire = (t: CaseTable): CaseTableWire => ({ ...t, rows: [...t.rows], edits: [...t.edits], manual: [...t.manual] })
-export const fromWire = (w: CaseTableWire): CaseTable => ({ ...w, edits: new Map(w.edits), manual: new Map(w.manual) })
+export const toWire = (t: CaseTable): CaseTableWire => ({ ...t, rows: [...t.rows], edits: [...t.edits], manual: [...t.manual], dismissed: [...t.dismissed] })
+export const fromWire = (w: CaseTableWire): CaseTable => ({ ...w, edits: new Map(w.edits), manual: new Map(w.manual), dismissed: new Set(w.dismissed) })
 
 const cellResult: z.ZodType<CellResult> = z.object({
   value: z.string(),
@@ -50,4 +52,7 @@ export const caseTableWireSchema: z.ZodType<CaseTableWire> = z.object({
   selection: selectionSchema,
   includeAtLeastYen: z.number().optional(),
   sorted: z.boolean(),
+  /** 外した問い合わせと問い合わせの文面。無い形（この項目より前の画面が送る表）は空 */
+  dismissed: z.array(z.string().max(300)).max(50_000).default([]),
+  inquiryText: inquiryTextSchema.default(EMPTY_INQUIRY_TEXT),
 })

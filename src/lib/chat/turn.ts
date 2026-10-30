@@ -5,7 +5,7 @@ import { MAX_ADDED_ROWS, newAddedKey } from "../cases/added"
 import { baseRows, deriveTable, type CaseTable, type TableView } from "../cases/view"
 import { MAX_ITEMS_PER_REQUEST, parseAiResponse, type AiBatchRequest } from "../convert/ai-tasks"
 import { editText, staffEdit, type CellEdit } from "../convert/convert"
-import { withNames, type PersonLetters } from "../convert/persons"
+import { showPersons, withNames, type PersonLetters } from "../convert/persons"
 import { getTransform, transformsFor, type TransformId } from "../convert/transforms"
 import type { MappingPlan } from "../convert/plan"
 import { applyPlanPatch, beforeOf, describePlanPatch, patchFromInput, planPatchInputSchema, type PlanPatchInput, type SheetShape } from "../convert/plan-patch"
@@ -19,8 +19,8 @@ import { MAX_REVIEW_NOTES, MAX_REVIEW_RULES, reviewGuard, reviewMaterial, sameRu
 import { CHAT_ACTIONS, type ChatAction } from "./messages"
 import { outcomeChanges } from "../location/changes"
 import { askReason, estimateUsd, MAX_SITES_PER_RUN, runSitesOf, siteOfRow, SOURCE_LABELS, type Outcome, type Site } from "../location/sites"
-import { ANSWER_FIELDS, collectInquiries, fieldLabel, QUESTION_HEADER, readAiAnswers, REASONS, type AiAnswerReport } from "../inquiry/inquiry"
-import { checkQuestions, introSchema, MAX_QUESTION_KEYS, MAX_QUESTIONS, MAX_TOTAL_KEYS, MAX_QUESTION_LENGTH, otherCustomerTest, questionTargetsSchema, questionTextSchema, subjectSchema, type QuestionTarget } from "../inquiry/text"
+import { ANSWER_FIELDS, collectInquiries, fieldLabel, inquiryKey, QUESTION_HEADER, readAiAnswers, REASONS, type AiAnswerReport } from "../inquiry/inquiry"
+import { checkQuestions, newQuestionId, questionGroups, introSchema, MAX_QUESTION_KEYS, MAX_QUESTIONS, MAX_TOTAL_KEYS, MAX_QUESTION_LENGTH, otherCustomerTest, questionTargetsSchema, questionTextSchema, subjectSchema, type QuestionTarget } from "../inquiry/text"
 import type { AddressLookup } from "../convert/address"
 import type { AiCache, AiCaller } from "../convert/pipeline"
 import type { Rounding } from "../convert/transforms"
@@ -91,6 +91,7 @@ ${fileLines || "（なし）"}
   - 質問の文（text）は、顧客が読んですぐ答えられる1〜2文にする。何が分からないのか・何を推定したのか（note）が伝わるように書く（例「この工事は引渡日を完成日としてよいですか。」「この工事に置いた主任技術者の氏名を教えてください。」）。「データに無い」「推定に自信がない」のような決まった言葉や、事務所の中の言葉（項目の id・列記号・変換・AI・CSV）は使わない。
   - 同じ聞き方でよい問い合わせは1つの質問にまとめる（targets に項目と理由 reasonId。特定の行だけなら keys に行の key）。1つの問い合わせは1つの質問にする。記入用Excelでは各行の「${QUESTION_HEADER}」の欄に出るので、文に工事名・注文者・金額・個人名を書かず「この工事」と書く。
   - subject はメールの件名、intro は本文の前置き（1〜3文。宛名・挨拶・結び・質問の一覧・Excel の記入のしかたは画面が付けるので書かない）。
+  - question.by が staff の問い合わせは職員が直した文がある（承認しても職員の文が使われる）ので、頼まれない限り質問を出さない。
   - 個人名・表の記号（〔Ａ〕など）・ほかの顧客の名前は書かない（入っていれば受け取らない）。返事では、まとめた質問の数と、決まった文のまま残る問い合わせの数を短く伝える。
 - 職員が「顧客ルールに追加して」「全体ルールに追加して」と言ったら propose_rule で足す項目の案を出す（1つの決まりを1項目に。今のルールと同じ項目は出さない。保存は職員の承認後）。
 - 職員が案件を終えるときの振り返り（「振り返って顧客ルールの案を出して」）を頼んだら、get_review を直接呼んで今年の作業（職員の指示と承認の結果・聞き返しと答え・列の対応の変更・手直しと置換の例・7割の設定）を読み、propose_review で来年のための顧客ルールの案を出す。表は変えない。
@@ -377,6 +378,8 @@ export function chatTools(state: TurnState) {
     }
     return run()
   }
+  /** 今の問い合わせ（職員が外したものは除く。画面の問い合わせの欄と同じ） */
+  const inquiriesOf = (v: TableView) => collectInquiries(v.output, { tax: state.current.tax }).filter((q) => !state.current.dismissed.has(inquiryKey(q)))
   const ruleItem = z.string().min(1).refine((s) => charCount(s) <= MAX_RULE_ITEM_LENGTH, `1項目は${MAX_RULE_ITEM_LENGTH}字まで`)
   const NAME_REFUSAL = "個人名か表の記号（〔Ａ〕〔個人名〕など）が入っている項目があります。何も出していません。名前を挙げずに決まりとして書き直してください。"
   const push = (tool: string, changes: ChatChange[], summary: string, extra: object = {}) => {
@@ -502,16 +505,32 @@ export function chatTools(state: TurnState) {
     }),
     get_inquiries: tool({
       description:
-        "顧客に今聞いていること（問い合わせ。CSV に載せる行のうち、書類に要る項目が空か推定に自信がないセル）を JSON 文字列で返す: {tax: 税込・税抜を聞いているか, cells:[{key, field, label, reason, reasonId（missing＝空・needsReview＝推定）, note?（推定の根拠などセルのメモ）, value, workName, client, amount, source}]}。顧客の回答を読む前・問い合わせの文面を作る前に呼ぶ。",
+        "顧客に今聞いていること（問い合わせ。CSV に載せる行のうち、書類に要る項目が空か推定に自信がないセル。職員が外したものは除く）を JSON 文字列で返す: {tax: 税込・税抜を聞いているか, taxQuestion, cells:[{key, field, label, reason, reasonId（missing＝空・needsReview＝推定）, note?（推定の根拠などセルのメモ）, question:{text, by（ai＝承認した AI の文・staff＝職員が直した文・fixed＝決まった文）}, value, workName, client, amount, source}]}。顧客の回答を読む前・問い合わせの文面を作る前に呼ぶ。",
       inputSchema: z.strictObject({}),
-      execute: counted<object>(() => {
+      execute: counted<object>(async () => {
         const v = view()
         const rowOf = new Map(v.output.map((r) => [r.key, r]))
-        const qs = collectInquiries(v.output, { tax: state.current.tax })
+        const qs = inquiriesOf(v)
+        const { groupOf } = questionGroups(qs, state.current.inquiryText)
         state.log.push({ tool: "get_inquiries", summary: `${qs.length}件` })
         const text = (key: string, f: KojiFieldId) => editText(rowOf.get(key)!.cells[f], state.letters)
+        // セルのメモは値と同じ記号で出し、分かっている個人名も伏せる（名前を確かめられないときはメモを出さない）
+        const hide = await guard().then(
+          (g) => g.hide,
+          () => null,
+        )
+        const note = (key: string, f: KojiFieldId) => {
+          const m = rowOf.get(key)!.cells[f].message
+          return m && hide ? { note: hide(showPersons(m, state.letters, true)) } : {}
+        }
+        const question = (q: (typeof qs)[number]) => {
+          const g = groupOf.get(inquiryKey(q))!
+          return { text: g.text, by: g.by }
+        }
+        const tax = qs.find((q) => q.kind === "case")
         return json({
-          tax: qs.some((q) => q.kind === "case"),
+          tax: !!tax,
+          ...(tax ? { taxQuestion: question(tax) } : {}),
           cells: qs.flatMap((q) =>
             q.kind === "cell"
               ? [
@@ -521,7 +540,8 @@ export function chatTools(state: TurnState) {
                     label: fieldLabel(q.field),
                     reason: REASONS[q.reason].label,
                     reasonId: q.reason,
-                    ...(rowOf.get(q.rowKey)!.cells[q.field].message ? { note: withNames(rowOf.get(q.rowKey)!.cells[q.field].message!, () => "〔個人名〕") } : {}),
+                    ...note(q.rowKey, q.field),
+                    question: question(q),
                     value: text(q.rowKey, q.field),
                     workName: text(q.rowKey, "workName"),
                     client: text(q.rowKey, "client"),
@@ -712,8 +732,12 @@ export function chatTools(state: TurnState) {
           if (keys > MAX_TOTAL_KEYS)
             return json({ ok: false, problems: [`keys は合わせて${MAX_TOTAL_KEYS}行（1つの質問で${MAX_QUESTION_KEYS}行）までです。多くの行に同じ聞き方をするときは、keys を省いて項目と理由で選んでください`] })
           const read = questions.map((q, i) => ({ text: q.text, targets: parsed[i]!.data! }))
-          const v = view()
-          const check = checkQuestions(read, collectInquiries(v.output, { tax: state.current.tax }))
+          // この指示でもう出した質問と合わせて、重なりと keys の行の数を確かめる
+          const earlier = state.pending.flatMap((c) => (c.kind === "inquiry" ? [c] : []))
+          const earlierKeys = earlier.reduce((n, q) => n + q.targets.reduce((k, t) => k + ("keys" in t && t.keys ? t.keys.length : 0), 0), 0)
+          if (keys + earlierKeys > MAX_TOTAL_KEYS)
+            return json({ ok: false, problems: [`この指示で出した質問と合わせて keys が${MAX_TOTAL_KEYS}行を超えます。keys を省いて項目と理由で選んでください`] })
+          const check = checkQuestions(read, inquiriesOf(view()), earlier)
           if (check.problems.length) return json({ ok: false, problems: check.problems.slice(0, 20) })
           const texts = [subject, intro, ...read.map((q) => q.text)]
           const named = await personal(texts)
@@ -721,7 +745,9 @@ export function chatTools(state: TurnState) {
           const others = otherCustomerTest(state.inquiry ? await state.inquiry.otherCustomers() : [], state.inquiry?.customerName)
           const leaked = texts.flatMap((t, i) => (others(t) ? [i] : []))
           if (leaked.length) return json({ ok: false, error: "ほかの顧客の名前が入っている文があります。何も出していません。", items: leaked.map(textName) })
-          state.pending.push(...read.map((q): ChatChange => ({ kind: "inquiry", text: q.text, targets: q.targets })), { kind: "inquiryMail", subject, intro })
+          // 件名と前置きは1つ（2回目は前の案を置き換える）
+          state.pending = state.pending.filter((c) => c.kind !== "inquiryMail")
+          state.pending.push(...read.map((q): ChatChange => ({ kind: "inquiry", id: newQuestionId(), text: q.text, targets: q.targets })), { kind: "inquiryMail", subject, intro })
           state.log.push({ tool: "propose_inquiry", summary: `${read.length}問・${check.covered}件（決まった文 ${check.fallback}件）` })
           return json({ ok: true, questions: read.length, covered: check.covered, fallback: check.fallback })
         }),
