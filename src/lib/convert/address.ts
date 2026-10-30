@@ -30,13 +30,10 @@ export const ADDRESS_API_PATH = "/japanese-addresses/api/ja"
 /** 「神奈川県」→「神奈川」（北海道はそのまま） */
 const shortName = (p: Prefecture) => (p === "北海道" ? p : p.slice(0, -1))
 
-/** 市区町村まで読む（ライブラリの normalize の level 2 と同じ形）。city は郡＋町村・政令市＋区の表記 */
-type Normalize = (input: string, option: { level: 2 }) => Promise<{ level: number; pref?: string; city?: string }>
+type Normalize = (typeof import("@geolonia/normalize-japanese-addresses"))["normalize"]
 
-/** 住所データ（ja.json）のうち、市区町村の一覧に使うところ */
-const jaSchema = z.object({
-  data: z.array(z.object({ pref: z.string(), cities: z.array(z.object({ county: z.string().optional(), city: z.string(), ward: z.string().optional() })) })),
-})
+/** 住所データ（ja.json）のうち、政令市の区の一覧に使うところ */
+const jaSchema = z.object({ data: z.array(z.object({ pref: z.string(), cities: z.array(z.object({ city: z.string(), ward: z.string().optional() })) })) })
 
 /** 都道府県ごとの、政令市の区の名前 → 政令市の名前（同じ区の名前が県内の2つの政令市にあれば両方） */
 type Wards = ReadonlyMap<string, ReadonlyMap<string, readonly string[]>>
@@ -129,8 +126,6 @@ async function splitOne(reader: Reader, key: string): Promise<AddressSplit> {
 /** 住所データを読み、索引を作ったもの（api ごとに1回。読めなかったら持たずに、次に呼ばれたとき読み直す） */
 const readers = new Map<string, Promise<Reader>>()
 
-const readerOf = (ja: z.infer<typeof jaSchema>, normalize: Normalize): Reader => ({ normalize, wards: wardsOf(ja), cities: cityNamesOf(ja) })
-
 function readerFor(api: string): Promise<Reader> {
   const known = readers.get(api)
   if (known) return known
@@ -143,7 +138,7 @@ function readerFor(api: string): Promise<Reader> {
       .catch((e: unknown) => {
         throw new Error("住所データを読めませんでした", { cause: e })
       })
-    return readerOf(ja, normalize)
+    return { normalize, wards: wardsOf(ja), cities: cityNamesOf(ja) }
   })()
   readers.set(api, loading)
   loading.catch(() => readers.delete(api))
@@ -155,50 +150,38 @@ function readerFor(api: string): Promise<Reader> {
  * 都道府県・市区町村が決まらない値は空の結果にする（変換は AI に回す）。住所データを読めなければ投げる（すべての住所を黙って AI に回さない）
  */
 export async function lookupAddresses(raws: Iterable<string>, api: string): Promise<AddressBook> {
-  return lookupWith(raws, () => readerFor(api))
-}
-
-async function lookupWith(raws: Iterable<string>, reader: () => Promise<Reader>): Promise<AddressBook> {
   const keys = [...new Set([...raws].map(addressKey))].filter(Boolean)
   if (!keys.length) return NO_ADDRESSES
-  const r = await reader()
-  return new Map(await Promise.all(keys.map(async (key) => [key, await splitOne(r, key)] as const)))
+  const reader = await readerFor(api)
+  return new Map(await Promise.all(keys.map(async (key) => [key, await splitOne(reader, key)] as const)))
 }
+
+/** 同梱の住所データを渡す URL（実在しない名前。この URL への fetch だけを手元の住所データで答える） */
+const BUNDLED_API = "https://japanese-addresses.bundled.invalid/api/ja"
 
 /**
- * 手元にある住所データ（ja.json の中身）で引く（サーバー用。Worker からは同梱の静的ファイルを URL で読めず、ライブラリも URL で読むため）。
- * 分け方（都道府県の読み方・政令市の区・都道府県の無い住所）は lookupAddresses と同じで、市区町村の照合だけを住所データの名前の前方一致にする
- * （郡は書いても省いてもよい。表記の揺れはヶ・ヵ → ケだけ畳む）。ライブラリと同じ結果になることをテストで確かめる
+ * 手元にある住所データ（ja.json の中身）で引く（サーバー用）。分け方は lookupAddresses と同じ（同じライブラリ・同じ splitOne）。
+ * Worker からは同梱の静的ファイルを URL で読めず、ライブラリは住所データを fetch で読むので、住所データの URL への fetch だけを
+ * 手元の住所データで答える（ほかの URL はそのままの fetch に渡す）
  */
 export function bundledAddressLookup(json: unknown): AddressLookup {
-  let reader: Reader | undefined
-  return (raws) =>
-    lookupWith(raws, async () => {
-      if (reader) return reader
-      const ja = jaSchema.parse(json)
-      return (reader = readerOf(ja, bundledNormalize(ja)))
-    })
+  serveBundled(json)
+  return (raws) => lookupAddresses(raws, BUNDLED_API)
 }
 
-/** 住所データの市区町村の名前で、都道府県の後ろを前方一致で読む（いちばん長く一致する名前。郡を省いた名前も読む） */
-function bundledNormalize(ja: z.infer<typeof jaSchema>): Normalize {
-  const byPref = new Map(
-    ja.data.map((p) => [
-      p.pref,
-      p.cities.flatMap((c) => {
-        const city = (c.county ?? "") + c.city + (c.ward ?? "")
-        const names = [city, ...(c.county ? [c.city] : [])]
-        return names.map((n) => ({ name: fold(n), city }))
-      }),
-    ]),
-  )
-  return async (input) => {
-    const pref = PREFECTURES.find((p) => input.startsWith(p))
-    if (!pref) return { level: 0 }
-    const rest = fold(input.slice(pref.length))
-    const hit = (byPref.get(pref) ?? []).filter((c) => rest.startsWith(c.name)).sort((a, b) => b.name.length - a.name.length)[0]
-    return hit ? { level: 2, pref, city: hit.city } : { level: 1, pref }
-  }
+const SERVED = Symbol.for("aoike.bundledAddresses")
+
+function serveBundled(json: unknown) {
+  const g = globalThis as typeof globalThis & { [SERVED]?: true }
+  if (g[SERVED]) return
+  g[SERVED] = true
+  const original = g.fetch.bind(g)
+  g.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url
+    if (!url.startsWith(BUNDLED_API)) return original(input, init)
+    // 市区町村の一覧（ja.json）だけを持つ。町字のデータ（level 3 以上）は同梱していないので、画面と同じく無いものとして答える
+    return Promise.resolve(url.split("?")[0] === `${BUNDLED_API}.json` ? Response.json(json) : new Response("", { status: 404 }))
+  }) as typeof fetch
 }
 
 /**
