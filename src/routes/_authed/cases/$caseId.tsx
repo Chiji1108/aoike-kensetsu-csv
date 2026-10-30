@@ -65,7 +65,7 @@ import type { UsdJpy } from "@/lib/fx"
 import { errorMessage } from "@/lib/errors"
 import { saveFile } from "@/lib/save-file"
 import { aiAnswerPrompt, collectInquiries, inquiryKey, mergeAnswers, outsideCells, readAnswers } from "@/lib/inquiry/inquiry"
-import { applyInquiryChanges, INQUIRY_TEXT_PROMPT } from "@/lib/inquiry/text"
+import { carryInquiryText, INQUIRY_TEXT_PROMPT } from "@/lib/inquiry/text"
 import { REVIEW_PROMPT } from "@/lib/chat/review"
 import { KOJI_KEIREKI, KOJI_PLAN_HINTS, type KojiFieldId } from "@/lib/spec/koji-keireki"
 import { cn } from "@/lib/utils"
@@ -142,6 +142,8 @@ const replanWork = (w: CaseWork, sourceFileId: string): CaseWork => ({
   sorted: w.sorted,
   threshold: w.threshold,
   reportAnswers: w.reportAnswers,
+  // 件名・前置きと項目と理由で選んだ質問は行に依らないので引き継ぐ（行の key で選んだものは前の元の行を指すので外す）
+  inquiryText: carryInquiryText(w.inquiryText),
   // 変更案は前の元の行を指すので閉じる（消さずに残す。消すと、サーバーの記録から開き直したときにまた足される）
   proposals: w.proposals.map(discard),
 })
@@ -659,7 +661,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
 
   /** 今の表（チャットと工事場所の調査に送る。大きいので送るときだけ作る） */
   function tableWire() {
-    return rows ? toWire({ rows, added, edits, replacements, manual, tax, basis, rule7Tax, selection: selectionMode, includeAtLeastYen: threshold, sorted }) : null
+    return rows ? toWire({ rows, added, edits, replacements, manual, tax, basis, rule7Tax, selection: selectionMode, includeAtLeastYen: threshold, sorted, dismissed, inquiryText: work.inquiryText }) : null
   }
 
   function chatRequest() {
@@ -727,13 +729,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
       if (!indices.length) return
       const edited = view?.edited ?? []
       setWork((w) => {
-        const texts = indices.flatMap((i) => {
-          const c = changes[i]!
-          return c.kind === "inquiry" || c.kind === "inquiryMail" ? [{ index: i, change: c }] : []
-        })
-        // 問い合わせの文面は表の変更ではないので、作業の文面に重ねる（取り消しの記録に入る）
-        const applied = applyChanges(w, edited, indices.map((i) => changes[i]!))
-        const overlaid = texts.length ? { ...applied, inquiryText: applyInquiryChanges(w.inquiryText, id, texts) } : applied
+        const overlaid = applyChanges(w, edited, indices.map((i) => changes[i]!))
         const replanned = nextPlan && indices.some((i) => changes[i]!.kind === "plan") && w.plan ? { ...overlaid, plan: { ...w.plan, plan: nextPlan }, converted: false } : overlaid
         const decided = { ...replanned, proposals: w.proposals.map((x) => (x.id === id ? decide(x, indices, "applied") : x)) }
         return withUndo(w, decided, id, indices, external)

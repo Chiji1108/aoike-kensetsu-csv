@@ -185,7 +185,7 @@ function previousPlanOf() {
 
 const tableOf = (rows: RowResult<KojiFieldId>[]): CaseTable => {
   const w = newWork()
-  return { rows, added: w.added, edits: w.edits, replacements: w.replacements, manual: w.manual, tax: w.tax, basis: w.basis, rule7Tax: w.rule7Tax, selection: w.selection, sorted: w.sorted }
+  return { rows, added: w.added, edits: w.edits, replacements: w.replacements, manual: w.manual, tax: w.tax, basis: w.basis, rule7Tax: w.rule7Tax, selection: w.selection, sorted: w.sorted, dismissed: w.dismissed, inquiryText: w.inquiryText }
 }
 
 /** 文字の2つ組の重なり（行の対応づけに使う。法人格と空白は除いて比べ、2文字に満たなければ 0） */
@@ -725,7 +725,7 @@ async function answersEval() {
  */
 async function inquiryEval() {
   const { collectInquiries, inquiryKey } = await import("../src/lib/inquiry/inquiry")
-  const { applyInquiryChanges, EMPTY_INQUIRY_TEXT, INQUIRY_TEXT_PROMPT, otherCustomerTest, questionGroups } = await import("../src/lib/inquiry/text")
+  const { INQUIRY_TEXT_PROMPT, otherCustomerTest, questionGroups } = await import("../src/lib/inquiry/text")
   const { reviewGuard } = await import("../src/lib/chat/review")
   const table = tableOf(base.rows)
   const view = deriveTable(table)
@@ -733,9 +733,8 @@ async function inquiryEval() {
   const others = [...new Set(Object.entries(CASES).flatMap(([id, c]) => (id === caseId || c.customerName === def!.customerName ? [] : [c.customerName])))]
   const t00 = Date.now()
   const run = await chatPhase({ turns: [INQUIRY_TEXT_PROMPT], table, plan: base.plan, customerItems: def!.customerRules.split("\n").map((t) => t.trim()).filter(Boolean), inquiry: { customerName: def!.customerName, otherCustomers: async () => others } })
-  const pending = run.log.flatMap((l) => l.pending)
-  const changes = pending.flatMap((c, index) => (c.kind === "inquiry" || c.kind === "inquiryMail" ? [{ index, change: c }] : []))
-  const text = applyInquiryChanges(EMPTY_INQUIRY_TEXT, "eval", changes)
+  // 変更案は画面の承認と同じく表に重ねてある（applyChanges が問い合わせの文面にも重ねる）
+  const text = run.table.inquiryText
   const { groups } = questionGroups(inquiries, text)
   const byAi = groups.filter((g) => g.by === "ai")
   const texts = [text.subject ?? "", text.intro ?? "", ...text.questions.map((q) => q.text)].filter(Boolean)

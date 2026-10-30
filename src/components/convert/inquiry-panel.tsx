@@ -4,14 +4,14 @@ import { Copy, FileDown, FileUp } from "lucide-react"
 import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import type { RowResult } from "@/lib/convert/convert"
 import { datedFileName } from "@/lib/convert/csv"
 import { withNames } from "@/lib/convert/persons"
 import { errorMessage } from "@/lib/errors"
 import { saveFile } from "@/lib/save-file"
-import { DEFAULT_INTRO, DEFAULT_SUBJECT, inquiryEmail } from "@/lib/inquiry/email"
+import { DEFAULT_INTRO, inquiryEmail } from "@/lib/inquiry/email"
+import { DraftText } from "./draft-text"
 import { editQuestion, groupCount, MAX_INTRO_LENGTH, MAX_QUESTION_LENGTH, MAX_SUBJECT_LENGTH, questionGroups, type InquiryText, type QuestionGroup } from "@/lib/inquiry/text"
 import {
   CASE_TOPICS,
@@ -160,23 +160,13 @@ export function InquiryPanel({
         <div className="grid gap-2" data-testid="inquiry-questions">
           <p className="text-sm font-semibold">質問の文</p>
           {groups.map((g) => (
-            <div key={`${g.id}\t${g.text}`} className="flex items-start gap-2" data-testid="inquiry-question" data-by={g.by} data-group={g.id}>
-              <Textarea
-                aria-label="質問の文"
-                className="min-h-0 text-sm"
-                rows={2}
-                maxLength={MAX_QUESTION_LENGTH}
-                defaultValue={g.text}
-                onBlur={(e) => {
-                  const v = e.target.value.trim()
-                  // 決まった文を空にしても決まった文のまま（欄にも戻す）
-                  if (!v && g.by === "fixed") e.target.value = g.text
-                  else if (v !== g.text) editGroup(g, v)
-                }}
-              />
+            <div key={g.id} className="flex items-start gap-2" data-testid="inquiry-question" data-by={g.by} data-group={g.id}>
+              {/* 空にすると AI・職員の文は消して決まった文に戻る（決まった文は決まった文のまま） */}
+              <DraftText multiline label="質問の文" maxLength={MAX_QUESTION_LENGTH} value={g.text} onCommit={(v) => editGroup(g, v)} />
               <div className="grid shrink-0 justify-items-end gap-1 pt-1 text-xs text-muted-foreground">
                 <span>{groupCount(g)}件</span>
                 <Badge variant="outline">{g.by === "ai" ? "AI" : g.by === "staff" ? "直した文" : "決まった文"}</Badge>
+                {g.aiBehind && <span data-testid="ai-behind">AI の文あり（空にすると使う）</span>}
               </div>
             </div>
           ))}
@@ -186,34 +176,9 @@ export function InquiryPanel({
       {active.length > 0 && (
         <div className="grid gap-3">
           <p className="text-sm font-semibold">メール</p>
-          <Input
-            key={`subject\t${text.subject}`}
-            aria-label="件名"
-            title="件名"
-            defaultValue={email.subject}
-            maxLength={MAX_SUBJECT_LENGTH}
-            onBlur={(e) => {
-              const v = e.target.value.trim()
-              if (!v && text.subject === null) e.target.value = DEFAULT_SUBJECT
-              else if (v !== email.subject) editMail("subject", v)
-            }}
-            data-testid="inquiry-subject"
-          />
-          <Textarea
-            key={`intro\t${text.intro}`}
-            aria-label="前置き"
-            title="前置き"
-            className="min-h-0 text-sm"
-            rows={2}
-            maxLength={MAX_INTRO_LENGTH}
-            defaultValue={text.intro ?? DEFAULT_INTRO}
-            onBlur={(e) => {
-              const v = e.target.value.trim()
-              if (!v && text.intro === null) e.target.value = DEFAULT_INTRO
-              else if (v !== (text.intro ?? DEFAULT_INTRO)) editMail("intro", v)
-            }}
-            data-testid="inquiry-intro"
-          />
+          {/* 空にすると決まった件名・前置きに戻る */}
+          <DraftText label="件名" maxLength={MAX_SUBJECT_LENGTH} value={email.subject} onCommit={(v) => editMail("subject", v)} testId="inquiry-subject" />
+          <DraftText multiline label="前置き" maxLength={MAX_INTRO_LENGTH} value={text.intro ?? DEFAULT_INTRO} onCommit={(v) => editMail("intro", v)} testId="inquiry-intro" />
           <div className="flex flex-wrap items-center gap-2">
             <Button variant="outline" onClick={() => void copy(email.subject, "件名")} data-testid="copy-subject">
               <Copy />
