@@ -10,7 +10,7 @@ import type { AnswerReport, CellInquiry } from "../inquiry/inquiry"
 import { proposalSchema, type Proposal } from "../chat/proposals"
 import { addedRowSchema, MAX_ADDED_ROWS, type AddedRow } from "./added"
 import { undoEntrySchema, type UndoEntry } from "./undo"
-import { basisSchema, cellEditSchema, fieldIdSchema, legacySelection, replacementsSchema, rule7TaxSchema, selectionSchema, taxSchema } from "../schemas"
+import { basisSchema, cellEditSchema, fieldIdSchema, legacySelection, replacementsSchema, roundingSchema, rule7TaxSchema, selectionSchema, taxSchema } from "../schemas"
 import type { KojiFieldId } from "../spec/koji-keireki"
 
 /**
@@ -127,7 +127,7 @@ export const savedWorkSchema = z
   selection: selectionSchema.optional(),
   /** 前の形（7割適用済み＝全行を載せる）。読むときに selection にそろえる */
   alreadyApplied: z.boolean().optional(),
-  rounding: z.enum(["floor", "round"]),
+  rounding: roundingSchema,
   sorted: z.boolean(),
   threshold: z.object({ on: z.boolean(), yen: z.string() }),
   proposals: z.array(proposalSchema).default([]),

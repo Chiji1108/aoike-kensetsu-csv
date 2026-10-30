@@ -20,6 +20,9 @@ function shownValue(stored: string, letters: PersonLetters) {
 /** 変更案の1項目を画面に出す形。where はどこを、from・to は今と承認したあと。values なら from・to はセルの値（文字の差分を色分けする） */
 export type ChangeLine = { where: string; what: string; from: string; to: string; values?: true; links?: string[] }
 
+/** 顧客の回答から読んだ変更（record_answers）は、項目の名前に添えて分かるようにする */
+const BY_NOTE: Partial<Record<Extract<ChatChange, { kind: "cell" }>["edit"]["by"], string>> = { customer: "（顧客の回答）", confirmed: "（顧客が確認）" }
+
 /** plan は今の計画（列の対応の変更案を「今 → 案」で出す） */
 export function describeChange(c: ChatChange, view: TableView, byKey: ReadonlyMap<string, TableView["shown"][number]>, plan?: MappingPlan<KojiFieldId> | null): ChangeLine {
   const rowName = (key: string) => {
@@ -28,7 +31,7 @@ export function describeChange(c: ChatChange, view: TableView, byKey: ReadonlyMa
   }
   switch (c.kind) {
     case "cell":
-      return { where: rowName(c.rowKey), what: fieldLabel.get(c.field) ?? c.field, from: byKey.get(c.rowKey)?.cells[c.field].value ?? "", to: shownValue(c.edit.value, view.letters), values: true }
+      return { where: rowName(c.rowKey), what: `${fieldLabel.get(c.field) ?? c.field}${BY_NOTE[c.edit.by] ?? ""}`, from: byKey.get(c.rowKey)?.cells[c.field].value ?? "", to: shownValue(c.edit.value, view.letters), values: true }
     case "ask":
       return { where: rowName(c.rowKey), what: fieldLabel.get(c.field) ?? c.field, from: byKey.get(c.rowKey)?.cells[c.field].value ?? "", to: `顧客に確認: ${c.reason}` }
     case "add": {

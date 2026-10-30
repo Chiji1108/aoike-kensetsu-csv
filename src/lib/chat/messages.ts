@@ -1,3 +1,4 @@
+import type { Rounding } from "../convert/transforms"
 import type { UIMessage } from "ai"
 import { z } from "zod"
 import { chatChangeSchema, proposalSchema, type ChatChange, type Proposal } from "./proposals"
@@ -74,6 +75,8 @@ export type ChatRequest = {
   sourceFileId: string | null
   /** 今の列の対応と計画の元のシートの大きさ（set_plan の確かめ） */
   plan: { plan: MappingPlan<KojiFieldId>; shape: SheetShape } | null
+  /** 金額の千円未満の扱い（顧客の回答を値にするときの変換の設定） */
+  rounding: Rounding
   /** 去年の案件のコードを参考に添える（「去年のやり方で直す」） */
   carryover?: boolean
   /** 去年の元の Excel の配置技術者の列の値（去年のコードから個人名を消すのに使う） */

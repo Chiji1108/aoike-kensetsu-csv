@@ -3,7 +3,7 @@ import Anthropic, { toFile } from "@anthropic-ai/sdk"
 import { createUIMessageStream, createUIMessageStreamResponse, generateId, toUIMessageStream, type ModelMessage, type UserModelMessage } from "ai"
 import { z } from "zod"
 import { getDb } from "@/db"
-import { containerName, contentTypeOf, type Case } from "@/lib/cases/types"
+import { containerName, contentTypeOf, type Case, type FileKind } from "@/lib/cases/types"
 import { fromWire, caseTableWireSchema } from "@/lib/chat/wire"
 import { ENDED_TEXT, type ChatHistory, type ChatMessage, type ChatMetadata } from "@/lib/chat/messages"
 import { approvedChatProposals, carryoverPrompt, cleanCarryoverCodes, codesFromUi, knownWords, namesForCarryover, type Carryover } from "@/lib/chat/carryover"
@@ -11,6 +11,7 @@ import { tryParseJson } from "@/lib/json"
 import { savedAiCacheSchema, savedWorkSchema } from "@/lib/cases/state"
 import { mappingPlanSchema } from "@/lib/convert/plan-schema"
 import { sheetShapeSchema } from "@/lib/convert/plan-patch"
+import { roundingSchema } from "@/lib/schemas"
 import { newProposal, proposalKey, proposalPrefix, proposalRecordSchema, type ProposalRecord } from "@/lib/chat/proposals"
 import { newTurnState, startTurn, systemPrompt, type ContainerFile, type TurnStep } from "@/lib/chat/turn"
 import { tokensOfAiSdk, usdOf } from "@/lib/cost"
@@ -37,7 +38,7 @@ import { finishTurn, watchStop } from "./turn-close"
 import { searchLocation } from "./location"
 import { locateOne } from "./location-run"
 import * as loc from "./location-store"
-import { serverPlaceIndex } from "./place-index"
+import { serverAddressLookup, serverPlaceIndex } from "./place-index"
 import { personalChecker } from "./location-guard"
 import { guardPersonal, type Site } from "@/lib/location/sites"
 
@@ -50,6 +51,8 @@ const requestSchema = z.object({
   sourceFileId: z.string().max(64).nullable(),
   /** 今の列の対応と計画の元のシートの大きさ（チャットの set_plan の確かめ。変換の元の表が無い案件は null） */
   plan: z.object({ plan: mappingPlanSchema, shape: sheetShapeSchema }).nullable().default(null),
+  /** 金額の千円未満の扱い（顧客の回答を値にするときの変換の設定。この項目より前の画面は送らないので切り捨て＝新しい案件の初期値） */
+  rounding: roundingSchema.default("floor"),
   carryover: z.boolean().optional(),
   /** 去年の元の Excel の配置技術者の列の値（画面が去年の Excel から読む。去年のコードの個人名を消すのに使う） */
   // 値の長さでは断らない（長い値は名前にしないだけ。lib/chat/carryover.ts の collectNames）
@@ -57,6 +60,9 @@ const requestSchema = z.object({
   /** 去年と今年の元の Excel の見出し（去年のコードの文字列のうち、見出しの名前は伏せずに残す） */
   carryoverHeaders: z.array(z.string()).max(2_000).optional(),
 })
+
+/** AI のコンテナに渡す案件のファイルの種類（届いたファイルと、返ってきた記入用Excel。顧客の回答を AI が読む） */
+const CONTAINER_KINDS: ReadonlySet<FileKind> = new Set(["source", "answer"])
 
 /** 止める印を見に行く間隔 */
 const STOP_POLL_MS = 1_000
@@ -142,12 +148,12 @@ async function runTurn(request: Request, caseId: string): Promise<Response> {
   const carryText = carryover && carryoverPrompt(carryover)
   const containerLive = startSession.container !== null && Date.parse(startSession.container.expiresAt) > Date.now() + CONTAINER_MARGIN_MS
 
-  // 案件の届いたファイルをコンテナに渡す。まだ上げていないものは Files API に上げ、上げるたびに記録する（途中で失敗しても、会話を終えるときに消せる）。
+  // 案件の届いたファイルと返ってきた記入用Excelをコンテナに渡す。まだ上げていないものは Files API に上げ、上げるたびに記録する（途中で失敗しても、会話を終えるときに消せる）。
   // コンテナが新しくなるときは全部を付け直す
   let session = startSession
   const added: ChatSession["files"] = []
   try {
-    for (const f of files.filter((f) => f.kind === "source")) {
+    for (const f of files.filter((f) => CONTAINER_KINDS.has(f.kind))) {
       if (session.files.some((s) => s.caseFileId === f.id)) continue
       const row = await store.getFileRow(db, f.id)
       const object = row && (await env.FILES.get(row.r2Key))
@@ -188,7 +194,8 @@ async function runTurn(request: Request, caseId: string): Promise<Response> {
     ],
   }
   const userUi: ChatMessage = { id: body.id, role: "user", parts: [{ type: "text", text: body.text }] }
-  const containerFiles: ContainerFile[] = session.files.map((f) => ({ name: f.name, original: f.original, isSource: f.caseFileId === body.sourceFileId }))
+  const answerFiles = new Set(files.filter((f) => f.kind === "answer").map((f) => f.id))
+  const containerFiles: ContainerFile[] = session.files.map((f) => ({ name: f.name, original: f.original, isSource: f.caseFileId === body.sourceFileId, ...(answerFiles.has(f.caseFileId) ? { answer: true as const } : {}) }))
   const system = systemPrompt({ ...rules, customerName: customer?.name ?? "" }, body.context, containerFiles, body.table.rule7Tax)
   // 止める: 画面の「止める」（止める印を R2 に置く）か、タブを閉じた（request.signal。本番の enable_request_signal）で AI の呼び出しを止める（工事場所の検索も）
   const abort = new AbortController()
@@ -217,6 +224,7 @@ async function runTurn(request: Request, caseId: string): Promise<Response> {
       guard,
     },
     body.plan,
+    { lookup: serverAddressLookup, rounding: body.rounding },
   )
   /** 履歴・作ったファイル・費用を書き終えたら resolve する。印がまだ自分のもの（画面の会話を書いて下ろしてよい）なら true */
   const recorded = Promise.withResolvers<boolean>()
