@@ -1,6 +1,7 @@
 import type { CsvSpec } from "../spec/types"
 import { columnCount, planColumns, type FieldPlan, type FlagColumn, type MappingPlan, type SheetGrid } from "./plan"
-import { isSkippableRow, lastNonBlankRow, rowIsBlank } from "./sources"
+import { MAX_EXCERPT_SHEETS, type PlanSheet } from "./prompt"
+import { isSkippableRow, lastNonBlankRow, rowIsBlank, sameHeader } from "./sources"
 import { matchKey } from "./text"
 import { isFlagOn, type TransformId } from "./transforms"
 
@@ -71,6 +72,41 @@ export function primarySheet<F extends string>(spec: CsvSpec<F>, hints: PlanHint
     if (!best || fields > best.fields || (fields === best.fields && rows > best.rows)) best = { sheet, fields, rows }
   }
   return best?.sheet
+}
+
+/** 工事の一覧の候補として詳しく送るシートの数（見出しが工事の項目にあてはまる数の多い順） */
+const DETAIL_SHEETS = 3
+
+/**
+ * 計画の AI に送るシートと詳しさ（prompt.ts の planExcerpt に渡す）。どのシートを使うかは AI が決め、ここは送る量を決めるだけ。
+ * - 職員の指定があれば、そのシートと見出しが同じシートだけを、詳しく送る（指定のシートは必ず先頭）。
+ * - 無ければ全部のシート（MAX_EXCERPT_SHEETS 枚まで）。見出しのあてはまりの多いシートを DETAIL_SHEETS 枚まで詳しく、ほかは要約だけ
+ *   （関係ないシートが多くても、工事の一覧の見出しが抜粋から消えないように）。
+ * 見出しの行は見出しからの推定（要約の行・シートの重なりの比べ方に使う）
+ */
+export function planSheets<F extends string>(spec: CsvSpec<F>, hints: PlanHints<F>, workbook: readonly SheetGrid[], requiredSheet?: string): { sheets: PlanSheet[]; required?: number } {
+  const all = workbook.map((grid, index) => {
+    const m = headerMatch(spec, hints, grid)
+    return { index, grid, headerRow: m.headerRow, fields: m.fields, rows: grid.rows.filter((r) => !rowIsBlank(r)).length }
+  })
+  const required = all.find((s) => s.grid.name === requiredSheet)
+  if (required) {
+    const same = all.filter((s) => s !== required && s.rows > 0 && sameHeader(s.grid, required.grid, required.headerRow))
+    const sheets = [required, ...same].slice(0, MAX_EXCERPT_SHEETS).map(({ index, grid }) => ({ index, grid, headerRow: required.headerRow, detail: true }))
+    return { sheets, required: required.index }
+  }
+  const detail = new Set(
+    all
+      .filter((s) => s.rows > 0)
+      .sort((a, b) => b.fields - a.fields || b.rows - a.rows)
+      .slice(0, DETAIL_SHEETS)
+      .map((s) => s.index),
+  )
+  const others = all.filter((s) => !detail.has(s.index)).slice(0, Math.max(0, MAX_EXCERPT_SHEETS - detail.size))
+  const sheets = all
+    .filter((s) => detail.has(s.index) || others.includes(s))
+    .map(({ index, grid, headerRow }) => ({ index, grid, headerRow, detail: detail.has(index) }))
+  return { sheets }
 }
 
 /**

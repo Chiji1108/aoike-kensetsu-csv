@@ -2,6 +2,7 @@ import { z } from "zod"
 import { CODE_SETS } from "../spec/code-sets"
 import type { CsvSpec } from "../spec/types"
 import type { ValueType } from "../spec/types"
+import type { PlanExcerpt } from "./prompt"
 import { copiedFrom, rowIsBlank, sameHeader } from "./sources"
 import { TRANSFORM_IDS, getTransform, preferredTransform, transformFits, type TransformId } from "./transforms"
 
@@ -77,9 +78,10 @@ const fieldPlanWire = z.discriminatedUnion("kind", [
 
 export function mappingPlanWireSchema<F extends string>(spec: CsvSpec<F>) {
   const fields: Record<string, typeof fieldPlanWire> = Object.fromEntries(spec.fields.map((f) => [f.id, fieldPlanWire]))
-  // シートを先に決めさせる（見出し行・列番号はそのシートのもの）。シートの名前は enum にしない（スキーマを毎回同じにしてキャッシュを効かせる。名前は acceptAiPlan で確かめる）
+  // シートを先に決めさせる（見出し行・列番号はそのシートのもの）。シートは抜粋で振った番号で返させる（名前の書き間違いで計画が壊れないように）。
+  // 番号は enum にしない（スキーマを毎回同じにしてキャッシュを効かせる。番号は acceptAiPlan で確かめる）
   return z.object({
-    sheets: z.array(z.string()),
+    sheets: z.array(z.number().int()),
     sheetReason: z.string(),
     headerRow: z.number().int(),
     dataStart: z.number().int(),
@@ -94,7 +96,7 @@ export function mappingPlanWireSchema<F extends string>(spec: CsvSpec<F>) {
 
 /**
  * AI の計画を検証して取り込む。
- * - 計画の元のシート（sheets の先頭）がブックに無い・空・職員の指定と違うときは、列の番号の意味が分からないので計画全体を使わない（ok: false）。
+ * - シートは抜粋で振った番号で受け取る。計画の元のシート（sheets の先頭）が送ったシートに無い・空・職員の指定と違うときは、列の番号の意味が分からないので計画全体を使わない（ok: false）。
  * - 2枚目以降のシートは、無い・空・重複・見出しが計画の元と違うものを外す。
  * - 行・列の範囲外、項目の型に合わない変換は、選んだシートについて見出しから推定した計画（fallbackFor）の値に戻す。
  * 直したことは notes に残す。
@@ -102,19 +104,22 @@ export function mappingPlanWireSchema<F extends string>(spec: CsvSpec<F>) {
 export function acceptAiPlan<F extends string>(
   spec: CsvSpec<F>,
   workbook: readonly SheetGrid[],
+  excerpt: Pick<PlanExcerpt, "sheets" | "requiredSheet">,
   json: unknown,
   fallbackFor: (grid: SheetGrid) => MappingPlan<F>,
-  requiredSheet?: string,
 ): { ok: true; plan: MappingPlan<F> } | { ok: false; message: string } {
   const parsed = mappingPlanWireSchema(spec).safeParse(json)
   if (!parsed.success) return { ok: false, message: "AI の計画の形式が正しくありません" }
   const wire = parsed.data
-  const [primaryName, ...extraNames] = wire.sheets
-  if (primaryName === undefined) return { ok: false, message: "AI の計画に使うシートがありません" }
-  const grid = workbook.find((s) => s.name === primaryName)
-  if (!grid) return { ok: false, message: `AI が選んだシート「${primaryName}」がファイルにありません` }
-  if (grid.rows.every(rowIsBlank)) return { ok: false, message: `AI が選んだシート「${primaryName}」は空です` }
-  if (requiredSheet !== undefined && primaryName !== requiredSheet) return { ok: false, message: `AI が指定のシート「${requiredSheet}」でなく「${primaryName}」を選びました` }
+  // AI が見たシート（抜粋に入れたシート）だけを使える
+  const sent = (i: number) => (excerpt.sheets.some((s) => s.index === i) ? workbook[i] : undefined)
+  const [primaryIndex, ...extraIndexes] = wire.sheets
+  if (primaryIndex === undefined) return { ok: false, message: "AI の計画に使うシートがありません" }
+  const grid = sent(primaryIndex)
+  if (!grid) return { ok: false, message: `AI が選んだシート（番号 ${primaryIndex}）は送ったシートにありません` }
+  if (grid.rows.every(rowIsBlank)) return { ok: false, message: `AI が選んだシート「${grid.name}」は空です` }
+  const required = excerpt.requiredSheet === undefined ? undefined : workbook[excerpt.requiredSheet]
+  if (required && grid !== required) return { ok: false, message: `AI が指定のシート「${required.name}」でなく「${grid.name}」を選びました` }
   const fallback = fallbackFor(grid)
   const nRows = grid.rows.length
   const nCols = columnCount(grid)
@@ -134,10 +139,11 @@ export function acceptAiPlan<F extends string>(
     const copy = copiedFrom(s, sheets.map((n) => workbook.find((x) => x.name === n)!), headerRow)
     return copy ? `データの行の${Math.floor(copy.ratio * 100)}%が「${copy.sheet}」にもある写しの` : undefined
   }
-  for (const name of extraNames) {
-    const s = workbook.find((x) => x.name === name)
+  for (const i of extraIndexes) {
+    const s = sent(i)
+    const name = s?.name ?? `番号 ${i}`
     const reason = !s
-      ? "ファイルに無い"
+      ? "送ったシートに無い"
       : sheets.includes(name)
         ? undefined
         : s.rows.every(rowIsBlank)

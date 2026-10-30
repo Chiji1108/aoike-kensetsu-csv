@@ -1,3 +1,4 @@
+import { z } from "zod"
 import { CODE_SETS } from "../spec/code-sets"
 import { lastNonBlankRow, rowIsBlank, sheetOverlaps } from "./sources"
 import type { CsvSpec, ValueType } from "../spec/types"
@@ -64,7 +65,7 @@ rule.joinWorkName は複数の列（現場名１・現場名２など）を区�
 ai.inferPrefecture / ai.inferPlace は columns に [工事名の列…, 注文者の列] を渡すと、AI が工事場所を推定する。都道府県・場所名が元データに無い（列が無い・列が空）ときだけ使う。
 
 ## 列の計画を作るとき
-- ブックの全部のシートの抜粋を渡す。まず工事の一覧（工事ごとに1行）のシートを選び、sheets の先頭に名前を書く。顧客一覧・技術者の一覧・集計・メモなど工事の一覧でないシートは、行が多くても選ばない。
+- ブックのシートの抜粋を渡す（工事の一覧の候補でないシートは要約だけ）。まず工事の一覧（工事ごとに1行）のシートを選び、sheets の先頭にそのシートの番号（「### シート n」の n）を書く。シートは名前でなく番号で返す。顧客一覧・技術者の一覧・集計・メモなど工事の一覧でないシートは、行が多くても選ばない。
 - 工事が同じ見出し（同じ行に同じ並びの見出し）の複数のシートに分かれている（年度ごと・部署ごとなど）ときだけ、2枚目以降を sheets に足す。ほかのシートの写し（行の内容のほとんどが別のシートにもある、業種ごとにフィルタをかけたシートなど）は足さない。
 - sheetReason に、そのシートを選んだ理由を職員向けに短く書く（他のシートを選ばなかった理由も、あれば）。
 - 見出し行・データの行・列番号は、すべて sheets の先頭のシートのもの。
@@ -93,32 +94,40 @@ function tsvRows(rows: { index: number; cells: string[] }[]) {
 
 /** 計画の AI に渡す1枚のシートの抜粋 */
 export type SheetExcerpt = {
+  /** ブックの中のシートの番号（0 から）。AI はシートを名前でなくこの番号で返す（名前の書き間違いで計画が壊れないように） */
+  index: number
   name: string
   rowCount: number
   columnCount: number
   hiddenCount: number
-  /** 先頭と末尾の行（重複なし）。抜粋の大きさの上限に合わせて、シートが多いと減らす */
+  /** 要約だけ（見出しらしい行と数行。列ごとの値の例は無い）。工事の一覧の候補でないシート */
+  summary: boolean
+  /** 抜粋の行（重複なし。左から MAX_EXCERPT_COLUMNS 列まで）。詳しいシートは先頭と末尾、要約は先頭と見出しらしい行のまわり */
   rows: { index: number; cells: string[] }[]
-  /** 列ごとの空でない行数と値の例（先頭・末尾だけでは分からない、ほとんど空の列や記号の列のため） */
+  /** 列ごとの空でない行数と値の例（先頭・末尾だけでは分からない、ほとんど空の列や記号の列のため。要約には無い） */
   columns: { index: number; filled: number; examples: string[] }[]
-  /** 行の内容がいちばん多く重なる別のシートと、その割合（%。sheetOverlaps。フィルタをかけた写しを見分ける） */
+  /** データの行がいちばん多く重なる別のシートと、その割合（%。sheetOverlaps。フィルタをかけた写しを見分ける） */
   overlap?: { sheet: string; percent: number }
 }
 
 /** 計画の AI に渡すブックの抜粋 */
 export type PlanExcerpt = {
+  /** ブックの全シート数（送らなかったシートも数える） */
+  sheetCount: number
   sheets: SheetExcerpt[]
-  /** 職員が計画の元に指定したシート（無ければ AI が選ぶ） */
-  requiredSheet?: string
+  /** 職員が計画の元に指定したシートの番号（無ければ AI が選ぶ。指定があれば、そのシートと見出しが同じシートだけを送る） */
+  requiredSheet?: number
   /** 同じ顧客の去年の列の対応と、去年の Excel との違い（previousPlanContext。参考） */
   previous?: string
 }
 
 function sheetSection(s: SheetExcerpt) {
-  const head = `### シート「${s.name}」（全${s.rowCount}行・${s.columnCount}列、うち非表示${s.hiddenCount}行）${
-    s.overlap ? `\n行の内容の${s.overlap.percent}%はシート「${s.overlap.sheet}」にもある。` : ""
+  const cut = s.columnCount > MAX_EXCERPT_COLUMNS ? `${MAX_EXCERPT_COLUMNS + 1}列目から右は省いた。` : ""
+  const head = `### シート ${s.index}「${s.name}」（全${s.rowCount}行・${s.columnCount}列、うち非表示${s.hiddenCount}行）${s.summary ? "要約: 先頭と見出しらしい行のまわりだけ。" : ""}${cut}${
+    s.overlap ? `\nデータの行の${s.overlap.percent}%はシート「${s.overlap.sheet}」にもある。` : ""
   }`
   if (!s.rows.length) return `${head}\n（空のシート）`
+  if (s.summary) return `${head}\n\n${tsvRows(s.rows)}`
   const columns = s.columns.map((c) => `${c.index}(${columnLetter(c.index)}): ${c.filled}行 ${JSON.stringify(c.examples)}`).join("\n")
   return `${head}
 
@@ -129,10 +138,11 @@ ${columns}`
 }
 
 export function planUserMessage(excerpt: PlanExcerpt) {
-  const ask = excerpt.requiredSheet
-    ? `職員がシート「${excerpt.requiredSheet}」を計画の元に指定しました。sheets の先頭はこのシートにし、このシートの列の計画を作ってください。`
-    : "工事の一覧のシートを選び、そのシートの列の計画を作ってください。"
-  return `ブックの全${excerpt.sheets.length}枚のシートの先頭と末尾です。${ask}
+  const required = excerpt.sheets.find((s) => s.index === excerpt.requiredSheet)
+  const intro = required
+    ? `職員がシート ${required.index}「${required.name}」を計画の元に指定しました。送るのはこのシートと、見出しが同じシートだけです。sheets の先頭は ${required.index} にし、このシートの列の計画を作ってください。`
+    : `ブックの全${excerpt.sheetCount}枚のシートです${excerpt.sheets.length < excerpt.sheetCount ? `（うち${excerpt.sheets.length}枚を送る）` : ""}。工事の一覧のシートを選び、そのシートの列の計画を作ってください。`
+  return `${intro}
 
 ${excerpt.sheets.map(sheetSection).join("\n\n")}${excerpt.previous ? `\n\n${excerpt.previous}` : ""}`
 }
@@ -179,56 +189,103 @@ ${JSON.stringify(req.items)}`
 }
 
 const MAX_EXAMPLES = 6
-/** 抜粋に入れるシートの数・セルの数の上限（シートの多いブックでも計画の指示が大きくなりすぎないように） */
+/** 抜粋に入れるシートの数（指定のシート・工事の一覧の候補は必ず入れる） */
 export const MAX_EXCERPT_SHEETS = 30
-export const MAX_EXCERPT_CELLS = 10_000
+/** 1行に入れる列の数（右は省く。列の多いシートがあっても抜粋が大きくなりすぎず、サーバーの入力の検証で落ちないように） */
+export const MAX_EXCERPT_COLUMNS = 100
+/** 詳しいシートのセルの合計の上限（超えるときは、詳しいシートの行を同じ割合で減らす） */
+const MAX_DETAIL_CELLS = 12_000
 const HEAD = 30
 const TAIL = 10
-/** シートが多くて行を減らすときも、これだけは残す */
+/** 行を減らすときも、これだけは残す */
 const MIN_HEAD = 8
 const MIN_TAIL = 3
+/** 要約のシートの行と列の数 */
+const SUMMARY_ROWS = 6
+const SUMMARY_COLUMNS = 30
+/** 抜粋のセルの合計の上限（サーバーの入力の検証と同じ） */
+export const MAX_EXCERPT_CELLS = MAX_DETAIL_CELLS + MAX_EXCERPT_SHEETS * SUMMARY_ROWS * SUMMARY_COLUMNS
 
-/** 1枚のシートの抜粋: 先頭 head 行・最後の空でない行までの末尾 tail 行（重複なし）と、列ごとの値の例 */
-function sheetExcerpt(grid: SheetGrid, head: number, tail: number, overlap?: { sheet: string; ratio: number }): SheetExcerpt {
+/** 計画の AI に送るシート。headerRow は見出しからの推定（要約の行・重なりの比べ方に使う）、detail は詳しく送るか（heuristic-plan.ts の planSheets） */
+export type PlanSheet = { index: number; grid: SheetGrid; headerRow: number; detail: boolean }
+
+const rowOf = (grid: SheetGrid, i: number, width: number) => ({ index: i, cells: grid.rows[i]!.slice(0, width).map((c) => c.slice(0, 200)) })
+
+function detailExcerpt(grid: SheetGrid, head: number, tail: number) {
   const n = grid.rows.length
   // 書式だけの空行がシートの後ろに続いても、表の後ろの注記が AI に見えるように、末尾は最後の空でない行から数える
-  const last = n ? lastNonBlankRow(grid) + 1 : 0
+  const last = lastNonBlankRow(grid) + 1
   const idx = [...new Set([...Array.from({ length: Math.min(head, n) }, (_, i) => i), ...Array.from({ length: Math.min(tail, last) }, (_, i) => last - Math.min(tail, last) + i)])]
-  const width = columnCount(grid)
-  const empty = grid.rows.every(rowIsBlank)
   return {
-    name: grid.name,
-    rowCount: n,
-    columnCount: width,
-    hiddenCount: grid.hidden.filter(Boolean).length,
-    rows: empty ? [] : idx.map((i) => ({ index: i, cells: grid.rows[i]!.map((c) => c.slice(0, 200)) })),
-    columns: empty
-      ? []
-      : Array.from({ length: width }, (_, c) => {
-          const values = grid.rows.map((r) => r[c]?.trim() ?? "").filter(Boolean)
-          return { index: c, filled: values.length, examples: [...new Set(values.slice(1))].slice(0, MAX_EXAMPLES).map((v) => v.slice(0, 40)) }
-        }),
-    ...(overlap ? { overlap: { sheet: overlap.sheet, percent: Math.floor(overlap.ratio * 100) } } : {}),
+    rows: idx.map((i) => rowOf(grid, i, MAX_EXCERPT_COLUMNS)),
+    columns: Array.from({ length: Math.min(columnCount(grid), MAX_EXCERPT_COLUMNS) }, (_, c) => {
+      const values = grid.rows.map((r) => r[c]?.trim() ?? "").filter(Boolean)
+      return { index: c, filled: values.length, examples: [...new Set(values.slice(1))].slice(0, MAX_EXAMPLES).map((v) => v.slice(0, 40)) }
+    }),
   }
 }
 
+/** 要約: 先頭2行と、見出しらしい行から3行（空行を除いて SUMMARY_ROWS 行まで） */
+function summaryRows(grid: SheetGrid, headerRow: number) {
+  const idx = [...new Set([0, 1, headerRow, headerRow + 1, headerRow + 2, headerRow + 3])].filter((i) => i < grid.rows.length && !rowIsBlank(grid.rows[i]))
+  return idx.slice(0, SUMMARY_ROWS).map((i) => rowOf(grid, i, SUMMARY_COLUMNS))
+}
+
 /**
- * 計画の AI に送るブックの抜粋。全部のシート（MAX_EXCERPT_SHEETS 枚まで）の先頭30行・末尾10行と列ごとの値の例。
- * セルの合計が MAX_EXCERPT_CELLS を超えるときは、どのシートも同じ割合で行を減らす（どのシートが工事の一覧かは AI が決めるので、シートで差をつけない）
+ * 計画の AI に送るブックの抜粋。詳しいシート（工事の一覧の候補・職員の指定）は先頭30行・末尾10行と列ごとの値の例、
+ * ほかのシートは名前・行数と見出しらしい行のまわりだけ。詳しいシートのセルが多いときは、詳しいシートの行を同じ割合で減らす
  */
-export function planExcerpt(sheets: readonly SheetGrid[], headerRowOf: (grid: SheetGrid) => number, requiredSheet?: string): PlanExcerpt {
-  const listed = sheets.slice(0, MAX_EXCERPT_SHEETS)
-  // 重なりはデータの行だけで比べる（見出しの行は見出しからの推定）
-  const overlaps = sheetOverlaps(listed.map((grid) => ({ grid, headerRow: headerRowOf(grid) })))
-  const cells = (head: number, tail: number) => listed.reduce((sum, g) => sum + Math.min(g.rows.length, head + tail) * columnCount(g), 0)
-  const scale = Math.min(1, MAX_EXCERPT_CELLS / Math.max(1, cells(HEAD, TAIL)))
+export function planExcerpt(sheetCount: number, sheets: readonly PlanSheet[], requiredSheet?: number): PlanExcerpt {
+  const overlaps = sheetOverlaps(sheets)
+  const detailed = sheets.filter((s) => s.detail && !s.grid.rows.every(rowIsBlank))
+  const width = (g: SheetGrid) => Math.min(columnCount(g), MAX_EXCERPT_COLUMNS)
+  const cells = (head: number, tail: number) => detailed.reduce((sum, s) => sum + Math.min(s.grid.rows.length, head + tail) * width(s.grid), 0)
+  const scale = Math.min(1, MAX_DETAIL_CELLS / Math.max(1, cells(HEAD, TAIL)))
   let head = Math.max(MIN_HEAD, Math.floor(HEAD * scale))
   let tail = Math.max(MIN_TAIL, Math.floor(TAIL * scale))
   // 下限の行でも上限を超える（列の多いシートがたくさんある）ときは、先頭だけ減らす
-  while (head > 1 && cells(head, tail) > MAX_EXCERPT_CELLS) head--
-  if (cells(head, tail) > MAX_EXCERPT_CELLS) tail = 0
+  while (head > 1 && cells(head, tail) > MAX_DETAIL_CELLS) head--
+  if (cells(head, tail) > MAX_DETAIL_CELLS) tail = 0
   return {
-    sheets: listed.map((g) => sheetExcerpt(g, head, tail, overlaps.get(g.name))),
-    ...(requiredSheet ? { requiredSheet } : {}),
+    sheetCount,
+    sheets: sheets.map(({ index, grid, headerRow, detail }) => {
+      const empty = grid.rows.every(rowIsBlank)
+      const overlap = overlaps.get(grid.name)
+      return {
+        index,
+        name: grid.name,
+        rowCount: grid.rows.length,
+        columnCount: columnCount(grid),
+        hiddenCount: grid.hidden.filter(Boolean).length,
+        summary: !detail,
+        ...(empty ? { rows: [], columns: [] } : detail ? detailExcerpt(grid, head, tail) : { rows: summaryRows(grid, headerRow), columns: [] }),
+        ...(overlap ? { overlap: { sheet: overlap.sheet, percent: Math.floor(overlap.ratio * 100) } } : {}),
+      }
+    }),
+    ...(requiredSheet !== undefined ? { requiredSheet } : {}),
   }
+}
+
+const excerptCell = z.string().max(200)
+/** サーバー関数が受け取る抜粋の検証（planExcerpt が作る形と上限。抜粋の側で上限に収めるので、どのブックでもここで落ちない） */
+export const planExcerptShape = {
+  sheetCount: z.number().int().min(1),
+  sheets: z
+    .array(
+      z.object({
+        index: z.number().int().min(0),
+        name: z.string().max(100),
+        rowCount: z.number().int().min(0),
+        columnCount: z.number().int().min(0),
+        hiddenCount: z.number().int().min(0),
+        summary: z.boolean(),
+        rows: z.array(z.object({ index: z.number().int().min(0), cells: z.array(excerptCell).max(MAX_EXCERPT_COLUMNS) })).max(HEAD + TAIL),
+        columns: z.array(z.object({ index: z.number().int().min(0), filled: z.number().int().min(0), examples: z.array(z.string().max(40)).max(MAX_EXAMPLES) })).max(MAX_EXCERPT_COLUMNS),
+        overlap: z.object({ sheet: z.string().max(100), percent: z.number().int().min(0).max(100) }).optional(),
+      }),
+    )
+    .min(1)
+    .max(MAX_EXCERPT_SHEETS)
+    .refine((sheets) => sheets.reduce((n, s) => n + s.rows.reduce((m, r) => m + r.cells.length, 0), 0) <= MAX_EXCERPT_CELLS, "抜粋が大きすぎます"),
+  requiredSheet: z.number().int().min(0).optional(),
 }
