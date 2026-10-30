@@ -1,6 +1,6 @@
 import { OFFICE_NAME } from "../constants"
 import { QUESTION_HEADER, type InquirySheet } from "./inquiry"
-import type { InquiryText, QuestionGroup } from "./text"
+import { groupCount, type InquiryText, type QuestionGroup } from "./text"
 
 /** 宛名の差し込み位置（職員が書き換える） */
 export const ADDRESSEE_PLACEHOLDER = "〇〇〇〇"
@@ -21,10 +21,7 @@ export function inquiryEmail(groups: readonly QuestionGroup[], sheet: InquiryShe
   const cases = groups.filter((g) => g.inquiries.some((q) => q.kind === "case"))
   cases.forEach((g, i) => sections.push(`${i + 1}. ${g.text}`))
   if (sheet.askCount > 0) {
-    const cells = groups.flatMap((g) => {
-      const rows = new Set(g.inquiries.flatMap((q) => (q.kind === "cell" ? [q.rowKey] : [])))
-      return rows.size ? [`　・${g.text}（${rows.size}件）`] : []
-    })
+    const cells = groups.flatMap((g) => (g.inquiries.some((q) => q.kind === "cell") ? [`　・${g.text}（${groupCount(g)}件）`] : []))
     sections.push(
       [
         `${cases.length + 1}. 添付のExcelの色付きの欄にご記入ください（${sheet.askCount}件）。行ごとの質問は「${QUESTION_HEADER}」の欄にあります。`,

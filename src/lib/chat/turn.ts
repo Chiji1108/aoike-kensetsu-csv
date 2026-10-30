@@ -20,7 +20,7 @@ import { CHAT_ACTIONS, type ChatAction } from "./messages"
 import { outcomeChanges } from "../location/changes"
 import { askReason, estimateUsd, MAX_SITES_PER_RUN, runSitesOf, siteOfRow, SOURCE_LABELS, type Outcome, type Site } from "../location/sites"
 import { ANSWER_FIELDS, collectInquiries, fieldLabel, QUESTION_HEADER, readAiAnswers, REASONS, type AiAnswerReport } from "../inquiry/inquiry"
-import { checkQuestions, introSchema, MAX_QUESTIONS, MAX_QUESTION_LENGTH, otherCustomerTest, questionTargetsSchema, questionTextSchema, subjectSchema, type QuestionTarget } from "../inquiry/text"
+import { checkQuestions, introSchema, MAX_QUESTION_KEYS, MAX_QUESTIONS, MAX_TOTAL_KEYS, MAX_QUESTION_LENGTH, otherCustomerTest, questionTargetsSchema, questionTextSchema, subjectSchema, type QuestionTarget } from "../inquiry/text"
 import type { AddressLookup } from "../convert/address"
 import type { AiCache, AiCaller } from "../convert/pipeline"
 import type { Rounding } from "../convert/transforms"
@@ -695,7 +695,7 @@ export function chatTools(state: TurnState) {
           .array(
             z.strictObject({
               text: questionTextSchema,
-              targets: z.array(z.union([z.strictObject({ topic: z.literal("tax") }), z.strictObject({ field: z.enum(ANSWER_FIELDS), reasonId: z.enum(["missing", "needsReview"]).optional(), keys: z.array(z.string()).min(1).max(3000).optional() })])).min(1).max(20),
+              targets: z.array(z.union([z.strictObject({ topic: z.literal("tax") }), z.strictObject({ field: z.enum(ANSWER_FIELDS), reasonId: z.enum(["missing", "needsReview"]).optional(), keys: z.array(z.string()).min(1).max(MAX_QUESTION_KEYS).optional() })])).min(1).max(20),
             }),
           )
           .min(1)
@@ -703,12 +703,13 @@ export function chatTools(state: TurnState) {
       }),
       execute: counted<{ subject: string; intro: string; questions: { text: string; targets: ({ topic: "tax" } | { field: KojiFieldId; reasonId?: "missing" | "needsReview"; keys?: string[] })[] }[] }>(({ subject, intro, questions }) =>
         guarded(async () => {
-          const read = questions.map((q) => ({
-            text: q.text,
-            targets: questionTargetsSchema.parse(
-              q.targets.map((t): QuestionTarget => ("topic" in t ? t : { field: t.field, ...(t.reasonId ? { reason: t.reasonId } : {}), ...(t.keys ? { keys: [...new Set(t.keys)] } : {}) })),
-            ),
-          }))
+          const parsed = questions.map((q) =>
+            questionTargetsSchema.safeParse(q.targets.map((t): QuestionTarget => ("topic" in t ? t : { field: t.field, ...(t.reasonId ? { reason: t.reasonId } : {}), ...(t.keys ? { keys: [...new Set(t.keys)] } : {}) }))),
+          )
+          const keys = parsed.reduce((n, p) => n + (p.success ? p.data.reduce((k, t) => k + ("keys" in t && t.keys ? t.keys.length : 0), 0) : 0), 0)
+          if (parsed.some((p) => !p.success) || keys > MAX_TOTAL_KEYS)
+            return json({ ok: false, problems: [`keys は1つの質問で${MAX_QUESTION_KEYS}行・合わせて${MAX_TOTAL_KEYS}行までです。多くの行に同じ聞き方をするときは、keys を省いて項目と理由で選んでください`] })
+          const read = questions.map((q, i) => ({ text: q.text, targets: parsed[i]!.data! }))
           const v = view()
           const check = checkQuestions(read, collectInquiries(v.output, { tax: state.current.tax }))
           if (check.problems.length) return json({ ok: false, problems: check.problems.slice(0, 20) })

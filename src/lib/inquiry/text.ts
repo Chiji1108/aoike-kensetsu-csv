@@ -18,7 +18,9 @@ export const MAX_INTRO_LENGTH = 600
 /** 残す質問の数（古いものから捨てる。案件の作業は D1 の1行に入れるので） */
 export const MAX_QUESTIONS = 40
 const MAX_TARGETS = 20
-const MAX_TARGET_KEYS = 3000
+/** 1つの質問・残す文面全体で keys に書ける行の数（文面は案件の作業に入れるので、行を並べすぎない。多い行はふつう項目と理由で選べる） */
+export const MAX_QUESTION_KEYS = 2000
+export const MAX_TOTAL_KEYS = 5000
 
 export type QuestionTarget = { field: KojiFieldId; reason?: InquiryReason; keys?: string[] } | { topic: CaseTopic }
 export type InquiryQuestion = { id: string; text: string; targets: QuestionTarget[]; by: "ai" | "staff" }
@@ -37,21 +39,37 @@ export const introSchema = z.string().trim().min(1).refine(lengthAtMost(MAX_INTR
 const reasonSchema = z.enum(["missing", "needsReview"])
 export const questionTargetSchema: z.ZodType<QuestionTarget> = z.union([
   z.strictObject({ topic: z.literal("tax") }),
-  z.strictObject({ field: fieldIdSchema, reason: reasonSchema.optional(), keys: z.array(z.string().max(64)).min(1).max(MAX_TARGET_KEYS).optional() }),
+  z.strictObject({ field: fieldIdSchema, reason: reasonSchema.optional(), keys: z.array(z.string().max(200)).min(1).max(MAX_QUESTION_KEYS).optional() }),
 ])
-export const questionTargetsSchema = z.array(questionTargetSchema).min(1).max(MAX_TARGETS)
+const keyCount = (targets: readonly QuestionTarget[]) => targets.reduce((n, t) => n + ("keys" in t && t.keys ? t.keys.length : 0), 0)
+export const questionTargetsSchema = z
+  .array(questionTargetSchema)
+  .min(1)
+  .max(MAX_TARGETS)
+  .refine((ts) => keyCount(ts) <= MAX_QUESTION_KEYS, `1つの質問の keys は合わせて${MAX_QUESTION_KEYS}行まで`)
 export const inquiryQuestionSchema: z.ZodType<InquiryQuestion> = z.object({ id: z.string().max(64), text: questionTextSchema, targets: questionTargetsSchema, by: z.enum(["ai", "staff"]) })
 export const inquiryTextSchema: z.ZodType<InquiryText> = z.object({
   subject: subjectSchema.nullable(),
   intro: introSchema.nullable(),
-  questions: z.array(inquiryQuestionSchema).max(MAX_QUESTIONS),
+  questions: z
+    .array(inquiryQuestionSchema)
+    .max(MAX_QUESTIONS)
+    .refine((qs) => qs.reduce((n, q) => n + keyCount(q.targets), 0) <= MAX_TOTAL_KEYS, `keys は合わせて${MAX_TOTAL_KEYS}行まで`),
 })
+
+/** keys の Set（問い合わせの数×行の数で探さない。同じ配列は作り直さない） */
+const keySets = new WeakMap<readonly string[], ReadonlySet<string>>()
+function keySet(keys: readonly string[]) {
+  let set = keySets.get(keys)
+  if (!set) keySets.set(keys, (set = new Set(keys)))
+  return set
+}
 
 /** 問い合わせへの当てはまり方（大きいほど強い）。keys で選んだ行 > 項目と理由 > 項目だけ。当てはまらなければ 0 */
 export function matchRank(t: QuestionTarget, q: Inquiry): number {
   if ("topic" in t) return q.kind === "case" && q.topic === t.topic ? 3 : 0
   if (q.kind !== "cell" || q.field !== t.field || (t.reason && t.reason !== q.reason)) return 0
-  if (t.keys) return t.keys.includes(q.rowKey) ? 3 : 0
+  if (t.keys) return keySet(t.keys).has(q.rowKey) ? 3 : 0
   return t.reason ? 2 : 1
 }
 
@@ -85,10 +103,17 @@ export function questionGroups(inquiries: readonly Inquiry[], text: InquiryText)
   return { groups: [...groups.values()], groupOf }
 }
 
+/** まとまりで聞く工事の数（工事場所の都道府県と場所名は1件。案件全体の質問は1件） */
+export const groupCount = (g: QuestionGroup) => new Set(g.inquiries.map((q) => (q.kind === "cell" ? q.rowKey : inquiryKey(q)))).size
+
 /** 質問を足す（承認した AI の案・職員が直した文）。数の上限を超えたら古いものから捨てる */
 export function addQuestions(text: InquiryText, questions: readonly InquiryQuestion[]): InquiryText {
   const ids = new Set(questions.map((q) => q.id))
-  return { ...text, questions: [...text.questions.filter((q) => !ids.has(q.id)), ...questions].slice(-MAX_QUESTIONS) }
+  const next = [...text.questions.filter((q) => !ids.has(q.id)), ...questions].slice(-MAX_QUESTIONS)
+  // keys の行の数の上限を超えたら、古い質問から捨てる
+  let keys = next.reduce((n, q) => n + keyCount(q.targets), 0)
+  while (keys > MAX_TOTAL_KEYS) keys -= keyCount(next.shift()!.targets)
+  return { ...text, questions: next }
 }
 
 /**
@@ -138,16 +163,19 @@ export function applyInquiryChanges(text: InquiryText, proposalId: string, appro
  */
 export function checkQuestions(questions: readonly { targets: readonly QuestionTarget[] }[], inquiries: readonly Inquiry[]) {
   const problems: string[] = []
-  questions.forEach((q, i) =>
+  questions.forEach((q, i) => {
+    // 案件全体の質問はメールに1つずつ載せるので、セルの問い合わせとまとめない
+    if (q.targets.some((t) => "topic" in t) && q.targets.some((t) => !("topic" in t))) problems.push(`questions[${i}]: 税込・税抜の質問は、ほかの問い合わせとまとめずに1つの質問にしてください`)
     q.targets.forEach((t, j) => {
       const where = `questions[${i}].targets[${j}]`
       if (!inquiries.some((x) => matchRank(t, x) > 0)) problems.push(`${where}: 今の問い合わせに当てはまりません`)
       else if (!("topic" in t) && t.keys) {
-        const unknown = t.keys.filter((k) => !inquiries.some((x) => x.kind === "cell" && x.rowKey === k && matchRank(t, x) > 0))
+        const asked = new Set(inquiries.flatMap((x) => (x.kind === "cell" && matchRank({ field: t.field, ...(t.reason ? { reason: t.reason } : {}) }, x) > 0 ? [x.rowKey] : [])))
+        const unknown = t.keys.filter((k) => !asked.has(k))
         if (unknown.length) problems.push(`${where}: 聞いていない行の key があります（${unknown.slice(0, 5).join(", ")}${unknown.length > 5 ? " ほか" : ""}）`)
       }
-    }),
-  )
+    })
+  })
   let covered = 0
   const tied: string[] = []
   for (const x of inquiries) {

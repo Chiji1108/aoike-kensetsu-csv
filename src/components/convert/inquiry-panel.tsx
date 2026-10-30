@@ -12,7 +12,7 @@ import { withNames } from "@/lib/convert/persons"
 import { errorMessage } from "@/lib/errors"
 import { saveFile } from "@/lib/save-file"
 import { DEFAULT_INTRO, DEFAULT_SUBJECT, inquiryEmail } from "@/lib/inquiry/email"
-import { editQuestion, questionGroups, type InquiryText, type QuestionGroup } from "@/lib/inquiry/text"
+import { editQuestion, groupCount, questionGroups, type InquiryText, type QuestionGroup } from "@/lib/inquiry/text"
 import {
   CASE_TOPICS,
   fieldLabel,
@@ -160,7 +160,7 @@ export function InquiryPanel({
         <div className="grid gap-2" data-testid="inquiry-questions">
           <p className="text-sm font-semibold">質問の文</p>
           {groups.map((g) => (
-            <div key={`${g.id}\t${g.text}`} className="flex items-start gap-2" data-testid="inquiry-question" data-by={g.by}>
+            <div key={`${g.id}\t${g.text}`} className="flex items-start gap-2" data-testid="inquiry-question" data-by={g.by} data-group={g.id}>
               <Textarea
                 aria-label="質問の文"
                 className="min-h-0 text-sm"
@@ -171,7 +171,7 @@ export function InquiryPanel({
                 }}
               />
               <div className="grid shrink-0 justify-items-end gap-1 pt-1 text-xs text-muted-foreground">
-                <span>{g.inquiries.length}件</span>
+                <span>{groupCount(g)}件</span>
                 <Badge variant="outline">{g.by === "ai" ? "AI" : g.by === "staff" ? "直した文" : "決まった文"}</Badge>
               </div>
             </div>
@@ -181,9 +181,11 @@ export function InquiryPanel({
 
       {active.length > 0 && (
         <div className="grid gap-3">
+          <p className="text-sm font-semibold">メール</p>
           <Input
             key={`subject\t${text.subject}`}
             aria-label="件名"
+            title="件名"
             defaultValue={email.subject}
             placeholder={DEFAULT_SUBJECT}
             onBlur={(e) => {
@@ -194,6 +196,7 @@ export function InquiryPanel({
           <Textarea
             key={`intro\t${text.intro}`}
             aria-label="前置き"
+            title="前置き"
             className="min-h-0 text-sm"
             rows={2}
             defaultValue={text.intro ?? DEFAULT_INTRO}

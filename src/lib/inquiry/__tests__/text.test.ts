@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { kojiRow } from "../../convert/__tests__/helpers"
 import { ADDRESSEE_PLACEHOLDER, inquiryEmail } from "../email"
 import { collectInquiries, inquiryKey, inquirySheet, outsideCells, type CellInquiry, type Inquiry } from "../inquiry"
-import { addQuestions, applyInquiryChanges, checkQuestions, editQuestion, EMPTY_INQUIRY_TEXT, inquiryTextSchema, MAX_QUESTIONS, otherCustomerTest, questionGroups, type InquiryText } from "../text"
+import { addQuestions, applyInquiryChanges, checkQuestions, editQuestion, EMPTY_INQUIRY_TEXT, inquiryTextSchema, MAX_QUESTION_KEYS, MAX_QUESTIONS, otherCustomerTest, questionGroups, type InquiryText } from "../text"
 import type { SheetGrid } from "../../convert/plan"
 
 const full = { gyoshu: "8", client: "株式会社テスト", motoukeShitauke: "1", jv: "0", workName: "テストビル電気工事", prefecture: "東京都", place: "千代田区", engineer: "試験　太郎", amount: "5000", specialAmount: "0", startYm: "202404", endYm: "202409" }
@@ -93,6 +93,11 @@ describe("質問の文のまとまり", () => {
     expect(t.questions[0]!.id).toBe("q3")
     expect(inquiryTextSchema.safeParse(t).success).toBe(true)
     expect(inquiryTextSchema.safeParse({ ...t, questions: [{ ...many[0]!, text: "あ".repeat(201) }] }).success).toBe(false)
+    // keys の行が多い質問は、合わせて上限を超えたら古いものから捨てる（作業の大きさを抑える）
+    const keyed = (id: string) => ({ id, text: id, targets: [{ field: "engineer" as const, keys: Array.from({ length: MAX_QUESTION_KEYS }, (_, i) => `r${i}`) }], by: "ai" as const })
+    const k = addQuestions(EMPTY_INQUIRY_TEXT, [keyed("a"), keyed("b"), keyed("c")])
+    expect(k.questions.map((q) => q.id)).toEqual(["b", "c"])
+    expect(inquiryTextSchema.safeParse(k).success).toBe(true)
   })
 })
 
@@ -102,6 +107,7 @@ describe("AI の質問の確かめ", () => {
     expect(checkQuestions([{ targets: [{ field: "startYm" }] }], qs).problems).toEqual(["questions[0].targets[0]: 今の問い合わせに当てはまりません"])
     expect(checkQuestions([{ targets: [{ field: "engineer", keys: ["s!4", "s!2"] }] }], qs).problems).toEqual(["questions[0].targets[0]: 聞いていない行の key があります（s!2）"])
     expect(checkQuestions([{ targets: [{ field: "engineer" }] }, { targets: [{ field: "engineer" }] }], qs).problems[0]).toContain("同じ問い合わせに2つの質問が当てはまります（s!4:engineer, s!5:engineer）")
+    expect(checkQuestions([{ targets: [{ topic: "tax" }, { field: "engineer" }] }], qs).problems).toEqual(["questions[0]: 税込・税抜の質問は、ほかの問い合わせとまとめずに1つの質問にしてください"])
     // keys の質問は項目だけの質問より強いので重ならない
     expect(checkQuestions([{ targets: [{ field: "engineer" }] }, { targets: [{ field: "engineer", keys: ["s!5"] }] }], qs).problems).toEqual([])
   })
