@@ -65,6 +65,7 @@ import type { UsdJpy } from "@/lib/fx"
 import { errorMessage } from "@/lib/errors"
 import { saveFile } from "@/lib/save-file"
 import { aiAnswerPrompt, collectInquiries, inquiryKey, mergeAnswers, outsideCells, readAnswers } from "@/lib/inquiry/inquiry"
+import { applyInquiryChanges, INQUIRY_TEXT_PROMPT, type InquiryTextChange } from "@/lib/inquiry/text"
 import { REVIEW_PROMPT } from "@/lib/chat/review"
 import { KOJI_KEIREKI, KOJI_PLAN_HINTS, type KojiFieldId } from "@/lib/spec/koji-keireki"
 import { cn } from "@/lib/utils"
@@ -104,6 +105,7 @@ const PREVIOUS_WAIT_MS = 3_000
 const WIDE_QUERY = "(min-width: 1280px)"
 /** チャットの案内のうち、案件を終えるときの振り返り（返ってきた記入用Excelの案内はファイルの id） */
 const REVIEW_SUGGESTION = "review"
+const INQUIRY_SUGGESTION = "inquiry-text"
 
 type PreviousCase = NonNullable<NonNullable<Awaited<ReturnType<typeof getCasePageFn>>>["previous"]>
 
@@ -242,6 +244,11 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
   const [answerHints, setAnswerHints] = useState<{ fileId: string; name: string }[]>([])
   /** 案件を「完了」にしたので、チャットに振り返り（来年のための顧客ルールの案）を出せると案内するか（保存しない。完了から戻すか、送ったら消す） */
   const [reviewHint, setReviewHint] = useState(false)
+  /** 問い合わせの欄を開いた（チャットに「AI で文面を作る」を出す。送ったら消す） */
+  const [inquiryHint, setInquiryHint] = useState(false)
+  useEffect(() => {
+    if (tab === "inquiry") setInquiryHint(true)
+  }, [tab])
   const wide = useMediaQuery(WIDE_QUERY)
   /** 狭い画面でチャットを開いているか（広い画面ではいつも開いている） */
   const [chatShown, setChatShown] = useState(false)
@@ -616,6 +623,8 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
   const inquiries = useMemo(() => (output ? collectInquiries(output, { tax }) : []), [output, tax])
   /** まだ答えの無いセルの問い合わせ（外したものは数えない）。「AI で読む」に出す */
   const leftInquiries = inquiries.filter((q) => q.kind === "cell" && !dismissed.has(inquiryKey(q))).length
+  /** 外していない問い合わせ（セル・案件全体）の数。「AI で文面を作る」に出す */
+  const activeInquiries = inquiries.filter((q) => !dismissed.has(inquiryKey(q))).length
   const summary = useMemo(() => (edited && selected ? summarizeKoji(edited, selected, { tax, basis, rule7Tax }) : []), [edited, selected, tax, basis, rule7Tax])
   /** 表の絞り込み。職員が選ぶまでは、確かめる行があればその行だけ（無ければすべて） */
   const tableFilter: RowFilter = filter ?? (filterCounts && filterCounts.check.all > 0 ? "check" : "all")
@@ -634,6 +643,10 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
   }
   /** まだ決めていない振り返りの案がある（決めるまで振り返りの案内を重ねて出さない） */
   const pendingReview = work.proposals.some((p) => p.state === "open" && (proposalChanges.get(p.id) ?? []).some((c, i) => c.kind === "rule" && c.source === "review" && decisionOf(p, i) === "pending"))
+  /** まだ決めていない問い合わせの文面の案がある（決めるまで「AI で文面を作る」を出さない） */
+  const pendingInquiryText = work.proposals.some(
+    (p) => p.state === "open" && (proposalChanges.get(p.id) ?? []).some((c, i) => (c.kind === "inquiry" || c.kind === "inquiryMail") && decisionOf(p, i) === "pending"),
+  )
   // 未決の工事場所の項目がある変更案（一括調査のものも、チャットの「この現場ってどこ？」のものも）を決めるまで、次の一括調査を始めさせない
   const undecidedLocation = work.proposals.some((p) => p.state === "open" && (proposalChanges.get(p.id) ?? []).some((c, i) => c.kind === "location" && decisionOf(p, i) === "pending"))
   const locationSearch = useLocationSearch({ caseId: kase.id, view, table: tableWire, undecided: undecidedLocation, onRecord: addRecorded, onCaseCost: setCostUsd })
@@ -713,7 +726,13 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
       if (!indices.length) return
       const edited = view?.edited ?? []
       setWork((w) => {
-        const overlaid = applyChanges(w, edited, indices.map((i) => changes[i]!))
+        const texts = indices.flatMap((i) => {
+          const c = changes[i]!
+          return c.kind === "inquiry" || c.kind === "inquiryMail" ? [{ index: i, change: c as InquiryTextChange }] : []
+        })
+        // 問い合わせの文面は表の変更ではないので、作業の文面に重ねる（取り消しの記録に入る）
+        const overlaid0 = applyChanges(w, edited, indices.map((i) => changes[i]!))
+        const overlaid = texts.length ? { ...overlaid0, inquiryText: applyInquiryChanges(w.inquiryText, id, texts) } : overlaid0
         const replanned = nextPlan && indices.some((i) => changes[i]!.kind === "plan") && w.plan ? { ...overlaid, plan: { ...w.plan, plan: nextPlan }, converted: false } : overlaid
         const decided = { ...replanned, proposals: w.proposals.map((x) => (x.id === id ? decide(x, indices, "applied") : x)) }
         return withUndo(w, decided, id, indices, external)
@@ -1078,6 +1097,16 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
                 prompt: aiAnswerPrompt(h.name),
               }))
             : []),
+          ...(inquiryHint && activeInquiries > 0 && !pendingInquiryText && !work.inquiryText.questions.some((q) => q.by === "ai")
+            ? [
+                {
+                  id: INQUIRY_SUGGESTION,
+                  text: `問い合わせ ${activeInquiries} 件を、AI が顧客に伝わる質問の文とメールの下書きにできます（似た質問はまとめます）。承認した文を記入用Excelの「ご質問」の欄とメールに使います。`,
+                  label: "AI で文面を作る",
+                  prompt: INQUIRY_TEXT_PROMPT,
+                },
+              ]
+            : []),
           ...(reviewHint && !pendingReview
             ? [
                 {
@@ -1093,7 +1122,9 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
             : []),
         ]}
         beforeSend={settleSave}
-        onSuggestionSent={(id) => (id === REVIEW_SUGGESTION ? setReviewHint(false) : setAnswerHints((hs) => hs.filter((h) => h.fileId !== id)))}
+        onSuggestionSent={(id) =>
+          id === REVIEW_SUGGESTION ? setReviewHint(false) : id === INQUIRY_SUGGESTION ? setInquiryHint(false) : setAnswerHints((hs) => hs.filter((h) => h.fileId !== id))
+        }
       />
     </Suspense>
   ) : null
@@ -1288,6 +1319,8 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
                   customer={customer.name}
                   dismissed={dismissed}
                   answers={answers}
+                  text={work.inquiryText}
+                  onText={(next) => update("inquiryText", next)}
                   keepFile={(name, bytes, type) => void keepFile("inquiry_sheet", new Blob([bytes as BlobPart], { type }), name)}
                   onToggle={(key, ask) =>
                     update("dismissed", (prev) => {

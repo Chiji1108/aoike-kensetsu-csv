@@ -2,14 +2,17 @@ import { useMemo } from "react"
 import { createClientOnlyFn } from "@tanstack/react-start"
 import { Copy, FileDown, FileUp } from "lucide-react"
 import { toast } from "sonner"
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import type { RowResult } from "@/lib/convert/convert"
 import { datedFileName } from "@/lib/convert/csv"
 import { withNames } from "@/lib/convert/persons"
 import { errorMessage } from "@/lib/errors"
 import { saveFile } from "@/lib/save-file"
-import { inquiryEmail } from "@/lib/inquiry/email"
+import { DEFAULT_INTRO, DEFAULT_SUBJECT, inquiryEmail } from "@/lib/inquiry/email"
+import { editQuestion, questionGroups, type InquiryText, type QuestionGroup } from "@/lib/inquiry/text"
 import {
   CASE_TOPICS,
   fieldLabel,
@@ -17,7 +20,6 @@ import {
   inquirySheet,
   REASONS,
   type AnswerReport,
-  type CaseInquiry,
   type CellInquiry,
   type Inquiry,
 } from "@/lib/inquiry/inquiry"
@@ -29,7 +31,7 @@ type Row = RowResult<KojiFieldId>
 const loadXlsxWriter = createClientOnlyFn(() => import("@/lib/inquiry/inquiry-xlsx"))
 
 /**
- * 顧客に問い合わせる: 件数・項目ごとの件数・外すチェック、メール文面、記入用Excel、回答の取り込み。
+ * 顧客に問い合わせる: 件数・項目ごとの件数・外すチェック、質問の文（AI の案を承認したもの・職員が直したもの・決まった文）、メールの件名と本文、記入用Excel、回答の取り込み。
  * inquiries は CSV に載せる行から集めたもの。回答の照合は記入用Excelの各行の照合用の列で行うので、どの版の記入用Excelでも取り込める。
  */
 export function InquiryPanel({
@@ -39,6 +41,8 @@ export function InquiryPanel({
   customer,
   dismissed,
   answers,
+  text,
+  onText,
   keepFile,
   onToggle,
   importAnswers,
@@ -50,6 +54,9 @@ export function InquiryPanel({
   dismissed: ReadonlySet<string>
   /** 最後に取り込んだ回答の結果 */
   answers: AnswerReport | null
+  /** 問い合わせの文面（案件の作業） */
+  text: InquiryText
+  onText: (next: (prev: InquiryText) => InquiryText) => void
   /** ダウンロードした記入用Excelを案件に残す */
   keepFile: (name: string, bytes: Uint8Array, type: string) => void
   onToggle: (key: string, ask: boolean) => void
@@ -58,9 +65,9 @@ export function InquiryPanel({
 }) {
   const active = useMemo(() => inquiries.filter((q) => !dismissed.has(inquiryKey(q))), [inquiries, dismissed])
   const activeCells = useMemo(() => active.filter((q): q is CellInquiry => q.kind === "cell"), [active])
-  const activeCases = useMemo(() => active.filter((q): q is CaseInquiry => q.kind === "case"), [active])
-  const sheet = useMemo(() => inquirySheet(outputRows, activeCells), [outputRows, activeCells])
-  const email = useMemo(() => inquiryEmail(activeCases, sheet), [activeCases, sheet])
+  const { groups, groupOf } = useMemo(() => questionGroups(active, text), [active, text])
+  const sheet = useMemo(() => inquirySheet(outputRows, activeCells, (q) => groupOf.get(inquiryKey(q))!.text), [outputRows, activeCells, groupOf])
+  const email = useMemo(() => inquiryEmail(groups, sheet, text), [groups, sheet, text])
   const byItem = useMemo(() => {
     const counts = new Map<string, number>()
     for (const q of active) {
@@ -85,19 +92,23 @@ export function InquiryPanel({
     }
   }
 
-  async function copyEmail() {
+  async function copy(value: string, what: string) {
     try {
-      await navigator.clipboard.writeText(email)
-      toast.success("メール文面をコピーしました")
+      await navigator.clipboard.writeText(value)
+      toast.success(`${what}をコピーしました`)
     } catch (e) {
-      toast.error(errorMessage(e, "コピーできませんでした。下の文面を選んでコピーしてください"))
+      toast.error(errorMessage(e, "コピーできませんでした。文面を選んでコピーしてください"))
     }
   }
+
+  const editGroup = (g: QuestionGroup, next: string) => onText((t) => editQuestion(t, g, next, crypto.randomUUID()))
+  /** 件名・前置きは空にすると決まった文に戻す */
+  const editMail = (key: "subject" | "intro", next: string) => onText((t) => ({ ...t, [key]: next.trim() || null }))
 
   return (
     <section className="mt-10 space-y-4" data-testid="inquiry-panel">
       <div>
-        <p className="mt-0.5 text-xs text-muted-foreground">載せる行で、データに無い・推定に自信がない項目です。聞かなくてよいものはチェックを外します。</p>
+        <p className="mt-0.5 text-xs text-muted-foreground">載せる行で、データに無い・推定に自信がない項目です。聞かなくてよいものはチェックを外します。質問の文は直せます（空にすると決まった文）。</p>
       </div>
 
       <div className="flex flex-wrap items-center gap-2 text-sm" data-testid="inquiry-counts">
@@ -146,15 +157,59 @@ export function InquiryPanel({
       )}
 
       {active.length > 0 && (
+        <div className="grid gap-2" data-testid="inquiry-questions">
+          <p className="text-sm font-semibold">質問の文</p>
+          {groups.map((g) => (
+            <div key={`${g.id}\t${g.text}`} className="flex items-start gap-2" data-testid="inquiry-question" data-by={g.by}>
+              <Textarea
+                aria-label="質問の文"
+                className="min-h-0 text-sm"
+                rows={2}
+                defaultValue={g.text}
+                onBlur={(e) => {
+                  if (e.target.value.trim() !== g.text) editGroup(g, e.target.value)
+                }}
+              />
+              <div className="grid shrink-0 justify-items-end gap-1 pt-1 text-xs text-muted-foreground">
+                <span>{g.inquiries.length}件</span>
+                <Badge variant="outline">{g.by === "ai" ? "AI" : g.by === "staff" ? "直した文" : "決まった文"}</Badge>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {active.length > 0 && (
         <div className="grid gap-3">
+          <Input
+            key={`subject\t${text.subject}`}
+            aria-label="件名"
+            defaultValue={email.subject}
+            placeholder={DEFAULT_SUBJECT}
+            onBlur={(e) => {
+              if (e.target.value.trim() !== email.subject) editMail("subject", e.target.value)
+            }}
+            data-testid="inquiry-subject"
+          />
+          <Textarea
+            key={`intro\t${text.intro}`}
+            aria-label="前置き"
+            className="min-h-0 text-sm"
+            rows={2}
+            defaultValue={text.intro ?? DEFAULT_INTRO}
+            onBlur={(e) => {
+              if (e.target.value.trim() !== (text.intro ?? DEFAULT_INTRO)) editMail("intro", e.target.value)
+            }}
+            data-testid="inquiry-intro"
+          />
           <div className="flex flex-wrap items-center gap-2">
-            <Button
-              variant="outline"
-              onClick={copyEmail}
-              data-testid="copy-email"
-            >
+            <Button variant="outline" onClick={() => void copy(email.subject, "件名")} data-testid="copy-subject">
               <Copy />
-              メール文面をコピー
+              件名をコピー
+            </Button>
+            <Button variant="outline" onClick={() => void copy(email.body, "本文")} data-testid="copy-email">
+              <Copy />
+              本文をコピー
             </Button>
             {sheet.askCount > 0 && (
               <Button variant="outline" onClick={downloadXlsx} data-testid="download-inquiry-xlsx">
@@ -163,7 +218,7 @@ export function InquiryPanel({
               </Button>
             )}
           </div>
-          <Textarea readOnly className="h-64 font-mono text-xs" value={email} data-testid="inquiry-email" />
+          <Textarea readOnly className="h-64 font-mono text-xs" value={email.body} data-testid="inquiry-email" />
         </div>
       )}
 
