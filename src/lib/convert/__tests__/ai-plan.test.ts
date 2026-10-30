@@ -4,6 +4,7 @@ import { heuristicPlan } from "../heuristic-plan"
 import { acceptAiPlan, reviewPlanTransforms, type SheetGrid } from "../plan"
 import { MAX_PREVIOUS_CONTEXT, planExcerpt, planUserMessage, previousPlanContext, systemPrompt } from "../prompt"
 import { readWorkbook } from "../workbook"
+import { savedPlanSchema } from "../plan-schema"
 import { fixture } from "./helpers"
 
 const book = readWorkbook("sample-messy.xlsx", fixture("sample-messy.xlsx"))
@@ -201,5 +202,16 @@ describe("個人名を含みうる項目（注文者・工事名）には匿名�
     expect(r.plan.fields.client).toEqual({ kind: "missing" })
     expect(r.plan.fields.jv).toEqual(saved.fields.jv)
     expect(r.changed).toEqual(["注文者"])
+  })
+})
+
+describe("計画の税込・税抜", () => {
+  test("見出しから分かれば計画に入れ、分からなければ入れない。前の版の保存した計画（無い）も読める", () => {
+    const yes = acceptAiPlan(KOJI_KEIREKI, book, excerpt, { ...aiPlan(), amountTax: "excluded" }, fallbackFor)
+    expect(yes.ok && yes.plan.amountTax).toBe("excluded")
+    const no = acceptAiPlan(KOJI_KEIREKI, book, excerpt, aiPlan(), fallbackFor)
+    expect(no.ok && "amountTax" in no.plan).toBe(false)
+    if (!no.ok) throw new Error("計画を取り込めない")
+    expect(savedPlanSchema.parse({ plan: no.plan, source: "ai" }).plan.amountTax).toBeUndefined()
   })
 })
