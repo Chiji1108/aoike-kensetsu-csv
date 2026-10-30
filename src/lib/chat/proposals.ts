@@ -7,6 +7,7 @@ import type { KojiFieldId } from "../spec/koji-keireki"
 import { foundSchema, siteRefSchema, SOURCE_LABELS, type Found } from "../location/sites"
 import { planPatchSchema, type PlanPatch } from "../convert/plan-patch"
 import { proposedRuleSourceSchema, ruleScopeSchema, type ProposedRuleSource, type RuleScope } from "./rules"
+import { setTax, type TaxBy } from "../cases/tax"
 import { applyInquiryChange, introSchema, questionTargetsSchema, questionTextSchema, subjectSchema, type InquiryText, type QuestionTarget } from "../inquiry/text"
 
 /**
@@ -137,6 +138,8 @@ export type Overlay = {
   edits: CellEdits
   manual: ReadonlyMap<string, boolean>
   tax: TaxMode
+  /** 税の設定の出どころ（案件の作業だけが持つ。cases/tax.ts） */
+  taxBy?: TaxBy | null
   basis: Basis
   selection: SelectionMode
   added: readonly AddedRow[]
@@ -151,7 +154,9 @@ export function applyChanges<T extends Overlay>(target: T, edited: readonly RowR
   if (!changes.length) return target
   const edits = new Map(target.edits)
   const manual = new Map(target.manual)
-  let { tax, basis, selection, inquiryText } = target
+  let { basis, selection, inquiryText } = target
+  /** 承認した税の設定（職員が決めた値として、出どころと一緒に書く） */
+  let tax: TaxMode | undefined
   const added = [...target.added]
   const rowOf = new Map(edited.map((r) => [r.key, r]))
   for (const c of changes) {
@@ -199,7 +204,8 @@ export function applyChanges<T extends Overlay>(target: T, edited: readonly RowR
         c satisfies never
     }
   }
-  return { ...target, edits, manual, tax, basis, selection, added, inquiryText }
+  const next = { ...target, edits, manual, basis, selection, added, inquiryText }
+  return tax === undefined ? next : setTax(next, tax, "staff")
 }
 
 /** 調べた工事場所のセルに添える文（出どころ・根拠の URL・AI の迷った点） */

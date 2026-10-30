@@ -10,7 +10,7 @@ import { collectSourceRows } from "../../convert/sources"
 import { readWorkbook } from "../../convert/workbook"
 import { fixture } from "../../convert/__tests__/helpers"
 import { chatChangeSchema } from "../../chat/proposals"
-import { fromSaved, newWork, savedAiCacheSchema, savedWorkSchema, toSavedAiCache, toSavedWork, withPlanTax, type CaseWork } from "../state"
+import { fromSaved, newWork, savedAiCacheSchema, savedWorkSchema, toSavedAiCache, toSavedWork, type CaseWork } from "../state"
 
 const [grid] = readWorkbook("sample-messy.xlsx", fixture("sample-messy.xlsx"))
 const plan = heuristicPlan(KOJI_KEIREKI, KOJI_PLAN_HINTS, grid!)
@@ -102,30 +102,3 @@ describe("案件の状態の保存と読み出し", () => {
   })
 })
 
-describe("計画の税込・税抜を案件の税の設定に入れる", () => {
-  const included = { ...plan, amountTax: "included" as const }
-  const excluded = { ...plan, amountTax: "excluded" as const }
-  test("未設定なら計画の値を入れ、聞き返しは要らない", () => {
-    const w = withPlanTax(newWork("f"), included)
-    expect(w.tax).toBe("included")
-    expect(w.planTax).toBe("included")
-  })
-  test("計画が分からなければ未設定のまま", () => {
-    expect(withPlanTax(newWork("f"), plan).tax).toBe("unknown")
-  })
-  test("職員が決めた値・聞き返しに答えた（顧客に聞く）ときは上書きしない", () => {
-    expect(withPlanTax({ ...newWork("f"), tax: "excluded" }, included).tax).toBe("excluded")
-    expect(withPlanTax({ ...newWork("f"), reportAnswers: { tax: "ask" } }, included).tax).toBe("unknown")
-  })
-  test("前の計画が決めた値のままなら、計画をやり直すと合わせ直す（分からなければ未設定に戻す）", () => {
-    const first = withPlanTax(newWork("f"), included)
-    expect(withPlanTax(first, excluded)).toMatchObject({ tax: "excluded", planTax: "excluded" })
-    expect(withPlanTax(first, plan)).toMatchObject({ tax: "unknown", planTax: null })
-    // 職員が変えたあとは計画の値として扱わない
-    expect(withPlanTax({ ...first, tax: "excluded" }, plan)).toMatchObject({ tax: "excluded", planTax: null })
-  })
-  test("前の版の保存した作業（planTax が無い）も読める", () => {
-    const { planTax: _, ...old } = toSavedWork(newWork("f"))
-    expect(savedWorkSchema.parse(old).planTax).toBeNull()
-  })
-})
