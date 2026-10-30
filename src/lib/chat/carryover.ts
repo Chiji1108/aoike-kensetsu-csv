@@ -33,12 +33,21 @@ const changeCode = (input: unknown) => {
 
 const unique = (codes: readonly string[]) => [...new Set(codes)]
 
-/** 職員が1項目でも承認したチャットの変更案 */
-export function approvedChatProposals(proposals: readonly Proposal[], undo: readonly Pick<UndoEntry, "proposalId" | "undone">[] = []): Set<string> {
-  // 承認を取り消した変更案（その変更案の承認の記録がすべて取り消し済み）は、承認につながらなかったものとして扱う
+/** 承認を取り消した変更案（その変更案の承認の記録がすべて取り消し済み） */
+export function undoneProposals(undo: readonly Pick<UndoEntry, "proposalId" | "undone">[]): Set<string> {
   const undone = new Set(undo.filter((e) => e.undone).map((e) => e.proposalId))
   for (const e of undo) if (!e.undone) undone.delete(e.proposalId)
-  return new Set(proposals.filter((p) => p.origin.kind === "chat" && (p.state === "closed" ? p.applied > 0 : p.applied.length > 0) && !undone.has(p.id)).map((p) => p.id))
+  return undone
+}
+
+/** 変更案の項目のうち承認した数 */
+export const appliedCount = (p: Proposal) => (p.state === "closed" ? p.applied : p.applied.length)
+
+/** 職員が1項目でも承認したチャットの変更案 */
+export function approvedChatProposals(proposals: readonly Proposal[], undo: readonly Pick<UndoEntry, "proposalId" | "undone">[] = []): Set<string> {
+  // 承認を取り消した変更案は、承認につながらなかったものとして扱う
+  const undone = undoneProposals(undo)
+  return new Set(proposals.filter((p) => p.origin.kind === "chat" && appliedCount(p) > 0 && !undone.has(p.id)).map((p) => p.id))
 }
 
 /** 画面の会話から、承認した変更案の付いた返事のコード（表を変える道具を呼ぶもの）を、会話の順に */
