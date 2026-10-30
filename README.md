@@ -42,6 +42,8 @@ TanStack Start / React / TypeScript / Tailwind CSS v4 / shadcn/ui / Cloudflare W
    - 注文者・工事名の記入は元データと同じ変換（個人名は AI で「Ａ」等）に通す。セルには記号ではなく人を持ち、記号は手直しまで当てて CSV に書く行から、CSV の順に Ａ から欠けなく付けるので、同じ人は案件のどこでも同じ記号になる（CSV に載せない行にだけいる人は、画面では「〔未掲載１〕」の形で出す）。AI を使えなかった記入は元データと同じく個人名の判定ができないものとして反映せず、一覧に出す（職員が見て手で入れる）。記入用Excelは顧客に返すものなので、個人名は記号ではなく氏名で出す（記号は CSV と画面だけ）
    - 空欄のまま・送付後に値が変わった欄・読めない記入（市区町村が読めない工事場所など）・照合用の列が壊れた行・知らない管理番号・2つ以上の行にある管理番号は一覧に出し、反映しない。取り込みの AI を待つ間にセルの値が変わったら（手直し・置換・変換のやり直し）、その回答も反映しない。工事場所は都道府県と場所名を一緒に反映し、片方を反映できなければもう片方も反映しない
    - ダウンロードした記入用Excelと、取り込んだ返ってきた Excel は案件のファイルに残る
+   - 色付きの欄の外（右に足した列・メモ・別のシート）に記入があるか、読めない記入・照合用の列が壊れた行があり、まだ答えの無い問い合わせが残れば、チャットに「AI で読む」が出る。押すと AI がそのファイルを読み、残りの答えを変更案にする（決まった欄は先に読んだまま。AI はそこで読めなかった部分だけ）
+   - 顧客がメールの本文で答えたときはチャットに貼る。別の Excel・PDF・Word・保存したメール（.txt・.eml）で届いたときはファイルを付けて、チャットで「回答を取り込んで」と頼む。AI は今の問い合わせ（`get_inquiries`）を読んで、どの工事のどの項目への答えかを決め（`record_answers`）、決めきれない答え（2つの工事に当てはまるなど）は職員に聞き返す。答えは記入用Excelの記入と同じ決まりで値にする（年月・工事場所の分け方・配置技術者の区切り・注文者と工事名の匿名化・検査）。変更案の項目には「（顧客の回答）」「（顧客が確認）」と添える
 5. **チャット**（表の横）：職員がチャットで指示し、AI（`claude-opus-5-5`）がコード実行で案件の届いたファイルと今の表を読んで、直した案を**変更案**として返す。承認したものだけが表に入る
    - 変更案はセルの値・顧客への問い合わせ・行の入れ外し・工事を足す・7割の設定・列の対応・ルールの項目。「CSV を出して」「問い合わせの Excel が欲しい」などには、返事に決まった処理を始めるボタンを付ける（`offer_action`。書き出す前の確認・問い合わせの欄・編集用の Excel）。セルの値はどの文字が変わったかを色分けする。AI が足した行（PDF から作った行など）は全部のセルを要確認（黄）にする。「一覧で確かめる」で今の値と承認したあとの値を並べ、項目ごとに承認・却下できる。まとめて承認・却下もできる
    - AI が聞き返したとき（「これでよいですか」）は黄色の欄で出し、答えるまで承認できない。「いいえ」なら全部を却下する。変更案の無い聞き返しは、答えを AI に送って続けさせる
@@ -107,12 +109,13 @@ EVAL_CASES=/path/to/cases.json EVAL_OUT=/path/to/out bun scripts/eval.ts <case> 
 EVAL_CASES=... EVAL_OUT=... bun scripts/eval.ts <case> edit    # 案件定義の指示を順に（変更案はすべて承認したものとして重ねる）
 EVAL_CASES=... EVAL_OUT=... bun scripts/eval.ts <case> rules   # edit で出た顧客ルールを入れて「顧客ルールどおりに表を直して」の1回
 EVAL_LOCATION_LIMIT=50 EVAL_CASES=... EVAL_OUT=... bun scripts/eval.ts <case> location   # 工事場所の調査（覚えた結果は EVAL_OUT に残り、2回目は使う）
+EVAL_CASES=fixtures/eval/cases.json EVAL_OUT=... bun scripts/eval.ts synth-answers-mail answers   # 顧客の回答（聞いたセルの答えが正しいか・抜け・余計を数える）
 EVAL_CASES=... EVAL_OUT=/path/to/run1 bun scripts/eval-run.ts      # 案件定義の variants をまとめて1回分（回ごとに新しい EVAL_OUT。1回の費用が EVAL_RUN_BUDGET_USD〔既定12〕を超えたら止める）
 bun scripts/eval-report.ts --cases <cases.json> --out /path/to/report /path/to/run1 /path/to/run2   # 回を並べた表（report.md・report.json。平均・最小〜最大・揺れの幅）
 ```
 
 回のフォルダには、回ごとの要約（`summary-*.json`。終わったか・落ちた理由を持つ）と、使った時点で足す費用（`costs.jsonl`。落ちた照合の分も残る）が入ります。表の値は終わった回だけで出し、落ちた・止めた回は数と理由を出します。まとめ流しは、前の variant が落ちたらその案件の残りを流さず、落ちたら 1 で終わります。
-案件定義は `variants`（流す順）と `files`（変換の元のほかに AI に渡すファイル）も書けます。合成の例（技術者一覧が別ファイル・PDF で届いた数件）は `fixtures/eval/cases.json` にあり（`bun scripts/make-sample-eval.ts` で作り直す）、実データの案件定義と1つのファイルにまとめて使います。
+案件定義は `variants`（流す順）と `files`（変換の元のほかに AI に渡すファイル）も書けます。合成の例（技術者一覧が別ファイル・PDF で届いた数件、顧客の回答をメールの本文・記入用Excelの別の列・一部だけで受け取る `synth-answers-*`）は `fixtures/eval/cases.json` にあり（`bun scripts/make-sample-eval.ts`・`bun scripts/make-sample-answers.ts` で作り直す）、実データの案件定義と1つのファイルにまとめて使います。
 コードを簡単にしたときの比べ方は、案件ごとのセルの一致率で下がり幅が2ポイント以内なら簡単な方です（`docs/plan-chat-rebuild.md`）。
 
 ## 既存のチェックアウトからの移行（apps/web 構成のときに clone していた場合）
@@ -313,6 +316,7 @@ scripts/
   eval.ts                     実例での照合（案件定義と結果はリポジトリの外）
   eval-run.ts / eval-report.ts  照合をまとめて流す・回を並べた表にする
   make-sample-eval.ts         照合の合成の例（fixtures/eval/）を作る
+  make-sample-answers.ts      照合の合成の例のうち、顧客の回答（fixtures/eval/synth-answers/）を作る
 fixtures/                     公式雛形（工事経歴書(LF).csv）と検証用 Excel
 docs/                         業種コード確認.csv
 drizzle/                      マイグレーション
