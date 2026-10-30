@@ -11,7 +11,7 @@
  * 案件定義は fixtures/eval/cases.json（scripts/eval.ts の EVAL_CASES の形。実データの案件定義と1つにまとめて使う）。
  */
 import { chromium } from "@playwright/test"
-import { mkdirSync, writeFileSync } from "node:fs"
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import * as XLSX from "xlsx"
 import { encodeCp932 } from "../src/lib/convert/text"
@@ -162,5 +162,7 @@ const cases = {
     variants: ["baseline", "edit"],
   },
 }
-writeFileSync(`${dir}/cases.json`, JSON.stringify(cases, null, 1) + "\n")
+// ほかの合成の例（scripts/make-sample-answers.ts の synth-answers-*）は残す
+const existing = JSON.parse(readFileSync(`${dir}/cases.json`, "utf8")) as Record<string, unknown>
+writeFileSync(`${dir}/cases.json`, JSON.stringify({ ...existing, ...cases }, null, 1) + "\n")
 console.log(`wrote ${dir}`)

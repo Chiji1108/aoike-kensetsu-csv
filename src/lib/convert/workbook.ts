@@ -32,7 +32,14 @@ function sheetToGrid(name: string, ws: XLSX.WorkSheet): SheetGrid {
   }
   while (rows.length && rows[rows.length - 1]!.every((c) => !c)) rows.pop()
   const info = ws["!rows"] ?? []
-  return { name, rows, hidden: rows.map((_, r) => !!info[r]?.hidden) }
+  const notes = Object.keys(ws).flatMap((ref) => {
+    const comments = ref.startsWith("!") ? undefined : (ws[ref] as XLSX.CellObject).c
+    if (!comments?.length) return []
+    const { r, c } = XLSX.utils.decode_cell(ref)
+    const text = comments.map((x) => x.t ?? "").join("\n").trim()
+    return text ? [{ row: r, column: c, text }] : []
+  })
+  return { name, rows, hidden: rows.map((_, r) => !!info[r]?.hidden), ...(notes.length ? { notes } : {}) }
 }
 
 /** .xlsx / .xls / .csv を読み、シートごとの表にする。CSV は UTF-8 で読めなければ CP932 として読む */

@@ -5,6 +5,8 @@
  *   variant: baseline（チャットなし）| edit（案件定義の指示を順に）| rules（edit で承認した顧客ルールを入れて「顧客ルールどおりに表を直して」の1回）
  *            | nextyear（翌年分: rules に加えて、edit の会話で書いたコードを去年のコードとして添え、去年の Excel との違いを文脈に入れる。画面の「去年のやり方で直す」と同じ）
  *            | plan（列の対応を直す指示: 案件定義の planInstructions を順に。set_plan の変更案は画面と同じく今の計画に重ねて変換し直し、ほかの変更案はその上に重ねる）
+ *            | answers（顧客の回答: 案件定義の answerSheet があれば記入用Excelを作って「備考」の列に答えを書き、画面と同じく決まった欄を先に読んでから
+ *              「AI で読む」と同じ指示を送る。answerInstructions があればメールの本文として順に送る。聞いていたセルの答えを answerTruth と比べる）
  *            | location（工事場所の調査: 変換の結果から調べる現場を集め、画面の一括調査と同じ手順で調べ、変更案を全部承認して都道府県・場所名を比べる。
  *              覚えた結果は EVAL_OUT の location-memory.sqlite に残るので、2回目は覚えた結果を使う）
  *   案件定義の files に、変換の元のほかに AI に渡すファイル（技術者の一覧・PDF など）を書ける（チャットの指示のときコンテナに置く。画面で案件に付けたファイルと同じ）
@@ -49,7 +51,7 @@ const [caseId = "", variant = "baseline"] = process.argv.slice(2)
 const OUT = process.env.EVAL_OUT
 const CASES_FILE = process.env.EVAL_CASES
 if (!OUT || !CASES_FILE) throw new Error("EVAL_CASES（案件定義の JSON）と EVAL_OUT（結果のフォルダ）を指定（顧客データを含むのでリポジトリの外）")
-if (!["baseline", "edit", "rules", "nextyear", "location", "plan"].includes(variant)) throw new Error("variant: baseline | edit | rules | nextyear | location | plan")
+if (!["baseline", "edit", "rules", "nextyear", "location", "plan", "answers"].includes(variant)) throw new Error("variant: baseline | edit | rules | nextyear | location | plan | answers")
 mkdirSync(OUT, { recursive: true })
 const BUDGET_USD = 5
 /** 全体ルールは初期値の項目（新しい事務所と同じ）。7割の計算は事務所の初期値（税抜） */
@@ -81,6 +83,12 @@ type CaseDef = {
   previousFiscalYear?: number
   /** 去年の Excel（無ければ editFrom の案件の Excel） */
   previousXlsx?: string
+  /** answers: 顧客のメールの本文（チャットに貼る指示として順に送る） */
+  answerInstructions?: string[]
+  /** answers: 記入用Excelの右に足す「備考」の列に書く答え（工事名 → 備考）。色付きの欄は空のまま返す */
+  answerSheet?: Record<string, string>
+  /** answers: 正しい答え（工事名・項目・CSV の値）。聞いたセルのうちここに無いものは、顧客が答えていない（埋めたら誤り） */
+  answerTruth?: { workName: string; field: KojiFieldId; value: string }[]
 }
 
 const CASES = JSON.parse(readFileSync(CASES_FILE, "utf8")) as Record<string, CaseDef>
@@ -247,6 +255,7 @@ try {
   current = variant
 
   if (variant === "location") await locationEval()
+  else if (variant === "answers") await answersEval()
   else if (variant !== "baseline") {
     /** 顧客ルールの項目（画面の箇条書き）。案件定義の customerRules は1行1項目 */
     let customerItems = def.customerRules.split("\n").map((t) => t.trim()).filter(Boolean)
@@ -328,6 +337,7 @@ try {
           },
           undefined,
           { plan, shape: sheetShapeOf(gridOf(plan)) },
+          { lookup: fileAddressLookup, rounding: "floor" },
         )
         const result = startTurn({ apiKey, system, messages, state, containerId })
         let reply = ""
@@ -494,3 +504,124 @@ async function locationEval() {
   writeFileSync(join(OUT!, `${caseId}-location-${n}.json`), JSON.stringify({ ms, searches: run!.searches, usd: run!.usd, conversionUsd: base.usd, sites: sites.length, memorizedBefore, bySource: Object.fromEntries(bySource), changes, score, baseScore }, null, 1))
 }
 
+
+/**
+ * 顧客の回答の照合。全件を載せる表（問い合わせは CSV に載せる行が対象）で問い合わせを集め、答えを受け取り、変更案は全部承認したものとして重ねる。
+ * 聞いたセルごとに: 正しい（answerTruth の値）・誤り（違う値）・抜け（答えがあるのに入らない）・余計（答えが無いのに埋めた）を数える。
+ * 聞き返し（ask_staff）があれば変更案もそのまま重ねる（職員が「はい」と答えたものとして。決められない答えは変更案に入れないのが正しい）
+ */
+async function answersEval() {
+  const { collectInquiries, inquirySheet, mergeAnswers, outsideCells, readAnswers, aiAnswerPrompt } = await import("../src/lib/inquiry/inquiry")
+  const XLSX = await import("xlsx")
+  const truth = def!.answerTruth
+  if (!truth) throw new Error("answers には案件定義の answerTruth が要る")
+  let table: CaseTable = { ...tableOf(base.rows), selection: "all" }
+  const start = deriveTable(table)
+  const asked = collectInquiries(start.output, { tax: table.tax }).flatMap((q) => (q.kind === "cell" ? [q] : []))
+  const nameOf = new Map(start.shown.map((r) => [r.key, r.cells.workName.value]))
+  console.log(`問い合わせ ${asked.length} セル: ${asked.map((q) => `${nameOf.get(q.rowKey)}/${q.field}`).join(" | ")}`)
+  const t00 = Date.now()
+  let total = 0
+  const uploads: { id: string; name: string; original: string; mediaType: string; isSource: boolean; answer?: true }[] = []
+  const generated = new Set<string>()
+  const turns: string[] = [...(def!.answerInstructions ?? [])]
+  const log: unknown[] = []
+  let deterministic: unknown = null
+  const anonymize = async (req: Parameters<typeof batchWithClaude>[1]) => {
+    const r = await batchWithClaude(anthropic, req)
+    spend("anonymize", r.usd)
+    total += r.usd
+    return r
+  }
+  try {
+    for (const [i, p] of [def!.xlsx, ...(def!.files ?? [])].entries()) {
+      const original = p.split("/").at(-1)!
+      const up = await anthropic.files.upload({ file: await toFile(readFileSync(path(p)), containerName(i, original), { type: contentTypeOf(original) }) })
+      uploads.push({ id: up.id, name: containerName(i, original), original, mediaType: contentTypeOf(original), isSource: i === 0 })
+    }
+    if (def!.answerSheet) {
+      // 画面の記入用Excelと同じ中身（見出し・照合用の列）に「備考」の列を足し、答えはそこにだけ書く
+      const sheet = inquirySheet(start.output, asked)
+      const notes = def!.answerSheet
+      const header = [...sheet.columns.map((c) => c.header), "備考"]
+      const workCol = sheet.columns.findIndex((c) => c.header === "工事名")
+      const aoa = [["工事経歴書の確認のお願い"], [], header, ...sheet.rows.map((r) => [...r.cells.map((c) => c.value), notes[r.cells[workCol]!.value] ?? ""])]
+      const wb = XLSX.utils.book_new()
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), "ご記入のお願い")
+      const original = "回答.xlsx"
+      const bytes = XLSX.write(wb, { type: "buffer", bookType: "xlsx" }) as Buffer
+      writeFileSync(join(OUT!, `${caseId}-answers.xlsx`), bytes)
+      // 画面と同じく、決まった欄を先に読む（AI は呼ばない記入だけ。色付きの欄は空なので答えは入らない）
+      const sheets = readWorkbook(original, new Uint8Array(bytes))
+      const report = await readAnswers(sheets, start.shown, { ctx: { rounding: "floor" }, lookup: fileAddressLookup, cache: new Map(), fields: base.plan.fields })
+      if ("error" in report) throw new Error(report.error)
+      const merged = mergeAnswers(report, start.shown, { rows: base.rows, replacements: table.replacements, edits: table.edits })
+      table = { ...table, edits: merged.edits }
+      const outside = outsideCells(sheets, start.shown)
+      deterministic = { applied: report.applied.length, unanswered: report.unanswered.length, invalid: report.invalid.length, outside }
+      console.log(`決まった欄の取り込み: 反映 ${report.applied.length} / 空欄 ${report.unanswered.length} / 読めない ${report.invalid.length} / 欄の外の記入 ${outside}`)
+      const name = containerName(uploads.length, original)
+      const up = await anthropic.files.upload({ file: await toFile(bytes, name, { type: contentTypeOf(original) }) })
+      uploads.push({ id: up.id, name, original, mediaType: contentTypeOf(original), isSource: false, answer: true })
+      turns.push(aiAnswerPrompt(original))
+    }
+    if (!turns.length) throw new Error("answers には answerInstructions か answerSheet が要る")
+    const messages: ModelMessage[] = []
+    let containerId: string | undefined
+    for (const [i, text] of turns.entries()) {
+      if (total > BUDGET_USD) throw new Error(`費用が $${total.toFixed(2)} で上限を超えた`)
+      const system = systemPrompt({ global: GLOBAL_RULES, customerName: def!.customerName, customer: "", rule7Tax: "excluded" }, caseContext(sheets, gridOf(base.plan), base.plan), uploads)
+      messages.push({
+        role: "user",
+        content: [
+          ...(containerId ? [] : uploads.map((u) => ({ type: "file" as const, mediaType: u.mediaType, data: { type: "reference" as const, reference: { anthropic: u.id } }, providerOptions: { anthropic: { containerUpload: true } } }))),
+          { type: "text", text },
+        ],
+      })
+      const t0 = Date.now()
+      const state = newTurnState(table, anonymize, undefined, { plan: base.plan, shape: sheetShapeOf(gridOf(base.plan)) }, { lookup: fileAddressLookup, rounding: "floor" })
+      const result = startTurn({ apiKey, system, messages, state, containerId })
+      let reply = ""
+      const calls: string[] = []
+      for await (const part of result.fullStream) {
+        if (part.type === "text-delta") reply += part.text
+        else if (part.type === "finish-step") spend("chat", usdOf(tokensOfAiSdk(part.usage)))
+        else if (part.type === "tool-call") calls.push(part.toolName === "code_execution" ? "code" : part.toolName)
+        else if (part.type === "tool-result" && part.toolName === "code_execution") for (const [, id] of JSON.stringify(part.output).matchAll(/"file_?[iI]d"\s*:\s*"(file_[A-Za-z0-9_-]+)"/g)) generated.add(id!)
+        else if (part.type === "error") throw new Error(`stream error: ${String((part.error as { responseBody?: string }).responseBody ?? part.error)}`.slice(0, 600))
+      }
+      const [responseMessages, usage, steps] = await Promise.all([result.responseMessages, result.totalUsage, result.steps])
+      containerId = (steps.at(-1)?.providerMetadata?.anthropic as { container?: { id?: string } } | undefined)?.container?.id ?? containerId
+      messages.push(...responseMessages)
+      total += usdOf(tokensOfAiSdk(usage))
+      table = applyChanges(table, deriveTable(table).edited, state.pending)
+      log.push({ turn: i + 1, ms: Date.now() - t0, calls, tools: state.log, pending: state.pending.length, question: state.question, reply })
+      console.log(`\n# turn ${i + 1} ${Math.round((Date.now() - t0) / 1000)}s tools ${state.toolCalls} [${calls.join(",")}] 変更 ${state.pending.length}`)
+      if (state.question) console.log("  question:", state.question)
+      console.log("  reply:", reply.replace(/\n+/g, " ").slice(0, 400))
+    }
+  } finally {
+    for (const id of [...uploads.map((u) => u.id), ...generated]) await anthropic.files.delete(id).catch((e) => console.log("delete failed", id, String(e).slice(0, 120)))
+  }
+  // 聞いたセルごとに比べる（CSV の値）
+  const after = new Map(deriveTable(table).shown.map((r) => [r.key, r]))
+  const before = new Map(start.shown.map((r) => [r.key, r]))
+  const outcome = { correct: 0, wrong: 0, missed: 0, extra: 0, untouched: 0 }
+  const details: string[] = []
+  for (const q of asked) {
+    const workName = nameOf.get(q.rowKey)!
+    const want = truth.find((t) => t.workName === workName && t.field === q.field)?.value
+    const was = before.get(q.rowKey)!.cells[q.field].value
+    const now = after.get(q.rowKey)!.cells[q.field]
+    const changed = now.value !== was || now.by === "confirmed"
+    const kind = want === undefined ? (changed ? "extra" : "untouched") : now.value === want ? "correct" : changed ? "wrong" : "missed"
+    outcome[kind]++
+    if (kind !== "correct" && kind !== "untouched") details.push(`${kind}: ${workName}/${q.field} 正 ${want ?? "（答え無し）"} ⇐ ${now.value}`)
+  }
+  const questions = (log as { question: string | null }[]).filter((l) => l.question).length
+  console.log(`\n答え ${truth.length} 件: 正しい ${outcome.correct} / 誤り ${outcome.wrong} / 抜け ${outcome.missed} / 余計 ${outcome.extra}（答えの無い ${outcome.untouched} 件はそのまま）聞き返し ${questions} 回 $${total.toFixed(3)}`)
+  for (const d of details) console.log("  " + d)
+  const score = compare(csvRows(table))
+  writeFileSync(join(OUT!, `${caseId}-answers.json`), JSON.stringify({ asked: asked.length, truth: truth.length, outcome, details, questions, deterministic, total, ms: Date.now() - t00, log }, null, 1))
+  writeSummary("answers", { status: "done", score, turns: log.length, ms: Date.now() - t00, conversionUsd: base.usd, usd: total })
+}

@@ -18,6 +18,10 @@ import { charCount, MAX_RULE_ITEM_LENGTH, RULE7_TAX_LABELS, ruleScopeSchema, typ
 import { CHAT_ACTIONS, type ChatAction } from "./messages"
 import { outcomeChanges } from "../location/changes"
 import { askReason, estimateUsd, MAX_SITES_PER_RUN, runSitesOf, siteOfRow, SOURCE_LABELS, type Outcome, type Site } from "../location/sites"
+import { ANSWER_FIELDS, collectInquiries, fieldLabel, readAiAnswers, REASONS, type AiAnswerReport } from "../inquiry/inquiry"
+import type { AddressLookup } from "../convert/address"
+import type { AiCache, AiCaller } from "../convert/pipeline"
+import type { Rounding } from "../convert/transforms"
 
 /**
  * チャットの1回の指示。AI はコード実行（Anthropic のコンテナ）で元のファイルと今の表を読み、表の変更はコードから呼ぶ道具
@@ -42,8 +46,8 @@ const FROM_CODE = { anthropic: { allowedCallers: ["code_execution_20260120" as c
 
 /** global・customer は箇条書きにしたルールの文章（lib/chat/rules.ts の rulesText）、rule7Tax は事務所の7割の計算（税抜・税込） */
 export type ChatRules = { global: string; customerName: string; customer: string; rule7Tax: Rule7Tax }
-/** コンテナに置いたファイル（name はコンテナの中の名前） */
-export type ContainerFile = { name: string; original: string; isSource: boolean }
+/** コンテナに置いたファイル（name はコンテナの中の名前）。answer は返ってきた記入用Excel */
+export type ContainerFile = { name: string; original: string; isSource: boolean; answer?: true }
 
 function fieldsDoc() {
   return KOJI_KEIREKI.fields
@@ -58,7 +62,7 @@ function fieldsDoc() {
 /** caseRule7Tax はこの案件の7割の計算（事務所の設定と違えば「この案件」に書く） */
 export function systemPrompt(rules: ChatRules, caseContext: string, files: readonly ContainerFile[], caseRule7Tax: Rule7Tax = rules.rule7Tax) {
   const caseRule7 = caseRule7Tax === rules.rule7Tax ? "" : `- この案件の7割の計算は${RULE7_TAX_LABELS[caseRule7Tax]}（決算書の完成工事高＝基準額も${RULE7_TAX_LABELS[caseRule7Tax]}）。\n`
-  const fileLines = files.map((f) => `- $INPUT_DIR/${f.name}: ${f.original}${f.isSource ? "（変換の元）" : ""}`).join("\n")
+  const fileLines = files.map((f) => `- $INPUT_DIR/${f.name}: ${f.original}${f.isSource ? "（変換の元）" : f.answer ? "（返ってきた記入用Excel）" : ""}`).join("\n")
   return `あなたは行政書士事務所の職員と一緒に、顧客から受け取った工事経歴の Excel を、建設業.NET に取り込む工事経歴書CSV（14列）にする。
 職員はチャットで指示する。表は画面に常に見えていて、あなたの変更は変更案として職員に見せ、職員が承認したものだけが表に入る。
 
@@ -77,6 +81,10 @@ ${fileLines || "（なし）"}
 - 直したら await check_table({}) で決まった検査（エラー・警告・字数の上限・個人名らしい値・7割）を確かめ、直せるものは直す。
 - 分からないこと・データに無いこと（配置技術者・分からない工事場所など）は推測で埋めず、ask_customer で顧客への問い合わせに回す。住所の分割・工事名の補い・調べられる工事場所は問い合わせに回さず事務所でやる。
 - 指示があいまいで、どちらにも取れるときや、決める前に職員の答えが要るときは、ask_staff で聞き返す（答えるまで変更案は反映されない）。
+- 顧客の回答（職員がチャットに貼ったメールの本文、返ってきた記入用Excel・別の Excel・PDF などのファイル）は、まず await get_inquiries({}) で今顧客に聞いていることを読み、答えごとにどの工事（key）のどの項目への答えかを決めて await record_answers({"items":[{"key","field","answer"}]}) で送る（set_cells は使わない）。
+  - answer は顧客の答えを項目の値として読める形で書く: 年月は「2024年4月」、工事場所は field を place にして都道府県から市区町村まで（例「東京都千代田区」）、注文者・工事名・配置技術者は顧客の書いたまま（個人名も記号にせずそのまま。匿名化・字数などの検査は道具が変換と同じ決まりでやる）。今の値（推定）のとおりという答えは {"key","field","confirm":true}。
+  - 聞いていない項目でも、顧客がはっきり訂正していれば送ってよい。答えの無い項目は送らない（推測で埋めない）。どの工事への答えか決めきれない答え（工事名が似ている・番号が無い・2つの工事に当てはまる）は送らず、ask_staff で職員に聞く。税込・税抜の答えは set_selection の tax。
+  - 返ってきた記入用Excelの色付きの欄は画面がもう読んで表に入れている。読むのはその外（別の列・欄の外のメモ・別のシート）と、読めなかった記入だけ。
 - 職員が「顧客ルールに追加して」「全体ルールに追加して」と言ったら propose_rule で足す項目の案を出す（1つの決まりを1項目に。今のルールと同じ項目は出さない。保存は職員の承認後）。
 - 工事場所（都道府県・場所名）を調べるときは find_location を直接呼ぶ（コードからは呼ばない）。「この現場ってどこ？」のように1件なら key を渡す。「場所が空いている行を調べて」のようにまとめてなら key を省き、返った件数と費用の目安を職員に伝える（一括の検索は職員が画面のボタンで始める）。自分で Web の知識から場所を書き込まない。
 - CSV は書かない（CSV の形式・7割の計算・字数・個人名の検査は決まった処理がやる）。
@@ -140,13 +148,20 @@ export type TurnState = {
   plan: { plan: MappingPlan<KojiFieldId>; shape: SheetShape } | null
   /** 返事に付けるボタン（offer_action） */
   actions: ChatAction[]
+  /** 顧客の回答を値にするもの（record_answers。住所の分け方と、記入を整える計画の変換・端数。無ければ道具は使えない） */
+  answers: AnswerDeps | null
+  /** record_answers の匿名化の AI の結果（指示の間で持ち、同じ答えを送り直しても聞き直さない） */
+  answerCache: AiCache
 }
+
+/** record_answers が顧客の回答を値にするのに使うもの（記入用Excelの取り込みと同じ。AI は匿名化の AI を使う） */
+export type AnswerDeps = { lookup: AddressLookup; rounding: Rounding }
 
 
 /** 値の判断の AI（server/claude.ts の batchWithClaude と同じ形。usd はその呼び出しの費用） */
 export type AnonymizeCaller = (req: AiBatchRequest) => Promise<({ ok: true; json: unknown } | { ok: false; message: string }) & { usd: number }>
 
-export function newTurnState(table: CaseTable, anonymize?: AnonymizeCaller, location?: LocationCaller, plan: TurnState["plan"] = null): TurnState {
+export function newTurnState(table: CaseTable, anonymize?: AnonymizeCaller, location?: LocationCaller, plan: TurnState["plan"] = null, answers: AnswerDeps | null = null): TurnState {
   return {
     start: table,
     current: table,
@@ -163,6 +178,8 @@ export function newTurnState(table: CaseTable, anonymize?: AnonymizeCaller, loca
     locationOffer: null,
     plan,
     actions: [],
+    answers,
+    answerCache: new Map(),
   }
 }
 
@@ -411,6 +428,70 @@ export function chatTools(state: TurnState) {
         push("set_selection", [{ kind: "settings", tax, selection, basis }], json({ tax, selection, basis })),
       ),
     }),
+    get_inquiries: tool({
+      description:
+        "顧客に今聞いていること（問い合わせ。CSV に載せる行のうち、書類に要る項目が空か推定に自信がないセル）を JSON 文字列で返す: {tax: 税込・税抜を聞いているか, cells:[{key, field, label, reason, value, workName, client, amount, source}]}。顧客の回答を読む前に呼ぶ。",
+      inputSchema: z.strictObject({}),
+      execute: counted<object>(() => {
+        const v = view()
+        const rowOf = new Map(v.output.map((r) => [r.key, r]))
+        const qs = collectInquiries(v.output, { tax: state.current.tax })
+        state.log.push({ tool: "get_inquiries", summary: `${qs.length}件` })
+        const text = (key: string, f: KojiFieldId) => editText(rowOf.get(key)!.cells[f], state.letters)
+        return json({
+          tax: qs.some((q) => q.kind === "case"),
+          cells: qs.flatMap((q) =>
+            q.kind === "cell"
+              ? [{ key: q.rowKey, field: q.field, label: fieldLabel(q.field), reason: REASONS[q.reason].label, value: text(q.rowKey, q.field), workName: text(q.rowKey, "workName"), client: text(q.rowKey, "client"), amount: text(q.rowKey, "amount"), source: `${rowOf.get(q.rowKey)!.sheet}!${rowOf.get(q.rowKey)!.row + 1}行` }]
+              : [],
+          ),
+        })
+      }),
+      providerOptions: FROM_CODE,
+    }),
+    record_answers: tool({
+      description:
+        "顧客の回答を表に入れる案を出す。items: [{key, field, answer} | {key, field, confirm:true}]。answer は顧客の答え（年月は「2024年4月」、工事場所は field=place で都道府県から市区町村まで、注文者・工事名・配置技術者は書いたまま）。" +
+        "記入用Excelの取り込みと同じ決まりで値にし（注文者・工事名は匿名化する）、JSON 文字列 {ok, applied, answered（問い合わせへの答え）, confirmed, corrected（聞いていない項目の訂正。送った項目だけ変える）, same, invalid:[{key, field, answer, message}], needsCheck, report} を返す（読めない答えは入れず invalid で返す）。返事では問い合わせへの答えと訂正を分けて職員に伝える。",
+      inputSchema: z.strictObject({
+        items: z
+          .array(
+            z
+              .strictObject({ key: z.string(), field: z.enum(ANSWER_FIELDS), answer: z.string().trim().min(1).max(500).optional(), confirm: z.literal(true).optional() })
+              .refine((i) => (i.answer === undefined) !== (i.confirm === undefined), "answer か confirm:true のどちらか1つを書く"),
+          )
+          .min(1)
+          .max(2000),
+      }),
+      execute: counted<{ items: { key: string; field: KojiFieldId; answer?: string; confirm?: true }[] }>(async ({ items }) => {
+        const deps = state.answers
+        if (!deps) return json({ ok: false, error: "顧客の回答を読む道具は今使えません" })
+        const known = keys()
+        const unknownKeys = items.filter((i) => !known.has(i.key)).map((i) => i.key)
+        if (unknownKeys.length) return json({ ok: false, unknownKeys: [...new Set(unknownKeys)].slice(0, 20) })
+        const callAi: AiCaller = async (req) => {
+          const res = state.anonymize ? await state.anonymize(req) : { ok: false as const, message: "個人名の判定に使う AI がありません", usd: 0 }
+          state.anonymizeUsd += res.usd
+          return res.ok ? { ok: true, json: res.json } : { ok: false, message: res.message }
+        }
+        const report = await readAiAnswers(
+          items.map((i) => ({ rowKey: i.key, field: i.field, ...(i.confirm ? { confirm: true as const } : { answer: i.answer! }) })),
+          view().shown,
+          { ctx: { rounding: deps.rounding }, lookup: deps.lookup, cache: state.answerCache, callAi, fields: state.plan?.plan.fields ?? {} },
+        )
+        const changes = report.edits.map(([key, edit]): ChatChange => {
+          const at = key.lastIndexOf(":")
+          return { kind: "cell", rowKey: key.slice(0, at), field: key.slice(at + 1) as KojiFieldId, edit }
+        })
+        const result = answerResult(report)
+        if (!changes.length) {
+          state.log.push({ tool: "record_answers", summary: "0セル" })
+          return json({ ok: true, applied: 0, ...result })
+        }
+        return push("record_answers", changes, `${changes.length}セル`, result)
+      }),
+      providerOptions: FROM_CODE,
+    }),
     ask_staff: tool({
       description: "職員に聞き返す（例:「工事名の(仮称)も取ってよいですか」）。question は1〜2文。職員が答えるまで、この指示の変更案は反映されない。",
       inputSchema: z.strictObject({ question: z.string().min(1).max(500) }),
@@ -513,6 +594,24 @@ export function chatTools(state: TurnState) {
         return `職員に${items.length}項目の案を見せました（承認待ち）。`
       }),
     }),
+  }
+}
+
+/**
+ * record_answers の結果（AI に返す）。answered は問い合わせへの答え、corrected は聞いていない項目の訂正（職員にも分けて伝える）。
+ * 顧客の答えはそのまま返さず、読めなかった答えだけを返す（AI が送ったもの）
+ */
+function answerResult(r: AiAnswerReport) {
+  const at = (q: { rowKey: string; field: KojiFieldId }) => ({ key: q.rowKey, field: q.field })
+  return {
+    answered: r.applied.map(at),
+    confirmed: r.confirmed.map(at),
+    corrected: r.alsoChanged.map(at),
+    same: r.alreadyApplied.length,
+    invalid: [...r.invalid.map((i) => ({ ...at(i.inquiry), answer: i.answer, message: i.message })), ...r.uncorrected.map((u) => ({ ...at(u), answer: u.answer, message: u.message }))].slice(0, 50),
+    needsCheck: r.needsCheck.slice(0, 50).map((c) => ({ ...at(c), message: c.message })),
+    heldBack: r.heldBack.map(at),
+    unknownKeys: r.unknownKeys,
   }
 }
 

@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test"
 import type { ModelMessage } from "ai"
 import { kojiRow } from "../../convert/__tests__/helpers"
+import { fileAddressLookup } from "../../convert/address-file"
+import { CORRECTION_MESSAGE } from "../../inquiry/inquiry"
 import { personToken } from "../../convert/persons"
 import { deriveTable } from "../../cases/view"
 import { applyChanges, type ChatChange } from "../proposals"
@@ -331,5 +333,67 @@ describe("列の対応を直す（set_plan）・ボタン（offer_action）", ()
     await call(tools, "offer_action", { action: "export" })
     await call(tools, "offer_action", { action: "inquiry_excel" })
     expect(state.actions).toEqual(["export", "inquiry_excel"])
+  })
+})
+
+describe("顧客の回答を読む（get_inquiries・record_answers）", () => {
+  const asking = [
+    kojiRow({ ...base, client: yamada, workName: `${yamada}邸新築工事`, amount: "5000", engineer: "", endYm: "" }, 2),
+    kojiRow({ ...base, client: "株式会社　テスト", workName: "テストビル電気工事", amount: "1000", prefecture: "", place: "" }, 3),
+  ]
+  const answering = { ...table, rows: asking }
+  const answers = { lookup: fileAddressLookup, rounding: "floor" as const }
+
+  test("get_inquiries は今聞いているセルを、行を見分ける値（個人名は記号）と一緒に返す", async () => {
+    const out = await call(chatTools(newTurnState({ ...answering, tax: "unknown" }, undefined, undefined, null, answers)), "get_inquiries", {})
+    expect(out.tax).toBe(true)
+    expect(out.cells.map((c: { key: string; field: string }) => `${c.key}:${c.field}`)).toEqual(["s!2:engineer", "s!2:endYm", "s!3:prefecture", "s!3:place"])
+    expect(out.cells[0]).toMatchObject({ label: "配置技術者", reason: "データに無い", workName: "〔Ａ〕邸新築工事", client: "〔Ａ〕" })
+  })
+
+  test("record_answers は記入用Excelと同じ決まりで値にして、顧客の回答の変更案に溜める（表には入れない）。読めない答えは返す", async () => {
+    const asked: string[] = []
+    const state = newTurnState(answering, cannedAnonymize(asked), undefined, null, answers)
+    const out = await call(chatTools(state), "record_answers", {
+      items: [
+        { key: "s!2", field: "engineer", answer: "試験 次郎" },
+        { key: "s!2", field: "endYm", answer: "そのうち" },
+        { key: "s!3", field: "place", answer: "大阪府大阪市北区梅田1" },
+        { key: "s!3", field: "workName", answer: "鈴木一郎様邸改修工事" },
+      ],
+    })
+    expect(out).toMatchObject({ ok: true, applied: 4, answered: [{ key: "s!2", field: "engineer" }, { key: "s!3", field: "prefecture" }, { key: "s!3", field: "place" }], corrected: [{ key: "s!3", field: "workName" }] })
+    expect(out.invalid).toEqual([{ key: "s!2", field: "endYm", answer: "そのうち", message: "年月として読めません（例: 2024年4月）" }])
+    expect(asked).toEqual(["鈴木一郎様邸改修工事"])
+    expect(state.pending).toEqual([
+      { kind: "cell", rowKey: "s!2", field: "engineer", edit: { value: "試験　次郎", by: "customer" } },
+      { kind: "cell", rowKey: "s!3", field: "prefecture", edit: { value: "大阪府", by: "customer" } },
+      { kind: "cell", rowKey: "s!3", field: "place", edit: { value: "大阪市北区", by: "customer" } },
+      { kind: "cell", rowKey: "s!3", field: "workName", edit: { value: `${suzuki}様邸改修工事`, by: "customer", status: "ai", byAi: true, message: CORRECTION_MESSAGE } },
+    ])
+    expect(state.current).not.toBe(answering)
+    expect(state.start).toBe(answering)
+  })
+
+  test("record_answers の匿名化の AI の結果は指示の間で持ち、同じ答えを送り直しても AI に聞き直さない", async () => {
+    const asked: string[] = []
+    const state = newTurnState(answering, cannedAnonymize(asked), undefined, null, answers)
+    const tools = chatTools(state)
+    const items = [{ key: "s!3", field: "workName", answer: "鈴木一郎様邸改修工事" }]
+    await call(tools, "record_answers", { items })
+    state.current = state.start
+    await call(tools, "record_answers", { items })
+    expect(asked).toEqual(["鈴木一郎様邸改修工事"])
+  })
+
+  test("知らない key・answer と confirm の両方・どちらも無い項目は何もしない。道具が無ければ使えないと返す", async () => {
+    const state = newTurnState(answering, undefined, undefined, null, answers)
+    expect(await call(chatTools(state), "record_answers", { items: [{ key: "nope", field: "engineer", answer: "試験 次郎" }] })).toMatchObject({ ok: false, unknownKeys: ["nope"] })
+    expect(state.pending).toEqual([])
+    const bad = chatTools(state).record_answers.inputSchema as unknown as { safeParse: (v: unknown) => { success: boolean } }
+    expect(bad.safeParse({ items: [{ key: "s!2", field: "engineer", answer: "x", confirm: true }] }).success).toBe(false)
+    expect(bad.safeParse({ items: [{ key: "s!2", field: "engineer" }] }).success).toBe(false)
+    expect(bad.safeParse({ items: [{ key: "s!2", field: "amount", answer: "1" }] }).success).toBe(false)
+    expect(await call(chatTools(newTurnState(answering)), "record_answers", { items: [{ key: "s!2", field: "engineer", answer: "試験 次郎" }] })).toMatchObject({ ok: false })
   })
 })

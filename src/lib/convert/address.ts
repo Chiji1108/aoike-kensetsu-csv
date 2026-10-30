@@ -156,6 +156,34 @@ export async function lookupAddresses(raws: Iterable<string>, api: string): Prom
   return new Map(await Promise.all(keys.map(async (key) => [key, await splitOne(reader, key)] as const)))
 }
 
+/** 同梱の住所データを渡す URL（実在しない名前。この URL への fetch だけを手元の住所データで答える） */
+const BUNDLED_API = "https://japanese-addresses.bundled.invalid/api/ja"
+
+/**
+ * 手元にある住所データ（ja.json の中身）で引く（サーバー用）。分け方は lookupAddresses と同じ（同じライブラリ・同じ splitOne）。
+ * Worker からは同梱の静的ファイルを URL で読めず、ライブラリは住所データを fetch で読むので、住所データの URL への fetch だけを
+ * 手元の住所データで答える（ほかの URL はそのままの fetch に渡す）
+ */
+export function bundledAddressLookup(json: unknown): AddressLookup {
+  serveBundled(json)
+  return (raws) => lookupAddresses(raws, BUNDLED_API)
+}
+
+const SERVED = Symbol.for("aoike.bundledAddresses")
+
+function serveBundled(json: unknown) {
+  const g = globalThis as typeof globalThis & { [SERVED]?: true }
+  if (g[SERVED]) return
+  g[SERVED] = true
+  const original = g.fetch.bind(g)
+  g.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url
+    if (!url.startsWith(BUNDLED_API)) return original(input, init)
+    // 市区町村の一覧（ja.json）だけを持つ。町字のデータ（level 3 以上）は同梱していないので、画面と同じく無いものとして答える
+    return Promise.resolve(url.split("?")[0] === `${BUNDLED_API}.json` ? Response.json(json) : new Response("", { status: 404 }))
+  }) as typeof fetch
+}
+
 /**
  * 引いた住所を持ち続ける（画面用）。ensure は持っていない値だけを引き、引き終わると持っている全部を返す。
  * 計画の住所と関係ない変更では引き直さず、住所の列が変わったときも新しい値だけを引く。
