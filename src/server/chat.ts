@@ -311,7 +311,7 @@ async function runTurn(request: Request, caseId: string): Promise<Response> {
         writer.write({ type: "data-carryover", data: { fiscalYear: carryover.fiscalYear, codes: carryText.included, ...(carryover.skipped ? { skipped: carryover.skipped } : {}) } })
       // 一括調査を始めるボタン（検索は職員が押してから。件数と費用の目安を添える）
       if (state.locationOffer) writer.write({ type: "data-location-offer", data: state.locationOffer })
-      // 画面の決まった処理を始めるボタン（書き出す前の確認・問い合わせの Excel・編集用の Excel）。止めた・失敗した回は出さない
+      // 画面の決まった処理を始めるボタン（書き出す前の確認・問い合わせの Excel）。止めた・失敗した回は出さない
       if (!failure) for (const action of state.actions) writer.write({ type: "data-action", data: { action } })
       // 置いた変更案は、後始末のほかの失敗があっても画面に出す（開き直したときと同じに見せる）
       if (proposal && shown) {
@@ -419,7 +419,7 @@ export async function endChat(caseId: string): Promise<{ id: string; text: strin
 }
 
 /**
- * 返ってきた編集用の Excel の変更案を置く（画面が差分を作る。lib/excel/edit-sheet.ts）。中身は表の変更（セル・載せる・足す）だけで、
+ * 上げ直した最後の Excel の変更案を置く（画面が差分を作る。lib/excel/final-import.ts）。中身は表の変更（セル・載せる・足す）だけで、
  * 元の Excel は案件のファイル。同じ id の変更案は上書きしない。削除と重なったら置いたものを消して断る（削除のあとに R2 に残さない）
  */
 export async function recordExcelProposal(caseId: string, record: ProposalRecord) {

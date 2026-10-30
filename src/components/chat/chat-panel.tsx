@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react"
 import { useChat } from "@ai-sdk/react"
 import { DefaultChatTransport, validateUIMessages } from "ai"
 import { z } from "zod"
-import { Brain, Code2, Download, FileSpreadsheet, History, Loader2, MessageSquare, MessageSquareText, Paperclip, Send, Square, Table2, Trash2, X } from "lucide-react"
+import { Brain, Code2, FileSpreadsheet, History, Loader2, MessageSquare, MessageSquareText, Paperclip, Send, Square, Table2, Trash2, X } from "lucide-react"
 import { toast } from "sonner"
 import { Markdown } from "@/components/chat/markdown"
 import { ProposalCard, type ProposalActions } from "@/components/chat/proposal-card"
@@ -15,7 +15,7 @@ import { Message, MessageContent, MessageFooter } from "@/components/ui/message"
 import { MessageScroller, MessageScrollerButton, MessageScrollerContent, MessageScrollerItem, MessageScrollerProvider, MessageScrollerViewport } from "@/components/ui/message-scroller"
 import { Trace, TraceCollapsible, TraceCollapsibleContent, TraceCollapsibleTrigger, TraceIcon, TraceLine, TraceTitle } from "@/components/ui/trace"
 import type { TableView } from "@/lib/cases/view"
-import { chatDataSchemas, chatMetadataSchema, type ChatAction, type ChatMessage, type ChatRequest } from "@/lib/chat/messages"
+import { chatDataSchemas, chatMetadataSchema, currentAction, type ChatAction, type ChatMessage, type ChatRequest, type SavedChatAction } from "@/lib/chat/messages"
 import type { MappingPlan } from "@/lib/convert/plan"
 import type { KojiFieldId } from "@/lib/spec/koji-keireki"
 import type { ChatChange, Proposal } from "@/lib/chat/proposals"
@@ -98,7 +98,7 @@ export type ChatPanelProps = {
   report: React.ReactNode
   /** チャット欄に落とした・付けたファイル（種類は案件の画面が見分ける） */
   onFiles: (files: File[]) => void
-  /** 返事のボタン（書き出す前の確認・問い合わせ・編集用の Excel） */
+  /** 返事のボタン（書き出す前の確認・問い合わせ） */
   onAction: (action: ChatAction) => void
   /** 今の列の対応（列の対応の変更案を「今 → 案」で出す） */
   plan: MappingPlan<KojiFieldId> | null
@@ -531,10 +531,11 @@ function ChatMessageView({
 const ACTION_BUTTONS = {
   export: { label: "書き出す前の確認を開く", icon: <FileSpreadsheet /> },
   inquiry_excel: { label: "顧客への問い合わせを開く", icon: <MessageSquareText /> },
-  edit_excel: { label: "編集用の Excel を落とす", icon: <Download /> },
 } satisfies Record<ChatAction, { label: string; icon: React.ReactNode }>
 
-function ActionButton({ action, onAction }: { action: ChatAction; onAction: (a: ChatAction) => void }) {
+/** 保存した会話の前のボタン（edit_excel）は、今の同じ処理のボタンにする */
+function ActionButton({ action: saved, onAction }: { action: SavedChatAction; onAction: (a: ChatAction) => void }) {
+  const action = currentAction(saved)
   const b = ACTION_BUTTONS[action]
   return (
     <Button size="sm" variant="outline" className="w-fit" onClick={() => onAction(action)} data-testid="chat-action" data-action={action}>
