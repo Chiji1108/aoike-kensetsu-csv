@@ -51,7 +51,7 @@ export type UndoEntry = {
 
 /** 残す記録の数と大きさ（案件の作業は D1 の1行に入れるので、取り消しの記録で埋めない） */
 export const MAX_UNDO_ENTRIES = 30
-export const MAX_UNDO_BYTES = 300_000
+export const MAX_UNDO_BYTES = 200_000
 
 const same = (a: unknown, b: unknown) => a === b || JSON.stringify(a) === JSON.stringify(b)
 

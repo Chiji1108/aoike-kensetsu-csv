@@ -27,6 +27,8 @@ describe("去年のコード", () => {
       { id: "p5", origin: { kind: "excel", fileId: "f" }, question: null, state: "closed", applied: 5, rejected: 0 },
     ]
     expect([...approvedChatProposals(proposals)].sort()).toEqual(["p1", "p3"])
+    // 承認を取り消した変更案（承認の記録がすべて取り消し済み）は除く。一部だけ取り消したものは残す
+    expect([...approvedChatProposals(proposals, [{ proposalId: "p1", undone: true }, { proposalId: "p3", undone: true }, { proposalId: "p3" }])].sort()).toEqual(["p3"])
   })
 
   test("承認した変更案の付いた返事の、表を変える道具を呼ぶコードだけを会話の順に（読むだけ・bash・重なりは除く）", () => {

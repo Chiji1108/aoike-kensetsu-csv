@@ -62,6 +62,12 @@ describe("チャットの計画の差分（set_plan）", () => {
     expect(ok.ok && ok.plan.amountUnit).toBe("thousandYen")
   })
 
+  test("個人名を含みうる項目（注文者・工事名）に定数は書けない（匿名化を通らずに CSV に出るため）。ほかの項目の定数はよい", () => {
+    const r = applyPlanPatch(KOJI_KEIREKI, plan, patch({ fields: { client: { kind: "constant", value: "山田太郎", reason: "全部同じ" } }, reason: "x" }), shape)
+    expect(r.ok).toBe(false)
+    expect(applyPlanPatch(KOJI_KEIREKI, plan, patch({ fields: { gyoshu: { kind: "constant", value: "19", reason: "全部内装" } }, reason: "x" }), shape).ok).toBe(true)
+  })
+
   test("知らない引数は断る（strict）", () => {
     expect(planPatchInputSchema.safeParse({ sheets: ["x"], reason: "x" }).success).toBe(false)
     expect(planPatchInputSchema.safeParse({ fields: { amount: { kind: "column", column: 3, transform: "rule.yenToThousand" } }, reason: "x" }).success).toBe(false)

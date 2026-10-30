@@ -467,7 +467,7 @@ export function chatTools(state: TurnState) {
       description:
         "列の対応（計画）を変える案を出す。変える項目だけを書く（差分）。fields: {項目: {kind:'column', column:'J', transform} | {kind:'columns', columns:['B','C'], transform} | {kind:'flagColumns', columns:[{column:'F', code:'8'}]} | {kind:'constant', value, reason} | {kind:'missing'}}。" +
         "列は Excel の列記号、行（headerRow・dataStart・skipRows）は Excel の行番号。skipRows・excludeColumns は送ると今のものと入れ替える。reason に職員向けの理由。ai.freeform のときだけ instruction に指示文。" +
-        "個人名の項目（注文者・工事名・配置技術者）は匿名化する変換しか使えない。項目ごとに使える変換:\n" +
+        "個人名の項目（注文者・工事名・配置技術者）は匿名化する変換しか使えず、注文者・工事名に定数は書けない。項目ごとに使える変換:\n" +
         planToolDoc() +
         "\nJSON 文字列 {ok, changes} を返す（合わない項目があれば ok:false と problems で、何も変えない）。承認すると変換し直す。",
       inputSchema: planPatchInputSchema,

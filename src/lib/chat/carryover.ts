@@ -1,3 +1,4 @@
+import type { UndoEntry } from "../cases/undo"
 import type { ModelMessage } from "ai"
 import { z } from "zod"
 import { editKey, type CellEdit } from "../convert/convert"
@@ -33,8 +34,11 @@ const changeCode = (input: unknown) => {
 const unique = (codes: readonly string[]) => [...new Set(codes)]
 
 /** 職員が1項目でも承認したチャットの変更案 */
-export function approvedChatProposals(proposals: readonly Proposal[]): Set<string> {
-  return new Set(proposals.filter((p) => p.origin.kind === "chat" && (p.state === "closed" ? p.applied > 0 : p.applied.length > 0)).map((p) => p.id))
+export function approvedChatProposals(proposals: readonly Proposal[], undo: readonly Pick<UndoEntry, "proposalId" | "undone">[] = []): Set<string> {
+  // 承認を取り消した変更案（その変更案の承認の記録がすべて取り消し済み）は、承認につながらなかったものとして扱う
+  const undone = new Set(undo.filter((e) => e.undone).map((e) => e.proposalId))
+  for (const e of undo) if (!e.undone) undone.delete(e.proposalId)
+  return new Set(proposals.filter((p) => p.origin.kind === "chat" && (p.state === "closed" ? p.applied > 0 : p.applied.length > 0) && !undone.has(p.id)).map((p) => p.id))
 }
 
 /** 画面の会話から、承認した変更案の付いた返事のコード（表を変える道具を呼ぶもの）を、会話の順に */

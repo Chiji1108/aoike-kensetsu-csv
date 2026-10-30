@@ -1041,7 +1041,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
         </nav>
         <PageHeader
           title={`${customer.name} ${kase.fiscalYear}年度`}
-          description="顧客の Excel を落とすと、AI が列の対応を考えて変換します。直したいことは右のチャットで頼み、変更案を承認すると表に入ります。作業は自動で保存します。"
+          description="顧客の Excel を落とすと、AI が列の対応を考えて変換します。直したいことはチャットで頼み、変更案を承認すると表に入ります。作業は自動で保存します。"
           actions={
             <div className="flex flex-wrap items-center gap-3">
               <SaveIndicator status={saveStatus} />
@@ -1094,6 +1094,11 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
               <Button variant="outline" onClick={() => setChatShown(true)} data-testid="chat-open">
                 <MessageSquare /> チャット
                 {openProposals > 0 && <span className="rounded-full bg-violet-600 px-1.5 text-xs text-white">{openProposals}</span>}
+                {questions.some((q) => q.answered === null) && (
+                  <span className="rounded-full bg-amber-500 px-1.5 text-xs text-white" title="変換の報告に、答えてほしいことがあります" data-testid="chat-open-question">
+                    ?
+                  </span>
+                )}
               </Button>
             )}
           </div>

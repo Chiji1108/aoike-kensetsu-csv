@@ -199,7 +199,9 @@ export function fieldPlanProblem(
   vt: ValueType,
   nCols: number,
 ): string | undefined {
-  if (p.kind === "constant" || p.kind === "missing") return undefined
+  // 個人名を含みうる項目（注文者・工事名）に定数を書くと、匿名化を通らずに CSV に出る（個人名の項目は匿名化する変換だけ）
+  if (p.kind === "constant") return vt.type === "text" && vt.person && p.value.trim() ? "個人名を含みうる項目に定数は使えない" : undefined
+  if (p.kind === "missing") return undefined
   if (p.kind === "flagColumns") {
     if (vt.type !== "code") return "記号の列はコードの項目にしか使えない"
     if (p.columns.length === 0 || p.columns.some((c) => c.column < 0 || c.column >= nCols)) return "列番号がシートの範囲外の"

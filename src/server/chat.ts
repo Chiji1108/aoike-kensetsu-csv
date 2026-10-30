@@ -328,7 +328,7 @@ async function carryoverOf(db: store.Db, prev: Case, from: Omit<Parameters<typeo
   if (!work.success || !aiCache.success) return { fiscalYear: prev.fiscalYear, codes: [], skipped: "去年の案件の作業を読めなかったので、コードは添えません" }
   const { ui } = (await loadChat(bucket(), prev.id)).doc
   const names = namesForCarryover({ ...from, previous: { work: work.data, aiCache: aiCache.data } })
-  return { fiscalYear: prev.fiscalYear, codes: cleanCarryoverCodes(codesFromUi(ui, approvedChatProposals(work.data.proposals)), names, words) }
+  return { fiscalYear: prev.fiscalYear, codes: cleanCarryoverCodes(codesFromUi(ui, approvedChatProposals(work.data.proposals, work.data.undo)), names, words) }
 }
 
 /**

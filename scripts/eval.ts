@@ -4,6 +4,7 @@
  *   EVAL_CASES=<案件定義の JSON> EVAL_OUT=<結果を書くフォルダ> bun scripts/eval.ts <case> <variant>
  *   variant: baseline（チャットなし）| edit（案件定義の指示を順に）| rules（edit で承認した顧客ルールを入れて「顧客ルールどおりに表を直して」の1回）
  *            | nextyear（翌年分: rules に加えて、edit の会話で書いたコードを去年のコードとして添え、去年の Excel との違いを文脈に入れる。画面の「去年のやり方で直す」と同じ）
+ *            | plan（列の対応を直す指示: 案件定義の planInstructions を順に。set_plan の変更案は画面と同じく今の計画に重ねて変換し直し、ほかの変更案はその上に重ねる）
  *            | location（工事場所の調査: 変換の結果から調べる現場を集め、画面の一括調査と同じ手順で調べ、変更案を全部承認して都道府県・場所名を比べる。
  *              覚えた結果は EVAL_OUT の location-memory.sqlite に残るので、2回目は覚えた結果を使う）
  *   案件定義の files に、変換の元のほかに AI に渡すファイル（技術者の一覧・PDF など）を書ける（チャットの指示のときコンテナに置く。画面で案件に付けたファイルと同じ）
@@ -31,6 +32,7 @@ import { heuristicPlan, planSheets, sheetByNames } from "../src/lib/convert/heur
 import { runConversion } from "../src/lib/convert/pipeline"
 import { fileAddressLookup } from "../src/lib/convert/address-file"
 import { acceptAiPlan, type MappingPlan } from "../src/lib/convert/plan"
+import { applyPlanPatch, describePlanPatch, sheetShapeOf } from "../src/lib/convert/plan-patch"
 import { planExcerpt, previousPlanContext } from "../src/lib/convert/prompt"
 import { collectSourceRows } from "../src/lib/convert/sources"
 import { readWorkbook } from "../src/lib/convert/workbook"
@@ -47,7 +49,7 @@ const [caseId = "", variant = "baseline"] = process.argv.slice(2)
 const OUT = process.env.EVAL_OUT
 const CASES_FILE = process.env.EVAL_CASES
 if (!OUT || !CASES_FILE) throw new Error("EVAL_CASES（案件定義の JSON）と EVAL_OUT（結果のフォルダ）を指定（顧客データを含むのでリポジトリの外）")
-if (!["baseline", "edit", "rules", "nextyear", "location"].includes(variant)) throw new Error("variant: baseline | edit | rules | nextyear | location")
+if (!["baseline", "edit", "rules", "nextyear", "location", "plan"].includes(variant)) throw new Error("variant: baseline | edit | rules | nextyear | location | plan")
 mkdirSync(OUT, { recursive: true })
 const BUDGET_USD = 5
 
@@ -64,6 +66,8 @@ type CaseDef = {
   staffErrors: { amount: string; field: KojiFieldId; why: string }[]
   notDerivable: { field: KojiFieldId; why: string }[]
   instructions: string[]
+  /** 列の対応を直す指示（variant plan。例:「完成年月は引渡日にして」） */
+  planInstructions?: string[]
   /** 変換の元のほかに AI に渡すファイル（ROOT からの相対パスか絶対パス。技術者の一覧・PDF など） */
   files?: string[]
   /** scripts/eval-run.ts で順に流す variant（location を2つ書くと、1回目は調べ、2回目は覚えた結果を使う） */
@@ -266,7 +270,11 @@ try {
         console.log(`去年のコード ${codes.length} 件（${carryText.length} 字）。去年との違い:\n  ${previousFormat.lines.join("\n  ")}`)
       }
     }
-    const turns = variant === "rules" || variant === "nextyear" ? ["顧客ルールどおりに表を直して"] : def.instructions
+    const turns = variant === "rules" || variant === "nextyear" ? ["顧客ルールどおりに表を直して"] : variant === "plan" ? (def.planInstructions ?? []) : def.instructions
+    if (!turns.length) throw new Error(`${variant} の指示が案件定義に無い`)
+    /** 今の列の対応（set_plan を承認すると変わる。画面と同じく、変えたら変換し直す） */
+    let plan = base.plan
+    const conversionCache = new Map()
     // 画面と同じく、案件のファイルを file-<n>.<拡張子> の名前でコンテナに置く（変換の元が1つ目）。上げたら、落ちても必ず消す
     const uploads: { id: string; name: string; original: string; mediaType: string; isSource: boolean }[] = []
     let table = tableOf(base.rows)
@@ -286,8 +294,9 @@ try {
         const up = await anthropic.files.upload({ file: await toFile(readFileSync(path(p)), name, { type: mediaType }) })
         uploads.push({ id: up.id, name, original, mediaType, isSource: i === 0 })
       }
-      const system = systemPrompt({ global: DEFAULT_GLOBAL_RULES, customerName: def.customerName, customer: customerRules }, caseContext(sheets, gridOf(base.plan), base.plan, previousFormat), uploads)
       for (const [i, text] of turns.entries()) {
+        // 画面は指示のたびに今の列の対応で文脈を作る
+        const system = systemPrompt({ global: DEFAULT_GLOBAL_RULES, customerName: def.customerName, customer: customerRules }, caseContext(sheets, gridOf(plan), plan, previousFormat), uploads)
         if (total > BUDGET_USD) {
           status = "stopped"
           reason = `費用が $${total.toFixed(2)} で上限 $${BUDGET_USD} を超え、${turns.length - i} 回の指示を送っていない`
@@ -305,11 +314,16 @@ try {
           ],
         })
         const t0 = Date.now()
-        const state = newTurnState(table, async (req) => {
-          const r = await batchWithClaude(anthropic, req)
-          spend("anonymize", r.usd)
-          return r
-        })
+        const state = newTurnState(
+          table,
+          async (req) => {
+            const r = await batchWithClaude(anthropic, req)
+            spend("anonymize", r.usd)
+            return r
+          },
+          undefined,
+          { plan, shape: sheetShapeOf(gridOf(plan)) },
+        )
         const result = startTurn({ apiKey, system, messages, state, containerId })
         let reply = ""
         const calls: string[] = []
@@ -325,10 +339,35 @@ try {
         messages.push(...responseMessages)
         const usd = usdOf(tokensOfAiSdk(usage)) + state.anonymizeUsd
         total += usd
+        // 列の対応の変更案は、画面の承認と同じく今の計画に重ねて変換し直す（確かめは同じ applyPlanPatch）。手直しはその上に重なる
+        const planChanges = state.pending.flatMap((c) => (c.kind === "plan" ? [c.patch] : []))
+        for (const patch of planChanges) {
+          const applied = applyPlanPatch(KOJI_KEIREKI, plan, patch, sheetShapeOf(gridOf(plan)))
+          if (applied.ok) plan = applied.plan
+          else console.log("  set_plan を重ねられない:", applied.problems.join(" / "))
+        }
+        if (planChanges.length) {
+          const rows = await runConversion({
+            lookup: fileAddressLookup,
+            spec: KOJI_KEIREKI,
+            sources: collectSourceRows(sheets, plan).rows,
+            plan,
+            ctx: { rounding: "floor" },
+            cache: conversionCache,
+            callAi: async (req) => {
+              const r = await batchWithClaude(anthropic, req)
+              spend("conversion", r.usd)
+              total += r.usd
+              return r.ok ? { ok: true, json: r.json } : { ok: false, message: r.message }
+            },
+          })
+          table = { ...table, rows }
+          console.log(`  set_plan を承認して変換し直した: ${planChanges.flatMap((p) => describePlanPatch(p)).join(" / ")}`)
+        }
         table = applyChanges(table, deriveTable(table).edited, state.pending)
         const rules = state.pending.flatMap((c) => (c.kind === "rule" && c.scope === "customer" ? [c.text] : []))
         const score = compare(csvRows(table))
-        log.push({ turn: i + 1, text, ms: Date.now() - t0, steps: steps.length, calls, toolCalls: state.toolCalls, usage, usd, pending: state.pending.length, question: state.question, rules, tools: state.log, reply, report: checkReport(deriveTable(table), state.letters), score })
+        log.push({ turn: i + 1, plan: planChanges, text, ms: Date.now() - t0, steps: steps.length, calls, toolCalls: state.toolCalls, usage, usd, pending: state.pending.length, question: state.question, rules, tools: state.log, reply, report: checkReport(deriveTable(table), state.letters), score })
         console.log(`\n# turn ${i + 1}「${text}」 ${Math.round((Date.now() - t0) / 1000)}s steps ${steps.length} tools ${state.toolCalls} [${calls.join(",")}] $${usd.toFixed(3)}`)
         if (state.question) console.log("  question:", state.question)
         console.log("  reply:", reply.replace(/\n+/g, " ").slice(0, 400))
