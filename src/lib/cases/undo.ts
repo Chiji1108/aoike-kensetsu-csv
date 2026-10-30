@@ -80,7 +80,8 @@ export function undoEntry(before: Undoable, after: Undoable, meta: { id: string;
   return entry
 }
 
-const sizeOf = (e: UndoEntry) => JSON.stringify(e).length
+/** 記録の大きさ（UTF-8 のバイト数。案件の作業の上限 MAX_STATE_BYTES と同じ測り方） */
+const sizeOf = (e: UndoEntry) => new TextEncoder().encode(JSON.stringify(e)).byteLength
 
 /**
  * 記録を足す。数と大きさの上限を超えたら古いものから捨てる。1件だけで上限を超える記録は中身を捨て、取り消せない印だけを残す
@@ -130,9 +131,15 @@ export function undo<W extends Undoable & { undo: readonly UndoEntry[] }>(work: 
     else manual.set(k, before)
     reverted++
   }
-  // 足した行は、その行のセルを後から変えていなければ外す（変えていれば行を残す）
-  const keepRow = (key: string) => [...keptKeys].some((k) => k.startsWith(`${key}:`) && !k.slice(key.length + 1).includes(":"))
-  const removed = new Set(entry.added.filter((a) => !keepRow(a.key)).map((a) => a.key))
+  // 足した行は、その行のセルを承認のあとに変えていなければ外す。記録の「後」と違うセルか、記録に無い項目の手直しがあれば行を残して数える
+  const recorded = new Set(entry.edits.map(([k]) => k))
+  const ofRow = (key: string, k: string) => k.startsWith(`${key}:`) && !k.slice(key.length + 1).includes(":")
+  const removed = new Set<string>()
+  for (const a of entry.added) {
+    const laterEdits = [...work.edits.keys()].filter((k) => ofRow(a.key, k) && !recorded.has(k))
+    if ([...keptKeys].some((k) => ofRow(a.key, k)) || laterEdits.length) kept += laterEdits.length
+    else removed.add(a.key)
+  }
   reverted += removed.size
   const revert = <T>(pair: Pair<T> | undefined, now: T): T => {
     if (!pair) return now

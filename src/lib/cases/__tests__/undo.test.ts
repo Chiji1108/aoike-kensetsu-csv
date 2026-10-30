@@ -68,6 +68,23 @@ describe("承認の取り消し", () => {
     expect(r.kept).toBe(1)
   })
 
+  test("足した行の、承認では書いていない項目を後から直していても、行は外さずに数える（その手直しを黙って消さない）", () => {
+    let w = approve(base, "p1", [{ kind: "add", rowKey: "add-1", by: "chat", cells: { workName: chat("足した工事") } }])
+    w = { ...w, edits: new Map(w.edits).set(editKey("add-1", "client"), staff("後から足した注文者")) }
+    const r = undo(w, "u-p1")!
+    expect(r.work.added.map((a) => a.key)).toEqual(["add-1"])
+    expect(r.work.edits.get(editKey("add-1", "client"))).toEqual(staff("後から足した注文者"))
+    expect(r.kept).toBe(1)
+  })
+
+  test("記録の大きさは UTF-8 のバイト数で測る（日本語は1文字3バイト）", () => {
+    const n = Math.floor(MAX_UNDO_BYTES / 3 / 80) + 10
+    const changes = Array.from({ length: n }, (_, i): ChatChange => ({ kind: "cell", rowKey: `r${i}`, field: "workName", edit: chat("あ".repeat(80)) }))
+    const entry = undoEntry(base, applyChanges(base, [], changes), { id: "jp", proposalId: "jp", label: "", at: 0 })!
+    expect(JSON.stringify(entry).length).toBeLessThan(MAX_UNDO_BYTES)
+    expect(pushUndo([], entry).at(-1)!.tooLarge).toBe(true)
+  })
+
   test("計画を戻すと planChanged。今の計画が承認のあとに変わっていれば戻さない", () => {
     const plan: SavedPlan = { plan: { sheets: ["s"], headerRow: 0, dataRows: { start: 1, end: 2 }, skipRows: [], rowFilter: { excludeHidden: true, excludeColumns: [] }, amountUnit: "yen", fields: {} as never, unusedColumns: [], notes: [] }, source: "ai" }
     const before: CaseWork = { ...base, plan }
