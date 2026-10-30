@@ -11,17 +11,8 @@ import { createdAt, updatedAt } from "./auth-schema"
 export const csvCustomers = sqliteTable("csv_customers", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
-  /** @deprecated 顧客ルールの前の形（1つの文章）。0004 で csv_rule_items に移した。使わない（次のマイグレーションで消す） */
-  rules: text("rules").notNull().default(""),
   formatNote: text("format_note").notNull().default(""),
   createdAt: createdAt(),
-  updatedAt: updatedAt(),
-})
-
-/** @deprecated 全体ルールの前の形（id "global" の1行の文章）。0004 で csv_rule_items に移した。使わない（次のマイグレーションで消す） */
-export const csvRules = sqliteTable("csv_rules", {
-  id: text("id").primaryKey(),
-  rules: text("rules").notNull().default(""),
   updatedAt: updatedAt(),
 })
 

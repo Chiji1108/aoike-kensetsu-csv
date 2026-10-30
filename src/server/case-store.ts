@@ -25,7 +25,7 @@ export type Bucket = {
 }
 
 const ms = (d: Date) => d.getTime()
-const toCustomer = ({ rules: _, ...r }: typeof csvCustomers.$inferSelect): Customer => ({ ...r, createdAt: ms(r.createdAt), updatedAt: ms(r.updatedAt) })
+const toCustomer = (r: typeof csvCustomers.$inferSelect): Customer => ({ ...r, createdAt: ms(r.createdAt), updatedAt: ms(r.updatedAt) })
 const toCase = (r: typeof csvCases.$inferSelect): Case => ({ ...r, createdAt: ms(r.createdAt), updatedAt: ms(r.updatedAt) })
 const toFile = ({ r2Key: _, status: __, ...r }: typeof csvCaseFiles.$inferSelect): CaseFile => ({ ...r, createdAt: ms(r.createdAt) })
 

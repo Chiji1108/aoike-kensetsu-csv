@@ -214,3 +214,16 @@ describe("前の形（1つの文章）から項目に移す（0004）", () => {
     expect(rows).toEqual(DEFAULT_GLOBAL_RULE_ITEMS.map((text, i) => ({ scope: "global", customerId: null, text, position: i + 1, source: "staff" })))
   })
 })
+
+describe("前の形の列を消す（0005）", () => {
+  test("項目に移したあと、全体ルールの文章の表と顧客ルールの文章の列を消す。顧客と項目は残る", () => {
+    const old = new Database(":memory:")
+    applyMigrations(old, BEFORE)
+    old.run("insert into csv_customers (id, name, rules, format_note) values ('c1', '合成建設', 'A', 'メモ')")
+    applyMigrations(old, ["0004_rule_items", "0005_drop_old_rule_columns"])
+    expect(old.query("select name from sqlite_master where name = 'csv_rules'").all()).toEqual([])
+    expect(old.query("select * from csv_customers").all()).toMatchObject([{ id: "c1", name: "合成建設", format_note: "メモ" }])
+    expect(Object.keys(old.query("select * from csv_customers").get() as object)).not.toContain("rules")
+    expect(old.query("select text from csv_rule_items where scope = 'customer'").all()).toEqual([{ text: "A" }])
+  })
+})
