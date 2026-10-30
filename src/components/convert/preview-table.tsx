@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react"
+import { useMemo, useRef, useState, useSyncExternalStore } from "react"
 import {
   columnVisibilityFeature,
   createColumnHelper,
@@ -31,7 +31,7 @@ import { INCLUSION_LABELS, type Inclusion } from "@/lib/convert/koji-selection"
 import type { KojiFieldId } from "@/lib/spec/koji-keireki"
 import type { CsvSpec } from "@/lib/spec/types"
 import { cn } from "@/lib/utils"
-import { ROW_FILTERS, STATUS, cellClass, changedCell, countRowFilters, inFilter, rowNeedsCheck, type RowFilter } from "./status"
+import { ROW_FILTERS, STATUS, cellClass, changedCell, inFilter, type RowFilter } from "./status"
 
 type Row = RowResult<KojiFieldId>
 
@@ -69,10 +69,32 @@ const WIDTH: Record<KojiFieldId | "include" | "origin", number> = {
 /** 手直し中のセル。下書きは行の外に持つ（仮想スクロールで行が消えても残る） */
 type Editing = { row: string; field: KojiFieldId; session: EditSession; draft: string }
 
-/** 注意書きを出すセル（選んだ・マウスを乗せたセル） */
-type Active = { row: string; field: KojiFieldId }
+/** 注意書きを出すセル（選んだ・マウスを乗せたセル）。via は選んだ（フォーカス・手直し）かマウスを乗せただけか */
+type Active = { row: string; field: KojiFieldId; via: "focus" | "hover" }
 
 const NOTE_ID = "preview-cell-note"
+
+/**
+ * 注意書きを出すセルの小さな store。表の state に持つとマウスを動かすたびに表全体を描き直すので、
+ * 注意書きの1行と、選んだかが変わったセルだけが読む
+ */
+function activeStore() {
+  let active: Active | null = null
+  const listeners = new Set<() => void>()
+  return {
+    get: () => active,
+    set(next: Active) {
+      if (active && active.row === next.row && active.field === next.field && active.via === next.via) return
+      active = next
+      for (const l of listeners) l()
+    },
+    subscribe(l: () => void) {
+      listeners.add(l)
+      return () => void listeners.delete(l)
+    },
+  }
+}
+type ActiveStore = ReturnType<typeof activeStore>
 
 const originText = (r: Row) => `${r.sheet}!${r.row + 1}`
 
@@ -85,6 +107,8 @@ export function PreviewTable({
   onToggle,
   filter,
   onFilterChange,
+  checks,
+  counts,
 }: {
   spec: CsvSpec<KojiFieldId>
   rows: Row[]
@@ -96,6 +120,9 @@ export function PreviewTable({
   /** 絞り込み（案件の画面が持つ。チャットの報告の件数を押しても変わる） */
   filter: RowFilter
   onFilterChange: (f: RowFilter) => void
+  /** 行に確かめるセルがあるか（rowNeedsCheck）と、絞り込みごとの行数（countRowFilters）。案件の画面が1回だけ数えて渡す */
+  checks: ReadonlyMap<string, boolean>
+  counts: Record<RowFilter, number>
 }) {
   const [editing, setEditing] = useState<Editing | null>(null)
   const setFilter = onFilterChange
@@ -121,12 +148,8 @@ export function PreviewTable({
       ]),
     [spec],
   )
-  const checks = useMemo(() => new Map(rows.map((r) => [r.key, rowNeedsCheck(r)])), [rows])
-  /** 絞り込みごとの行数（確かめるは CSV に載せる行だけ） */
-  const counts = useMemo(() => countRowFilters(rows, inclusion), [rows, inclusion])
-  const [active, setActive] = useState<Active | null>(null)
-  /** 同じセルなら描き直さない（マウスを動かすたびに表を描き直さない） */
-  const activate = (row: string, field: KojiFieldId) => setActive((a) => (a?.row === row && a.field === field ? a : { row, field }))
+  const store = useRef<ActiveStore | null>(null)
+  store.current ??= activeStore()
 
   const needle = query.trim().toLowerCase()
   const data = useMemo(() => {
@@ -159,7 +182,7 @@ export function PreviewTable({
   function startEdit(r: Row, field: KojiFieldId) {
     if (editing) finishEdit(true)
     setPinned((p) => p ?? live.map((r) => r.key))
-    activate(r.key, field)
+    store.current!.set({ row: r.key, field, via: "focus" })
     const session = openEditor(r.cells[field])
     setEditing({ row: r.key, field, session, draft: session.text })
   }
@@ -220,17 +243,9 @@ export function PreviewTable({
           <CellEditor value={editing.draft} onChange={(draft) => setEditing({ ...editing, draft })} onDone={finishEdit} />
         ) : (
           // 注意書きはセルの下に出さない（色で状態は分かる）。選んだ・マウスを乗せたセルのものを表の上の1行に出す（キーボードで選んでも出る）
-          <button
-            type="button"
-            className="block min-h-8 w-full px-2 py-1.5 text-left break-words hover:ring-1 hover:ring-ring/40 hover:ring-inset"
-            title={cell.message}
-            aria-describedby={active?.row === r.key && active.field === field ? NOTE_ID : undefined}
-            onFocus={() => activate(r.key, field)}
-            onMouseEnter={() => activate(r.key, field)}
-            onClick={() => startEdit(r, field)}
-          >
+          <CellButton store={store.current!} row={r.key} field={field} message={cell.message} onClick={() => startEdit(r, field)}>
             <span className="whitespace-pre-wrap">{cell.value || <span className="text-muted-foreground/50">—</span>}</span>
-          </button>
+          </CellButton>
         )}
       </TableCell>
     )
@@ -295,7 +310,7 @@ export function PreviewTable({
         </DropdownMenu>
       </div>
 
-      <CellNote spec={spec} row={active ? byKey.get(active.row) : undefined} field={active?.field} />
+      <CellNote spec={spec} store={store.current!} byKey={byKey} />
 
       <div ref={scrollRef} className="overflow-auto rounded-xl border bg-card" style={{ maxHeight: "70vh" }}>
         <table
@@ -387,12 +402,39 @@ function columnTip(spec: CsvSpec<KojiFieldId>, id: string) {
   return f ? `CSV の ${f.letter} 列` : "元の Excel のシートと行"
 }
 
-/** 選んだ・マウスを乗せたセルの状態と注意書き（高さは1行に決めて、出し入れで表が動かないようにする） */
-function CellNote({ spec, row, field }: { spec: CsvSpec<KojiFieldId>; row: Row | undefined; field: KojiFieldId | undefined }) {
+/**
+ * セルのボタン。選んだ（フォーカスした）ときだけ注意書きの1行を説明につなぐ（読み上げはフォーカスのときだけ。マウスを乗せただけでは読み上げない）。
+ * store を読むのはこのボタンだけなので、選んだセルが変わっても表全体は描き直さない
+ */
+function CellButton({ store, row, field, message, onClick, children }: { store: ActiveStore; row: string; field: KojiFieldId; message?: string; onClick: () => void; children: React.ReactNode }) {
+  const focused = useSyncExternalStore(store.subscribe, () => {
+    const a = store.get()
+    return a?.row === row && a.field === field && a.via === "focus"
+  }, () => false)
+  return (
+    <button
+      type="button"
+      className="block min-h-8 w-full px-2 py-1.5 text-left break-words hover:ring-1 hover:ring-ring/40 hover:ring-inset"
+      title={message}
+      aria-describedby={focused ? NOTE_ID : undefined}
+      onFocus={() => store.set({ row, field, via: "focus" })}
+      onMouseEnter={() => store.set({ row, field, via: "hover" })}
+      onClick={onClick}
+    >
+      {children}
+    </button>
+  )
+}
+
+/** 選んだ・マウスを乗せたセルの状態と注意書き（高さは1行に決めて、出し入れで表が動かないようにする。読み上げは選んだセルの説明として） */
+function CellNote({ spec, store, byKey }: { spec: CsvSpec<KojiFieldId>; store: ActiveStore; byKey: ReadonlyMap<string, Row> }) {
+  const active = useSyncExternalStore(store.subscribe, store.get, () => null)
+  const row = active ? byKey.get(active.row) : undefined
+  const field = active?.field
   const cell = row && field ? row.cells[field] : undefined
   const label = field ? spec.fields.find((f) => f.id === field)?.label : undefined
   return (
-    <p id={NOTE_ID} className="flex h-5 min-w-0 items-center gap-1.5 text-xs text-muted-foreground" aria-live="polite" data-testid="cell-note" data-status={cell?.status}>
+    <p id={NOTE_ID} className="flex h-5 min-w-0 items-center gap-1.5 text-xs text-muted-foreground" data-testid="cell-note" data-status={cell?.status}>
       {cell ? (
         <>
           <span className={cn("size-2 shrink-0 rounded-full", STATUS[cell.status].dot)} />

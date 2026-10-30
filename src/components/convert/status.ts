@@ -44,8 +44,12 @@ export function inFilter<F extends string>(filter: RowFilter, row: RowResult<F>,
 }
 
 /** 絞り込みごとの行数（表に出る行の数と同じ） */
-export function countRowFilters<F extends string>(rows: readonly RowResult<F>[], inclusion: ReadonlyMap<string, { included: boolean }>): Record<RowFilter, number> {
+export function countRowFilters<F extends string>(
+  rows: readonly RowResult<F>[],
+  inclusion: ReadonlyMap<string, { included: boolean }>,
+  checks?: ReadonlyMap<string, boolean>,
+): Record<RowFilter, number> {
   let check = 0
-  for (const r of rows) if (inFilter("check", r, inclusion.get(r.key)?.included ?? false)) check++
+  for (const r of rows) if (inFilter("check", r, inclusion.get(r.key)?.included ?? false, checks?.get(r.key) ?? rowNeedsCheck(r))) check++
   return { check, all: rows.length }
 }

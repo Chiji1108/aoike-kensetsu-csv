@@ -13,7 +13,7 @@ import { InquiryPanel } from "@/components/convert/inquiry-panel"
 import { LocationPanel, useLocationSearch } from "@/components/convert/location-panel"
 import { PreviewTable } from "@/components/convert/preview-table"
 import { ReplacePanel } from "@/components/convert/replace-panel"
-import { countRowFilters, type RowFilter } from "@/components/convert/status"
+import { countRowFilters, rowNeedsCheck, type RowFilter } from "@/components/convert/status"
 import { GyoshuSummaryTable, RoundingNote } from "@/components/convert/summary-panel"
 import type { ProposalActions, UndoState } from "@/components/chat/proposal-card"
 import {
@@ -32,7 +32,8 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem,
 import { Segmented } from "@/components/segmented"
 import { MAX_ADDED_ROWS } from "@/lib/cases/added"
 import { fetchCaseFile, uploadCaseFile } from "@/lib/cases/files-client"
-import { fromSaved, newWork, withPlanTax, type CaseWork, type SavedPlan } from "@/lib/cases/state"
+import { fromSaved, newWork, type CaseWork, type SavedPlan } from "@/lib/cases/state"
+import { setTax, withPlanTax } from "@/lib/cases/tax"
 import { ATTACH_ACCEPT, CASE_STATUSES, CASE_STATUS_LABELS, contentTypeOf, FILE_KIND_LABELS, fileUrl, isSheetFile, onlyNonSheetSources, type CaseFile, type CaseStatus, type FileKind } from "@/lib/cases/types"
 import { canUndo, pushUndo, undo, undoEntry, type UndoEntry } from "@/lib/cases/undo"
 import { uploadKind } from "@/lib/cases/upload-kind"
@@ -133,7 +134,7 @@ function previousSideOf(previous: PreviousCase, sheets: SheetGrid[]) {
 const replanWork = (w: CaseWork, sourceFileId: string): CaseWork => ({
   ...newWork(sourceFileId),
   tax: w.tax,
-  planTax: w.planTax,
+  taxBy: w.taxBy,
   basis: w.basis,
   rule7Tax: w.rule7Tax,
   selection: w.selection,
@@ -236,6 +237,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
   const [convertError, setConvertError] = useState<{ message: string; plan: SavedPlan | null } | null>(null)
   const [exportOpen, setExportOpen] = useState(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
+  const fileInput = useRef<HTMLInputElement>(null)
   const [pendingSource, setPendingSource] = useState<CaseFile | null>(null)
   const [filter, setFilter] = useState<RowFilter | null>(null)
   const [tab, setTab] = useState<Tab>("selection")
@@ -621,7 +623,9 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
   const locationProposals = work.proposals.filter((p) => p.origin.kind === "location" && shownInPanel(p))
   /** CSV に載せる行のエラーのセルの数（書き出すボタンに印を出す） */
   const errorCells = useMemo(() => (output ? countByStatus(output).error : 0), [output])
-  const filterCounts = useMemo(() => (shown ? countRowFilters(shown, inclusion) : null), [shown, inclusion])
+  /** 行に確かめるセルがあるか（表の絞り込みと件数で使う。行が変わったときだけ1回数える） */
+  const rowChecks = useMemo(() => new Map((shown ?? []).map((r) => [r.key, rowNeedsCheck(r)])), [shown])
+  const filterCounts = useMemo(() => (shown ? countRowFilters(shown, inclusion, rowChecks) : null), [shown, inclusion, rowChecks])
   const inquiries = useMemo(() => (output ? collectInquiries(output, { tax }) : []), [output, tax])
   /** まだ答えの無いセルの問い合わせ（外したものは数えない）。「AI で読む」に出す */
   const leftInquiries = inquiries.filter((q) => q.kind === "cell" && !dismissed.has(inquiryKey(q))).length
@@ -973,7 +977,9 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
   const reportNotes: ReportProps["notes"] = [
     ...(work.plan?.notice ? [{ text: work.plan.notice, tone: "warning" as const }] : []),
     // 計画が税込・税抜を決めたら聞き返さない。決めたことと直し方だけ伝える
-    ...(work.planTax && tax === work.planTax ? [{ text: `Excel の金額は${TAX_LABELS[tax]}とみなしました（見出し・注記から）。違えば「7割と金額」で直してください。`, testId: "plan-tax-note" }] : []),
+    ...(work.taxBy === "plan" && tax !== "unknown"
+      ? [{ text: `Excel の見出し・注記から、金額は${TAX_LABELS[tax]}とみなしました。違えば「7割と金額」で直してください。`, testId: "plan-tax-note" }]
+      : []),
     // 使うシートのメモは報告の最初の行（どのファイルのどのシートか）と重なるので出さない
     ...(work.plan?.plan.notes ?? []).filter((n) => !n.startsWith("使うシート「")).map((text) => ({ text })),
     ...(sources && sources.duplicates > 0
@@ -983,7 +989,8 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
     ...(aiNotice ? [{ text: `AI で変換できなかった値があります（${aiNotice}）。黄色のセルを確かめてください。`, tone: "warning" as const, testId: "ai-notice" }] : []),
   ]
   const questions: ReportQuestion[] =
-    hasTable && (tax === "unknown" || work.reportAnswers.tax)
+    // まだ誰も決めていなければ聞く（計画が決めた・職員が決めたら聞かない。答えたものは答えを出す）
+    hasTable && ((tax === "unknown" && work.taxBy === null) || work.reportAnswers.tax)
       ? [
           {
             id: "tax",
@@ -999,8 +1006,9 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
       : []
   function answerReport(id: string, value: string) {
     if (id !== "tax") return
-    if (value === "included" || value === "excluded") setWork((w) => ({ ...w, tax: value, planTax: null, reportAnswers: { ...w.reportAnswers, tax: value } }))
-    else setWork((w) => ({ ...w, planTax: null, reportAnswers: { ...w.reportAnswers, tax: "ask" } }))
+    // 「分からない（顧客に聞く）」も職員が決めた値（計画のし直しで上書きしない）
+    const next = value === "included" || value === "excluded" ? value : "unknown"
+    setWork((w) => ({ ...setTax(w, next, "staff"), reportAnswers: { ...w.reportAnswers, tax: value === "ask" ? "ask" : next } }))
   }
   const locationSites = locationSearch.sites
   const report = (
@@ -1178,8 +1186,9 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
           onDeleted={() => router.navigate({ to: "/customers/$customerId", params: { customerId: customer.id } })}
         />
 
-        {/* ファイルはこの画面とチャット欄に落とすか、チャットの添付で付ける。表がまだ無ければ下の欄を押しても選べる */}
+        {/* ファイルはこの画面とチャット欄に落とすか、元ファイルの札の行の「ファイル」・チャットの添付で付ける。表がまだ無ければ下の欄を押しても選べる */}
         <input
+          ref={fileInput}
           id="case-file-input"
           type="file"
           multiple
@@ -1193,6 +1202,10 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
         />
         {files.length > 0 && (
           <div className="-mt-3 mb-3 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs" data-testid="case-toolbar">
+            {/* 表ができたあとにファイルを足す・差し替える入口（落とす欄は表の前だけ） */}
+            <Button variant="outline" size="xs" onClick={() => fileInput.current?.click()} data-testid="attach-button">
+              <FileUp /> ファイル
+            </Button>
             <FileChips files={files} sourceFileId={work.sourceFileId} loading={!!loadingSource || planning} onChoose={chooseSource} />
             {source && grid && plan && source.sheets.length > 1 && (
               <SheetChooser sheets={source.sheets} primary={grid} plan={plan} onPrimary={(name) => void startPlanning(source, name)} onChange={changePlan} />
@@ -1253,6 +1266,8 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
               onToggle={(key, included) => update("manual", (prev) => new Map(prev).set(key, included))}
               filter={tableFilter}
               onFilterChange={setFilter}
+              checks={rowChecks}
+              counts={filterCounts!}
             />
 
             <div ref={tabsRef} className="scroll-mt-20 pt-4">
@@ -1280,7 +1295,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
                   rounding={rounding}
                   onRounding={(r) => set("rounding", r)}
                   tax={tax}
-                  onTax={(t) => setWork((w) => ({ ...w, tax: t, planTax: null }))}
+                  onTax={(t) => setWork((w) => setTax(w, t, "staff"))}
                   rule7Tax={rule7Tax}
                   onRule7Tax={(t) => set("rule7Tax", t)}
                   selection={selectionMode}
