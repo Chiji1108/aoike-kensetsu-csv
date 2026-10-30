@@ -535,9 +535,10 @@ export function outsideCells(sheets: readonly SheetGrid[], rows: readonly KojiRo
       const sent = meta && row ? meta.asked.map((a): CellInquiry => ({ kind: "cell", rowKey: row.key, ...a })) : []
       cells.forEach((value, i) => {
         if (i === keyCol || i === askedCol) return
-        // 質問の欄は、書いた文から変わっていれば顧客の書き足し（照合用に文が無い前の Excel にはこの欄が無い）。行や照合用が読めない行は取り込みが一覧に出す
+        // 質問の欄は、書いた文から変わっていれば顧客の書き足し（照合用に文が無い前の Excel にはこの欄が無い）。消しただけ（空）は書き足しではない。
+        // 行や照合用が読めない行は取り込みが一覧に出す
         if (header[i] === QUESTION_HEADER) {
-          if (row && meta && value.trim() !== (meta.question ?? "").trim()) n++
+          if (row && meta && value.trim() && value.trim() !== (meta.question ?? "").trim()) n++
           return
         }
         const column = SHEET_COLUMNS.find((c) => c.header === header[i])

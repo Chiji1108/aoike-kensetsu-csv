@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { kojiRow } from "../../convert/__tests__/helpers"
 import { ADDRESSEE_PLACEHOLDER, inquiryEmail } from "../email"
 import { collectInquiries, inquiryKey, inquirySheet, outsideCells, type CellInquiry, type Inquiry } from "../inquiry"
-import { addQuestions, applyInquiryChanges, checkQuestions, editQuestion, EMPTY_INQUIRY_TEXT, inquiryTextSchema, MAX_QUESTION_KEYS, MAX_QUESTIONS, otherCustomerTest, questionGroups, type InquiryText } from "../text"
+import { type InquiryQuestion, addQuestions, applyInquiryChange, carryInquiryText, checkQuestions, MAX_TOTAL_KEYS, revertInquiryText, diffInquiryText, editQuestion, EMPTY_INQUIRY_TEXT, inquiryTextSchema, MAX_QUESTION_KEYS, MAX_QUESTIONS, otherCustomerTest, questionGroups, type InquiryText } from "../text"
 import type { SheetGrid } from "../../convert/plan"
 
 const full = { gyoshu: "8", client: "株式会社テスト", motoukeShitauke: "1", jv: "0", workName: "テストビル電気工事", prefecture: "東京都", place: "千代田区", engineer: "試験　太郎", amount: "5000", specialAmount: "0", startYm: "202404", endYm: "202409" }
@@ -15,11 +15,11 @@ const rows = [guessedEnd(2), guessedEnd(3), kojiRow({ ...full, engineer: "" }, 4
 const qs = collectInquiries(rows, { tax: "unknown" })
 const cells = qs.filter((q): q is CellInquiry => q.kind === "cell")
 
-const aiText: InquiryText = applyInquiryChanges(EMPTY_INQUIRY_TEXT, "p1", [
-  { index: 0, change: { kind: "inquiry", text: "この工事は引渡日を完成日としてよいですか。", targets: [{ field: "endYm", reason: "needsReview" }] } },
-  { index: 1, change: { kind: "inquiry", text: "この工事に置いた主任技術者の氏名を教えてください。", targets: [{ field: "engineer" }] } },
-  { index: 2, change: { kind: "inquiryMail", subject: "工事経歴書のご確認", intro: "資料ありがとうございました。いくつか教えてください。" } },
-])
+const aiText: InquiryText = [
+  { kind: "inquiry" as const, id: "p1:0", text: "この工事は引渡日を完成日としてよいですか。", targets: [{ field: "endYm" as const, reason: "needsReview" as const }] },
+  { kind: "inquiry" as const, id: "p1:1", text: "この工事に置いた主任技術者の氏名を教えてください。", targets: [{ field: "engineer" as const }] },
+  { kind: "inquiryMail" as const, subject: "工事経歴書のご確認", intro: "資料ありがとうございました。いくつか教えてください。" },
+].reduce(applyInquiryChange, EMPTY_INQUIRY_TEXT)
 
 const textsOf = (t: InquiryText) => questionGroups(qs, t).groups.map((g) => [g.by, g.text, g.inquiries.map(inquiryKey)])
 
@@ -59,13 +59,16 @@ describe("質問の文のまとまり", () => {
   })
 
   test("keys で選んだ行は、項目だけ・項目と理由の質問より強い。同じ強さなら後の質問", () => {
-    const t = addQuestions(aiText, [
-      { id: "k", text: "この工事の技術者はどなたですか。", targets: [{ field: "engineer", keys: ["s!5"] }], by: "ai" },
-      { id: "later", text: "完成年月をご確認ください。", targets: [{ field: "endYm", reason: "needsReview" }], by: "ai" },
+    const staff = (id: string, text: string, targets: InquiryQuestion["targets"]): InquiryQuestion => ({ id, text, targets, by: "staff" })
+    const t = addQuestions(EMPTY_INQUIRY_TEXT, [
+      staff("g", "技術者を教えてください。", [{ field: "engineer" }]),
+      staff("k", "この工事の技術者はどなたですか。", [{ field: "engineer", keys: ["s!5"] }]),
+      staff("e1", "完成年月は？", [{ field: "endYm", reason: "needsReview" }]),
+      staff("e2", "完成年月をご確認ください。", [{ field: "endYm", reason: "needsReview" }]),
     ])
     const { groupOf } = questionGroups(qs, t)
     expect(groupOf.get("s!5:engineer")!.text).toBe("この工事の技術者はどなたですか。")
-    expect(groupOf.get("s!4:engineer")!.text).toBe("この工事に置いた主任技術者の氏名を教えてください。")
+    expect(groupOf.get("s!4:engineer")!.text).toBe("技術者を教えてください。")
     expect(groupOf.get("s!2:endYm")!.text).toBe("完成年月をご確認ください。")
   })
 
@@ -141,5 +144,72 @@ describe("ご質問の欄への書き足し", () => {
     expect(outsideCells(grid((r, c, v) => (r === 0 && c === col ? `${v}\nはい、引渡日で結構です` : v)), rows)).toBe(1)
     // 今のデータに無い行の質問の欄は数えない（取り込みが知らない管理番号として出す）
     expect(outsideCells(grid((_, __, v) => v), rows.slice(1))).toBe(0)
+  })
+})
+
+describe("レビューの指摘（作り直し・取り消し・元の変更・職員の文）", () => {
+  const ai = (id: string, text: string, targets: InquiryQuestion["targets"]) => ({ kind: "inquiry" as const, id, text, targets })
+
+  test("作り直した AI の案を承認すると、同じ対象の前の AI の質問は置き換わる（keys で選んだ前の質問も残らない）", () => {
+    const first = [ai("a", "前の技術者の質問（行）", [{ field: "engineer", keys: ["s!5"] }]), ai("b", "前の完成年月の質問", [{ field: "endYm" }, { field: "engineer", reason: "missing" }])].reduce(applyInquiryChange, EMPTY_INQUIRY_TEXT)
+    const next = applyInquiryChange(first, ai("c", "新しい技術者の質問", [{ field: "engineer" }]))
+    expect(next.questions).toEqual([{ id: "b", text: "前の完成年月の質問", targets: [{ field: "endYm" }], by: "ai" }, { id: "c", text: "新しい技術者の質問", targets: [{ field: "engineer" }], by: "ai" }])
+    expect(questionGroups(qs, next).groupOf.get("s!5:engineer")!.text).toBe("新しい技術者の質問")
+  })
+
+  test("職員が直した文は、あとから承認した AI の案で黙って上書きしない（職員の文を使い、AI の文があると印を付ける）", () => {
+    const { groups } = questionGroups(qs, aiText)
+    const staff = editQuestion(aiText, groups.find((g) => g.text.startsWith("この工事に置いた"))!, "職員の技術者の質問", "x")
+    const later = applyInquiryChange(staff, ai("new", "あとの AI の技術者の質問", [{ field: "engineer", keys: ["s!4"] }]))
+    const g = questionGroups(qs, later).groupOf.get("s!4:engineer")!
+    expect([g.by, g.text, g.aiBehind]).toEqual(["staff", "職員の技術者の質問", true])
+  })
+
+  test("取り消しで捨てた古い質問を戻すと上限（数・keys の行）を超えるなら戻さない", () => {
+    const small = (id: string): InquiryQuestion => ({ id, text: id, targets: [{ field: "engineer", keys: [id] }], by: "staff" })
+    const before = addQuestions(EMPTY_INQUIRY_TEXT, Array.from({ length: MAX_QUESTIONS }, (_, i) => small(`q${i}`)))
+    const after = addQuestions(before, [small("c")])
+    expect(after.questions[0]!.id).toBe("q1")
+    // 承認のあとに職員が c を直し、d を足した（q1 も捨てられた）
+    const now = addQuestions({ ...after, questions: after.questions.map((q) => (q.id === "c" ? { ...q, text: "直した" } : q)) }, [small("d")])
+    const r = revertInquiryText(now, diffInquiryText(before, after)!)
+    expect(r.text.questions.length).toBeLessThanOrEqual(MAX_QUESTIONS)
+    expect(inquiryTextSchema.safeParse(r.text).success).toBe(true)
+    expect(r.kept).toBe(2)
+    expect(r.text.questions.some((q) => q.id === "q0")).toBe(false)
+    // keys の行の数も同じ
+    const big = (id: string): InquiryQuestion => ({ id, text: id, targets: [{ field: "engineer", keys: Array.from({ length: MAX_QUESTION_KEYS }, (_, i) => `${id}${i}`) }], by: "staff" })
+    const b2 = addQuestions(EMPTY_INQUIRY_TEXT, [big("a"), big("b")])
+    const a2 = addQuestions(b2, [big("c")])
+    const n2 = addQuestions({ ...a2, questions: a2.questions.map((q) => (q.id === "c" ? { ...q, text: "直した" } : q)) }, [])
+    const r2 = revertInquiryText(n2, diffInquiryText(b2, a2)!)
+    expect(r2.text.questions.reduce((n, q) => n + q.targets.reduce((k, t) => k + ("keys" in t && t.keys ? t.keys.length : 0), 0), 0)).toBeLessThanOrEqual(MAX_TOTAL_KEYS)
+  })
+
+  test("変換の元を変えたら、件名・前置き・項目と理由の質問は引き継ぎ、行の key で選んだ対象は外す", () => {
+    const t = [ai("a", "注文者", [{ field: "client" }, { field: "startYm", keys: ["s!2"] }]), ai("b", "行だけ", [{ field: "place", keys: ["s!5"] }])].reduce(applyInquiryChange, aiText)
+    const carried = carryInquiryText(t)
+    expect(carried.subject).toBe(aiText.subject)
+    expect(carried.intro).toBe(aiText.intro)
+    expect(carried.questions.map((q) => [q.id, q.targets])).toEqual([
+      ["p1:0", [{ field: "endYm", reason: "needsReview" }]],
+      ["p1:1", [{ field: "engineer" }]],
+      ["a", [{ field: "client" }]],
+    ])
+  })
+
+  test("この案件の顧客の名前を含む、ほかの顧客の名前も見つける（長い名前から照らす）", () => {
+    const has = otherCustomerTest(["株式会社サンプル建設工業本社"], "サンプル建設")
+    expect(has("サンプル建設工業本社様と同じ件")).toBe(true)
+    expect(has("サンプル建設様の工事経歴書")).toBe(false)
+  })
+
+  test("「ご質問」の欄を顧客が空にしただけなら、書き足しとして数えない", () => {
+    const { groupOf } = questionGroups(qs, aiText)
+    const sheet = inquirySheet(rows, cells, (q) => groupOf.get(inquiryKey(q))!.text)
+    const header = sheet.columns.map((c) => c.header)
+    const col = header.indexOf("ご質問")
+    const grid: SheetGrid[] = [{ name: "記入用", rows: [header, ...sheet.rows.map((r) => r.cells.map((c, ci) => (ci === col ? "" : c.value)))], hidden: [] }]
+    expect(outsideCells(grid, rows)).toBe(0)
   })
 })
