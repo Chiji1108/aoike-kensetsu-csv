@@ -4,7 +4,7 @@ import { kojiRow } from "../../convert/__tests__/helpers"
 import { personToken } from "../../convert/persons"
 import type { AiBatchRequest } from "../../convert/ai-tasks"
 import type { KojiFieldId } from "../../spec/koji-keireki"
-import { outsideCells, readAiAnswers } from "../inquiry"
+import { CORRECTION_MESSAGE, outsideCells, readAiAnswers } from "../inquiry"
 
 const full = {
   gyoshu: "8", client: "株式会社テスト", motoukeShitauke: "1", jv: "0", workName: "テストビル電気工事", prefecture: "東京都",
@@ -72,12 +72,12 @@ describe("AI が読んだ顧客の回答", () => {
       [`${noLocation.key}:place`]: { value: "大阪市北区", by: "customer" },
     })
     expect(r.invalid.map((i) => [i.inquiry.field, i.message])).toEqual([
-      ["place", "同じ欄に違う答えが2つあります"],
+      ["place", "同じ項目に違う答えが2つあります"],
       ["endYm", "年月として読めません（例: 2024年4月）"],
     ])
   })
 
-  test("聞いていない項目への答え（顧客からの訂正）も、今と違えば変更にする。同じなら変えない。知らない行は知らせる", async () => {
+  test("聞いていない項目への答え（顧客からの訂正）は、問い合わせへの答えと分けて訂正として返す。今と同じなら変えない。知らない行は知らせる", async () => {
     const r = await readAiAnswers(
       [
         { rowKey: noEngineer.key, field: "startYm", answer: "2024年5月" },
@@ -87,18 +87,41 @@ describe("AI が読んだ顧客の回答", () => {
       rows,
       noAi(),
     )
-    expect(Object.fromEntries(r.edits)).toEqual({ [`${noEngineer.key}:startYm`]: { value: "202405", by: "customer" } })
-    expect(r.alreadyApplied.map((q) => q.field)).toEqual(["client"])
+    expect(Object.fromEntries(r.edits)).toEqual({ [`${noEngineer.key}:startYm`]: { value: "202405", by: "customer", message: CORRECTION_MESSAGE } })
+    expect(r.applied).toEqual([])
+    expect(r.alreadyApplied).toEqual([])
+    expect(r.alsoChanged).toEqual([{ rowKey: noEngineer.key, field: "startYm", was: "202404", answer: "202405" }])
     expect(r.unknownKeys).toEqual(["s!99"])
+  })
+
+  test("聞いていない工事場所の訂正は送った項目だけを変える（都道府県のある行で場所名だけを直す）", async () => {
+    const r = await readAiAnswers([{ rowKey: noEngineer.key, field: "place", answer: "港区" }], rows, noAi())
+    expect(Object.fromEntries(r.edits)).toEqual({ [`${noEngineer.key}:place`]: { value: "港区", by: "customer", message: CORRECTION_MESSAGE } })
+    expect(r.heldBack).toEqual([])
+    expect(r.invalid).toEqual([])
+  })
+
+  test("工事場所の片方を今のとおり（confirm）、片方を答えで送ると、1つの住所として読む", async () => {
+    const r = await readAiAnswers(
+      [
+        { rowKey: guessedPlace.key, field: "prefecture", confirm: true },
+        { rowKey: guessedPlace.key, field: "place", answer: "品川区" },
+      ],
+      rows,
+      noAi(),
+    )
+    expect(Object.fromEntries(r.edits)).toEqual({ [`${guessedPlace.key}:place`]: { value: "品川区", by: "customer" } })
+    expect(r.applied.map((q) => q.field)).toEqual(["place"])
+    expect(r.invalid).toEqual([])
   })
 
   test("工事名の答えは元データと同じく匿名化に通す（個人名は印にする）。AI を使えなければ反映しない", async () => {
     const items = [{ rowKey: noEngineer.key, field: "workName" as const, answer: "山田太郎邸新築工事" }]
     const r = await readAiAnswers(items, rows, { ...noAi(), callAi: cannedAnonymize })
-    expect(r.edits).toEqual([[`${noEngineer.key}:workName`, { value: `${personToken("山田太郎")}邸新築工事`, by: "customer", status: "ai", byAi: true }]])
+    expect(r.edits).toEqual([[`${noEngineer.key}:workName`, { value: `${personToken("山田太郎")}邸新築工事`, by: "customer", status: "ai", byAi: true, message: CORRECTION_MESSAGE }]])
     const without = await readAiAnswers(items, rows, noAi())
     expect(without.edits).toEqual([])
-    expect(without.invalid).toHaveLength(1)
+    expect(without.uncorrected.map((u) => u.field)).toEqual(["workName"])
   })
 })
 

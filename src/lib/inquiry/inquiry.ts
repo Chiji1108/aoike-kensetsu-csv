@@ -11,6 +11,7 @@ import { getTransform, knownNameSplits, normalizePersonName, type TransformConte
 import { withNames } from "../convert/persons"
 import { collapseSpaces } from "../convert/text"
 import { z } from "zod"
+import { PREFECTURES } from "../spec/prefectures"
 
 /**
  * 顧客への問い合わせ。データに無い・分からないことだけを聞く（聞かなくてもできる整形は事務所でやる）。
@@ -339,13 +340,31 @@ export async function readAnswers(sheets: readonly SheetGrid[], rows: readonly K
 }
 
 /** 1つの欄への記入（記入用Excelの欄、または AI が読んだ答え）。rowQs はその欄で聞いた項目、shown は聞いたときに欄に表示していた内容 */
-type ColumnAnswer = { rowKey: string; row: KojiRow; column: SheetColumn; rowQs: CellInquiry[]; answer: string; shown: string }
+type ColumnAnswer = {
+  rowKey: string
+  row: KojiRow
+  column: SheetColumn
+  rowQs: CellInquiry[]
+  answer: string
+  shown: string
+  /** 聞いていない項目のうち、書き換えてよい項目（AI が訂正として送った項目）。無ければ欄のすべての項目 */
+  only?: readonly KojiFieldId[]
+}
 
 /**
  * 欄ごとの記入を項目の値にして report に入れる（記入用Excelと AI が読んだ答えで同じ）。
  * 変換のある欄（注文者・工事名・配置技術者）の記入は、元データの値と同じくルール → AI の順に変換してから照合する。
  */
-async function answerColumns(report: AnswerReport, read: readonly ColumnAnswer[], rows: readonly KojiRow[], ai: AnswerAi) {
+async function answerColumns(
+  report: AnswerReport,
+  read: readonly ColumnAnswer[],
+  rows: readonly KojiRow[],
+  ai: AnswerAi,
+  /** 読めない記入（既定は聞いた項目ごとに invalid に入れる） */
+  onInvalid: (c: ColumnAnswer, message: string) => void = (c, message) => {
+    for (const q of c.rowQs) report.invalid.push({ inquiry: q, answer: c.answer, message })
+  },
+) {
   // 工事場所の欄（記入と表示した値）は、変換と同じく住所として先に引いておく
   const addresses = await ai.lookup(read.flatMap((c) => (c.column.parse === location && c.answer ? [c.answer, c.shown] : [])))
   const columns = read.map((c) => ({ ...c, unchanged: !!c.answer && untouched(c.column.parse!, c.answer, c.shown, addresses) }))
@@ -359,7 +378,8 @@ async function answerColumns(report: AnswerReport, read: readonly ColumnAnswer[]
   if (ai.callAi) await fillAiCache(drafts, ai.cache, ai.callAi)
   const converted = new Map(resolveRows(drafts, ai.cache).flatMap((r) => Object.entries(r.cells).map(([f, c]) => [editKey(r.key, f), c] as const)))
 
-  for (const { rowKey, row, column, rowQs, answer, unchanged } of columns) {
+  for (const c of columns) {
+    const { rowKey, row, column, rowQs, answer, unchanged } = c
     if (!answer) {
       report.unanswered.push(...rowQs)
       continue
@@ -370,14 +390,15 @@ async function answerColumns(report: AnswerReport, read: readonly ColumnAnswer[]
     }
     const parsed = readColumn(column, answer, addresses, (f) => converted.get(editKey(rowKey, f)))
     if (!parsed.ok) {
-      for (const q of rowQs) report.invalid.push({ inquiry: q, answer, message: parsed.message })
+      onInvalid(c, parsed.message)
       continue
     }
     /** 聞いていない項目の書き換え。読んだ値が今の値の頭だけ（住所を市区町村までに縮めて読んだ）なら書き換えではない */
-    const unasked = column.fields.flatMap((field) => {
+    const unasked = column.fields.filter((f) => !c.only || c.only.includes(f)).flatMap((field) => {
       const value = parsed.values[field]
       const was = row.cells[field].value
-      return !value || rowQs.some((q) => q.field === field) || was.startsWith(value) ? [] : [{ rowKey, field, was, answer: value }]
+      const note = parsed.notes?.[field]
+      return !value || rowQs.some((q) => q.field === field) || was.startsWith(value) ? [] : [{ rowKey, field, was, answer: value, ...(note ? { note } : {}) }]
     })
     applyColumn(report, rowKey, rowQs.map((q) => answered(row, q, parsed.values[q.field] ?? "", answer, parsed.notes?.[q.field])), unasked, answer)
   }
@@ -392,15 +413,30 @@ export const ANSWER_FIELDS = SHEET_COLUMNS.flatMap((c) => (c.parse ? c.fields : 
  */
 export type AiAnswer = { rowKey: string; field: KojiFieldId } & ({ answer: string; confirm?: undefined } | { confirm: true; answer?: undefined })
 
+/** 聞いていない項目を顧客が訂正した値（手直しの message。変更案とセルで、問い合わせへの答えと見分ける） */
+export const CORRECTION_MESSAGE = "顧客からの訂正（聞いていない項目）"
+
+/**
+ * AI が読んだ顧客の回答の結果。問い合わせへの答えは記入用Excelと同じ（applied・confirmed など）。聞いていない項目の訂正は alsoChanged
+ * （記入用Excelで聞いていない側を書き換えたときと同じ）、読めなかった訂正は uncorrected
+ */
+export type AiAnswerReport = AnswerReport & { uncorrected: { rowKey: string; field: KojiFieldId; answer: string; message: string }[] }
+
+const startsWithPrefecture = (a: string) => PREFECTURES.some((p) => a.startsWith(p) || (p !== "北海道" && a.startsWith(p.slice(0, -1))))
+
 /**
  * AI が読んだ顧客の回答を、記入用Excelの記入と同じ決まり（answerColumns）で項目の値にする。照合は今の値と比べる（rows は今の全行）。
- * 聞いている項目（askReasonOf）への答えはその問い合わせへの回答、聞いていない項目の答え（顧客からの訂正）は値が今と違えば変更にする。
- * 同じ欄に2つの答え（同じ項目に違う答え）があれば、どちらも読まない（invalid）
+ * 欄ごとに、聞いている項目（askReasonOf）があればその問い合わせへの答えとして読み、無ければ送った項目だけの訂正として読む（今と違えば変える）。
+ * 同じ欄の項目ごとの答え（工事場所の都道府県と場所名。confirm は今の値）は1つの答えにつなげる。同じ項目に違う答えが2つあれば読まない
  */
-export async function readAiAnswers(items: readonly AiAnswer[], rows: readonly KojiRow[], ai: AnswerAi): Promise<AnswerReport> {
-  const report = emptyReport()
+export async function readAiAnswers(items: readonly AiAnswer[], rows: readonly KojiRow[], ai: AnswerAi): Promise<AiAnswerReport> {
+  const report: AiAnswerReport = { ...emptyReport(), uncorrected: [] }
   const now = new Map(rows.map((r) => [r.key, r]))
   const read: ColumnAnswer[] = []
+  const unread = (c: Pick<ColumnAnswer, "rowKey" | "rowQs" | "answer">, fields: readonly KojiFieldId[], message: string) => {
+    if (c.rowQs.length) for (const q of c.rowQs) report.invalid.push({ inquiry: q, answer: c.answer, message })
+    else for (const field of fields) report.uncorrected.push({ rowKey: c.rowKey, field, answer: c.answer, message })
+  }
   for (const [, list] of groupBy(items, (i) => `${i.rowKey}\t${columnOf(i.field)!.header}`)) {
     const { rowKey } = list[0]!
     const row = now.get(rowKey)
@@ -409,25 +445,35 @@ export async function readAiAnswers(items: readonly AiAnswer[], rows: readonly K
       continue
     }
     const column = columnOf(list[0]!.field)!
-    const asked = column.fields.flatMap((field): CellInquiry[] => {
+    const rowQs = column.fields.flatMap((field): CellInquiry[] => {
       const reason = askReasonOf(field, row.cells[field])
       return reason ? [{ kind: "cell", rowKey, field, reason, current: storedOf(row.cells[field]) }] : []
     })
-    // 聞いていない欄への答えは、その欄の項目すべてを照合する（今と同じ値なら変えない）
-    const rowQs = asked.length ? asked : column.fields.map((field): CellInquiry => ({ kind: "cell", rowKey, field, reason: "needsReview", current: storedOf(row.cells[field]) }))
     const shown = column.show(row)
-    const answers = [...new Set(list.map((i) => (i.confirm ? shown : i.answer.trim())))]
-    // 工事場所は都道府県と場所名を別に送ってもよい（つなげて1つの住所として読む。場所名が都道府県から書いてあれば場所名だけ）
-    const joined = column.fields.length > 1 && list.length === column.fields.length && new Set(list.map((i) => i.field)).size === list.length && !list.some((i) => i.confirm)
-    const parts = joined ? column.fields.map((f) => list.find((i) => i.field === f)!.answer!.trim()) : []
-    const answer = joined ? parts.reduce((a, b) => (b.startsWith(a) ? b : a + b)) : answers.length === 1 ? answers[0]! : null
-    if (answer === null) {
-      for (const q of rowQs) report.invalid.push({ inquiry: q, answer: answers.join(" / "), message: "同じ欄に違う答えが2つあります" })
+    /** 項目ごとの答え（confirm はその項目の今の値） */
+    const byField = new Map<KojiFieldId, Set<string>>()
+    for (const i of list) {
+      const text = i.confirm ? (column.fields.length === 1 ? shown : row.cells[i.field].value) : i.answer.trim()
+      byField.set(i.field, new Set([...(byField.get(i.field) ?? []), text]))
+    }
+    const sent = column.fields.filter((f) => byField.has(f))
+    const conflict = [...byField.values()].some((v) => v.size > 1)
+    const parts = sent.map((f) => [...byField.get(f)!][0]!)
+    // 2つの項目はつなげて1つの住所にする（場所名が都道府県から書いてあれば場所名だけ）。場所名だけで都道府県から書いていなければ、行の都道府県から読む
+    const joined = parts.length ? parts.reduce((a, b) => (b.startsWith(a) ? b : a + b)) : ""
+    const prefecture = row.cells.prefecture.value
+    const answer = column.parse === location && sent.length === 1 && sent[0] === "place" && prefecture && !startsWithPrefecture(joined) ? prefecture + joined : joined
+    const c: ColumnAnswer = { rowKey, row, column, rowQs, answer, shown, ...(rowQs.length ? {} : { only: sent }) }
+    if (conflict) {
+      unread({ ...c, answer: [...byField.values()].flatMap((v) => [...v]).join(" / ") }, sent, "同じ項目に違う答えが2つあります")
       continue
     }
-    read.push({ rowKey, row, column, rowQs, answer, shown })
+    read.push(c)
   }
-  await answerColumns(report, read, rows, ai)
+  await answerColumns(report, read, rows, ai, (c, message) => unread(c, c.only ?? c.column.fields, message))
+  // 聞いていない項目の書き換え（訂正）は、問い合わせへの答えと見分けられるようにする
+  const corrected = new Set(report.alsoChanged.map((x) => editKey(x.rowKey, x.field)))
+  report.edits = report.edits.map(([key, edit]) => [key, corrected.has(key) ? { ...edit, message: [CORRECTION_MESSAGE, edit.message].filter(Boolean).join(" / ") } : edit])
   return report
 }
 
@@ -504,7 +550,10 @@ function answered(row: KojiRow, q: CellInquiry, value: string, answer: string, n
  * 1つの欄（工事場所なら都道府県と場所名）の回答をまとめて反映する。
  * どれか1項目でも反映できない（送ったあとに変わった・読めない）なら、同じ欄のほかの項目も反映せず heldBack で知らせる。
  */
-function applyColumn(report: AnswerReport, rowKey: string, outcomes: Outcome[], unasked: AnswerReport["alsoChanged"], answer: string) {
+/** 聞いていない項目の書き換え（note は変換で要確認になったなどの印） */
+type Unasked = AnswerReport["alsoChanged"][number] & { note?: EditNote }
+
+function applyColumn(report: AnswerReport, rowKey: string, outcomes: Outcome[], unasked: readonly Unasked[], answer: string) {
   type Write = { field: KojiFieldId; edit: CellEdit }
   const writes: Write[] = [
     ...outcomes.flatMap((o): Write[] => {
@@ -512,7 +561,7 @@ function applyColumn(report: AnswerReport, rowKey: string, outcomes: Outcome[], 
       if (o.kind === "confirmed") return [{ field: o.q.field, edit: { value: o.value, by: "confirmed" } }]
       return []
     }),
-    ...unasked.map((c): Write => ({ field: c.field, edit: { value: c.answer, by: "customer" } })),
+    ...unasked.map((c): Write => ({ field: c.field, edit: { value: c.answer, by: "customer", ...c.note } })),
   ]
   const rejected = outcomes.some((o) => o.kind === "changed" || o.kind === "invalid")
   for (const o of outcomes) {
@@ -532,7 +581,7 @@ function applyColumn(report: AnswerReport, rowKey: string, outcomes: Outcome[], 
     report.edits.push([editKey(rowKey, field), edit])
     if (edit.status === "warning") report.needsCheck.push({ rowKey, field, answer, message: edit.message ?? "要確認" })
   }
-  report.alsoChanged.push(...unasked)
+  report.alsoChanged.push(...unasked.map(({ note: _, ...c }) => c))
 }
 
 /** 送ったときの行: 聞いた項目は送ったときの値に戻す（同じ欄の聞いていない項目は今の値） */
