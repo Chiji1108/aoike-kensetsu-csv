@@ -8,8 +8,9 @@ import type { RowResult } from "./convert"
  * 業種ごとに ① 元請を金額の大きい順に、元請合計の7割を超えるまで
  * ② 残りの元請と下請を金額の大きい順に、全体の7割を超えるまで。
  * ①②を通して軽微な工事は10件まで（超える軽微な工事は飛ばして続ける）。
- * 7割の基準は損益計算書の完成工事高のうち当該業種の額（Basis、税抜）。入力が無ければ行の合計を使う。
- * 7割は税抜で比べるので、税込・不明の金額は 1.1 で割ってから足す（net11Of）。軽微の判定は税込の基準のまま（keibiYen）。
+ * 7割の基準は損益計算書の完成工事高のうち当該業種の額（Basis）。入力が無ければ行の合計を使う。
+ * 基準額が税抜か税込かは7割の計算（Rule7Tax。事務所の初期値は税抜）で決まる。行の金額は税抜にそろえて足し（税込・不明は 1.1 で割る。net11Of）、
+ * 税込の基準額も税抜にそろえて比べる（basis11Of）。軽微の判定は税込の基準のまま（keibiYen）。
  */
 
 type KojiRow = RowResult<KojiFieldId>
@@ -17,8 +18,14 @@ type KojiRow = RowResult<KojiFieldId>
 /** 元データの金額が税込か税抜か（軽微と7割の判定に使う。金額そのものは変換しない）。不明は税込として扱う */
 export type TaxMode = "unknown" | "included" | "excluded"
 
-/** 顧客の Excel の金額が税込か税抜か（7割を税抜で判定するために聞く。7割の判定そのものはいつも税抜） */
+/** 顧客の Excel の金額が税込か税抜か（行の金額を7割の計算にそろえるために聞く） */
 export const TAX_LABELS: Record<TaxMode, string> = { included: "税込", excluded: "税抜", unknown: "分からない" }
+
+/** 7割の計算を税抜・税込のどちらでするか（基準額＝決算書の完成工事高と、集計の金額がどちらか）。顧客の Excel の金額（TaxMode）とは別 */
+export type Rule7Tax = "excluded" | "included"
+export const RULE7_TAX_LABELS: Record<Rule7Tax, string> = { excluded: "税抜", included: "税込" }
+/** 1/11 千円の単位から、7割の計算の税の千円にする割り算（税抜 x 千円 = 11x、税込 x 千円 = 10x） */
+const unitOf = (rule7Tax: Rule7Tax) => (rule7Tax === "excluded" ? 11 : 10)
 
 const KEIBI_YEN = 5_000_000
 const KEIBI_YEN_KENCHIKU = 15_000_000
@@ -52,18 +59,19 @@ const groupByGyoshu = (rows: readonly KojiRow[]) => groupBy(rows, (r) => r.cells
 /** 7割で選ぶ対象の行（除外した行を除く）を業種ごとに。基準額が空欄の側の行の合計もこの行から出す（selectBy7Rule と summarizeKoji で同じ） */
 const ruleRowsByGyoshu = (rows: readonly KojiRow[]) => groupByGyoshu(rows.filter((r) => !r.excluded))
 
-/** 業種コード → 7割の基準額（税抜・千円）。total＝完成工事高の合計、motouke＝うち元請。空欄の側は行の合計（税抜）を使う */
+/** 業種コード → 7割の基準額（7割の計算の税の千円）。total＝完成工事高の合計、motouke＝うち元請。空欄の側は行の合計を使う */
 export type Basis = Partial<Record<string, { total?: number; motouke?: number }>>
 
 /** 基準額として使える入力（正の数）。0 以下は7割の目標が無くなり選択が止まるので、入力が無いのと同じに扱う */
 export const isUsableBasis = (v: number | undefined): v is number => v !== undefined && v > 0
 
-/** 基準額（1/11 千円単位） */
-const basis11Of = (basis: Basis | undefined, gyoshu: string, list: KojiRow[], net11: (r: KojiRow) => number) => {
+/** 基準額（1/11 千円単位。入れた額は7割の計算の税の千円） */
+const basis11Of = (basis: Basis | undefined, rule7Tax: Rule7Tax, gyoshu: string, list: KojiRow[], net11: (r: KojiRow) => number) => {
   const entered = basis?.[gyoshu]
+  const unit = unitOf(rule7Tax)
   return {
-    total: isUsableBasis(entered?.total) ? entered.total * 11 : sumBy(list, net11),
-    motouke: isUsableBasis(entered?.motouke) ? entered.motouke * 11 : sumBy(list.filter(isMotouke), net11),
+    total: isUsableBasis(entered?.total) ? entered.total * unit : sumBy(list, net11),
+    motouke: isUsableBasis(entered?.motouke) ? entered.motouke * unit : sumBy(list.filter(isMotouke), net11),
   }
 }
 
@@ -72,11 +80,11 @@ const basis11Of = (basis: Basis | undefined, gyoshu: string, list: KojiRow[], ne
  * 基準額が行の合計より大きく行を使い切っても届かないとき（顧客がすでに7割で絞ったデータ）は、
  * 軽微な工事の上限を除いて全行が選ばれる。届いたかは summarizeKoji の比率で見る。
  */
-export function selectBy7Rule(rows: readonly KojiRow[], opts: { tax: TaxMode; basis?: Basis }): Set<string> {
+export function selectBy7Rule(rows: readonly KojiRow[], opts: { tax: TaxMode; basis?: Basis; rule7Tax?: Rule7Tax }): Set<string> {
   const selected = new Set<string>()
   const net11 = net11Of(opts.tax)
   for (const [gyoshu, list] of ruleRowsByGyoshu(rows)) {
-    const basis = basis11Of(opts.basis, gyoshu, list, net11)
+    const basis = basis11Of(opts.basis, opts.rule7Tax ?? "excluded", gyoshu, list, net11)
     const threshold = keibiYen(opts.tax)(gyoshu)
     let keibi = 0
     let acc = 0
@@ -123,6 +131,8 @@ export const INCLUSION_LABELS: Record<Inclusion["reason"], string> = {
 export type SelectionOptions = {
   tax: TaxMode
   basis?: Basis
+  /** 7割の計算（基準額が税抜か税込か）。無ければ税抜 */
+  rule7Tax?: Rule7Tax
   selection: SelectionMode
   /** この金額（円）以上の行は7割に関係なく載せる */
   includeAtLeastYen?: number
@@ -154,7 +164,7 @@ export function orderKojiRows(rows: readonly KojiRow[]): KojiRow[] {
 
 /**
  * 業種ごとの集計。件数・合計・比率は7割で選ぶ対象の行（除外した行を除く）だけで出す（selectBy7Rule と同じ行）。
- * 除外した行を手動で載せたものは7割の対象ではないので、fromExcluded に別に数える。金額は税抜の千円（税込・不明の行は 1.1 で割る）
+ * 除外した行を手動で載せたものは7割の対象ではないので、fromExcluded に別に数える。金額は7割の計算の税（税抜・税込）の千円
  */
 export type GyoshuSummary = {
   code: string
@@ -176,9 +186,11 @@ export type GyoshuSummary = {
   fromExcluded: { count: number; total: number }
 }
 
-export function summarizeKoji(rows: readonly KojiRow[], inclusion: ReadonlyMap<string, Inclusion>, opts: { tax: TaxMode; basis?: Basis }): GyoshuSummary[] {
+export function summarizeKoji(rows: readonly KojiRow[], inclusion: ReadonlyMap<string, Inclusion>, opts: { tax: TaxMode; basis?: Basis; rule7Tax?: Rule7Tax }): GyoshuSummary[] {
   const included = (r: KojiRow) => inclusion.get(r.key)?.included ?? false
   const net11 = net11Of(opts.tax)
+  const rule7Tax = opts.rule7Tax ?? "excluded"
+  const unit = unitOf(rule7Tax)
   const sum11 = (list: KojiRow[]) => sumBy(list, net11)
   const ruleRows = ruleRowsByGyoshu(rows)
   const addedFromExcluded = groupByGyoshu(rows.filter((r) => r.excluded && included(r)))
@@ -188,7 +200,7 @@ export function summarizeKoji(rows: readonly KojiRow[], inclusion: ReadonlyMap<s
     .map((code) => {
       const candidates = ruleRows.get(code) ?? []
       const added = addedFromExcluded.get(code) ?? []
-      const b = basis11Of(opts.basis, code, candidates, net11)
+      const b = basis11Of(opts.basis, rule7Tax, code, candidates, net11)
       const selected = candidates.filter(included)
       const selectedMotouke = sum11(selected.filter(isMotouke))
       const selectedTotal = sum11(selected)
@@ -197,13 +209,13 @@ export function summarizeKoji(rows: readonly KojiRow[], inclusion: ReadonlyMap<s
         label: codeLabel("gyoshu", code) ?? "（業種未確定）",
         count: candidates.length,
         selected: selected.length,
-        total: sum11(candidates) / 11,
-        motoukeTotal: sum11(candidates.filter(isMotouke)) / 11,
-        basis: { total: b.total / 11, motouke: b.motouke / 11 },
+        total: sum11(candidates) / unit,
+        motoukeTotal: sum11(candidates.filter(isMotouke)) / unit,
+        basis: { total: b.total / unit, motouke: b.motouke / unit },
         motoukeRatio: b.motouke > 0 ? selectedMotouke / b.motouke : undefined,
         totalRatio: b.total > 0 ? selectedTotal / b.total : undefined,
         short: { motouke: b.motouke > 0 && !over70(selectedMotouke, b.motouke), total: b.total > 0 && !over70(selectedTotal, b.total) },
-        fromExcluded: { count: added.length, total: sum11(added) / 11 },
+        fromExcluded: { count: added.length, total: sum11(added) / unit },
       }
     })
 }

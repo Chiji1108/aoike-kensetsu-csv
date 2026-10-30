@@ -56,7 +56,9 @@ function fieldsDoc() {
     .join("\n")
 }
 
-export function systemPrompt(rules: ChatRules, caseContext: string, files: readonly ContainerFile[]) {
+/** caseRule7Tax はこの案件の7割の計算（事務所の設定と違えば「この案件」に書く） */
+export function systemPrompt(rules: ChatRules, caseContext: string, files: readonly ContainerFile[], caseRule7Tax: Rule7Tax = rules.rule7Tax) {
+  const caseRule7 = caseRule7Tax === rules.rule7Tax ? "" : `- この案件の7割の計算は${RULE7_TAX_LABELS[caseRule7Tax]}（決算書の完成工事高＝基準額も${RULE7_TAX_LABELS[caseRule7Tax]}）。\n`
   const fileLines = files.map((f) => `- $INPUT_DIR/${f.name}: ${f.original}${f.isSource ? "（変換の元）" : ""}`).join("\n")
   return `あなたは行政書士事務所の職員と一緒に、顧客から受け取った工事経歴の Excel を、建設業.NET に取り込む工事経歴書CSV（14列）にする。
 職員はチャットで指示する。表は画面に常に見えていて、あなたの変更は変更案として職員に見せ、職員が承認したものだけが表に入る。
@@ -95,7 +97,7 @@ ${[`- 事務所の7割の計算は${RULE7_TAX_LABELS[rules.rule7Tax]}。`, rules
 ${rules.customer || "（なし）"}
 
 ## この案件
-${caseContext}`
+${caseRule7}${caseContext}`
 }
 
 export type TurnLog = { tool: string; summary: string }
@@ -400,7 +402,7 @@ export function chatTools(state: TurnState) {
     }),
     set_selection: tool({
       description:
-        "7割の設定を変える案を出す。tax: 元データの金額が税込(included)・税抜(excluded)・不明(unknown)。selection: 載せる工事の選び方。rule7＝記入例どおり（業種ごとに元請→全体の順に金額の大きい順で7割を超えるまで。軽微な工事は10件まで）、all＝全件を載せる（除外と手動で外した行のほか。7割以上なら件数は自由なので、7割を超えて多く載せてよいときや、顧客がすでに7割で絞ったデータのとき）。basis: 業種コード→{total, motouke}（千円、税抜の完成工事高）。",
+        "7割の設定を変える案を出す。tax: 元データの金額が税込(included)・税抜(excluded)・不明(unknown)。selection: 載せる工事の選び方。rule7＝記入例どおり（業種ごとに元請→全体の順に金額の大きい順で7割を超えるまで。軽微な工事は10件まで）、all＝全件を載せる（除外と手動で外した行のほか。7割以上なら件数は自由なので、7割を超えて多く載せてよいときや、顧客がすでに7割で絞ったデータのとき）。basis: 業種コード→{total, motouke}（千円、決算書の完成工事高。税抜・税込はこの案件の7割の計算に合わせる）。",
       inputSchema: z.strictObject({
         tax: taxSchema.optional(),
         selection: selectionSchema.optional(),

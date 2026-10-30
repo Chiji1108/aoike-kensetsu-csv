@@ -1,4 +1,8 @@
 import { z } from "zod"
+import { RULE7_TAX_LABELS, type Rule7Tax } from "../convert/koji-selection"
+import { rule7TaxSchema } from "../schemas"
+
+export { RULE7_TAX_LABELS, rule7TaxSchema, type Rule7Tax }
 
 /**
  * 全体ルール・顧客ルールの項目（D1 の csv_rule_items。1項目1行）。AI には position の順に箇条書きの文章にして渡す（rulesText）。
@@ -8,10 +12,6 @@ import { z } from "zod"
 
 export type RuleScope = "global" | "customer"
 export type RuleSource = "staff" | "chat" | "review"
-export type Rule7Tax = "excluded" | "included"
-
-export const RULE7_TAX_LABELS: Record<Rule7Tax, string> = { excluded: "税抜", included: "税込" }
-export const rule7TaxSchema: z.ZodType<Rule7Tax> = z.enum(["excluded", "included"])
 
 /** 1つの一覧（全体ルール・顧客ごとの顧客ルール）の項目の数・1項目の字数・合計の字数の上限（合計は前の1つの文章の上限と同じ） */
 export const MAX_RULE_ITEMS = 100

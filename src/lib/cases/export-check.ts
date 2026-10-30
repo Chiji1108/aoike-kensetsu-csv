@@ -24,7 +24,7 @@ export type ExportCheck = {
   unencodable: { field: KojiFieldId; chars: string[]; rowKey: string }[]
   /** 7割に届いていない業種 */
   short: { code: string; label: string; side: "total" | "motouke" }[]
-  /** 入れた基準額（決算書の額）と表の行の合計（税抜）が合わない業種 */
+  /** 入れた基準額（決算書の額）と表の行の合計（どちらも7割の計算の税）が合わない業種 */
   mismatches: BasisMismatch[]
 }
 

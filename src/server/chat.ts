@@ -189,7 +189,7 @@ async function runTurn(request: Request, caseId: string): Promise<Response> {
   }
   const userUi: ChatMessage = { id: body.id, role: "user", parts: [{ type: "text", text: body.text }] }
   const containerFiles: ContainerFile[] = session.files.map((f) => ({ name: f.name, original: f.original, isSource: f.caseFileId === body.sourceFileId }))
-  const system = systemPrompt({ ...rules, customerName: customer?.name ?? "" }, body.context, containerFiles)
+  const system = systemPrompt({ ...rules, customerName: customer?.name ?? "" }, body.context, containerFiles, body.table.rule7Tax)
   // 止める: 画面の「止める」（止める印を R2 に置く）か、タブを閉じた（request.signal。本番の enable_request_signal）で AI の呼び出しを止める（工事場所の検索も）
   const abort = new AbortController()
   request.signal.addEventListener("abort", () => abort.abort(request.signal.reason), { once: true })

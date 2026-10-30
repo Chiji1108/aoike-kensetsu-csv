@@ -18,6 +18,7 @@ const table: CaseTable = {
   manual: new Map(),
   tax: "excluded",
   basis: {},
+  rule7Tax: "excluded",
   selection: "all",
   sorted: false,
 }

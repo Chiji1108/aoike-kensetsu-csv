@@ -1,6 +1,6 @@
 import { useState } from "react"
 import { Input } from "@/components/ui/input"
-import { isUsableBasis, type Basis, type GyoshuSummary } from "@/lib/convert/koji-selection"
+import { isUsableBasis, RULE7_TAX_LABELS, type Basis, type GyoshuSummary, type Rule7Tax } from "@/lib/convert/koji-selection"
 import { parseInputNumber } from "@/lib/convert/text"
 import { cn } from "@/lib/utils"
 
@@ -62,7 +62,7 @@ function BasisInput({ value, label, onChange }: { value: number | undefined; lab
   )
 }
 
-/** 入力した基準額と行の合計（税抜）の差（基準額 − 行の合計） */
+/** 入力した基準額と行の合計（7割の計算の税）の差（基準額 − 行の合計） */
 function Diff({ entered, rows }: { entered: number | undefined; rows: number }) {
   const d = Math.round(entered === undefined ? 0 : entered - rows)
   if (entered === undefined || d === 0) return null
@@ -72,10 +72,13 @@ function Diff({ entered, rows }: { entered: number | undefined; rows: number }) 
 export function GyoshuSummaryTable({
   summary,
   basis,
+  rule7Tax,
   onBasisChange,
 }: {
   summary: GyoshuSummary[]
   basis: Basis
+  /** 7割の計算（金額の列をどちらの税で出すか） */
+  rule7Tax: Rule7Tax
   onBasisChange: (code: string, side: "total" | "motouke", value: number | undefined) => void
 }) {
   return (
@@ -87,9 +90,9 @@ export function GyoshuSummaryTable({
             <th className="px-3 py-2 text-right">7割の対象の件数</th>
             <th className="px-3 py-2 text-right">載せる件数</th>
             <th className="px-3 py-2 text-right">完成工事高の合計（千円）</th>
-            <th className="px-3 py-2 text-right">行の合計（税抜・千円）</th>
+            <th className="px-3 py-2 text-right">行の合計（{RULE7_TAX_LABELS[rule7Tax]}・千円）</th>
             <th className="px-3 py-2 text-right">うち元請（千円）</th>
-            <th className="px-3 py-2 text-right">元請の行の合計（税抜・千円）</th>
+            <th className="px-3 py-2 text-right">元請の行の合計（{RULE7_TAX_LABELS[rule7Tax]}・千円）</th>
             <th className="px-3 py-2 text-right">載せる元請 / 元請の基準</th>
             <th className="px-3 py-2 text-right">載せる工事 / 合計の基準</th>
           </tr>

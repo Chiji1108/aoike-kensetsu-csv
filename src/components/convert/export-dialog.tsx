@@ -5,7 +5,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { GyoshuSummaryTable } from "@/components/convert/summary-panel"
 import { exportCheck, issueLabel } from "@/lib/cases/export-check"
 import type { RowResult } from "@/lib/convert/convert"
-import type { Basis, GyoshuSummary } from "@/lib/convert/koji-selection"
+import { RULE7_TAX_LABELS, type Basis, type GyoshuSummary, type Rule7Tax } from "@/lib/convert/koji-selection"
 import type { KojiFieldId } from "@/lib/spec/koji-keireki"
 import { cn } from "@/lib/utils"
 
@@ -23,6 +23,7 @@ export function ExportDialog({
   output,
   summary,
   basis,
+  rule7Tax,
   onBasisChange,
   onExcel,
   onCsv,
@@ -32,6 +33,7 @@ export function ExportDialog({
   output: readonly RowResult<KojiFieldId>[]
   summary: GyoshuSummary[]
   basis: Basis
+  rule7Tax: Rule7Tax
   onBasisChange: (code: string, side: "total" | "motouke", value: number | undefined) => void
   onExcel: () => void
   onCsv: () => void
@@ -44,7 +46,7 @@ export function ExportDialog({
           <DialogTitle>
             書き出す（<span className="num" data-testid="export-rows">{output.length}</span> 件）
           </DialogTitle>
-          <DialogDescription>決算書の業種ごとの完成工事高（税抜・千円）を入れると、表の合計と照らします。</DialogDescription>
+          <DialogDescription>決算書の業種ごとの完成工事高（{RULE7_TAX_LABELS[rule7Tax]}・千円）を入れると、表の合計と照らします。</DialogDescription>
         </DialogHeader>
         {check && (
           <div className="grid gap-3 text-sm">
@@ -86,7 +88,7 @@ export function ExportDialog({
                 </ul>
               </details>
             )}
-            <GyoshuSummaryTable summary={summary} basis={basis} onBasisChange={onBasisChange} />
+            <GyoshuSummaryTable summary={summary} basis={basis} rule7Tax={rule7Tax} onBasisChange={onBasisChange} />
             <p className="text-xs text-muted-foreground" data-testid="export-note">
               Excel で直した分はこの画面に戻りません。直しが多いときは「Excel で直す」から。取込は1回だけ（追加になる）、「1行目が項目行」は外す。
             </p>

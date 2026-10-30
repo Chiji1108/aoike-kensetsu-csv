@@ -1,6 +1,6 @@
 import { z } from "zod"
 import type { CellResult, RowResult } from "../convert/convert"
-import { basisSchema, cellEditSchema, fieldIdSchema, replacementsSchema, selectionSchema, taxSchema } from "../schemas"
+import { basisSchema, cellEditSchema, fieldIdSchema, replacementsSchema, rule7TaxSchema, selectionSchema, taxSchema } from "../schemas"
 import type { CaseTable } from "../cases/view"
 import { addedRowSchema, MAX_ADDED_ROWS } from "../cases/added"
 import type { KojiFieldId } from "../spec/koji-keireki"
@@ -45,6 +45,7 @@ export const caseTableWireSchema: z.ZodType<CaseTableWire> = z.object({
   manual: z.array(z.tuple([z.string(), z.boolean()])),
   tax: taxSchema,
   basis: basisSchema,
+  rule7Tax: rule7TaxSchema,
   selection: selectionSchema,
   includeAtLeastYen: z.number().optional(),
   sorted: z.boolean(),

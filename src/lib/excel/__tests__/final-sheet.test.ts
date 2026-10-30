@@ -16,7 +16,7 @@ const rows = [
   // 着工年月が無い・場所名が数字だけ（文字列のまま）
   kojiRow({ ...base, client: "㈱サンプル", workName: "サンプル倉庫改修", place: "1234", amount: "1000", startYm: "" }, 3),
 ]
-const table: CaseTable = { rows, added: [], edits: new Map(), replacements: {}, manual: new Map(), tax: "excluded", basis: {}, selection: "all", sorted: false }
+const table: CaseTable = { rows, added: [], edits: new Map(), replacements: {}, manual: new Map(), tax: "excluded", basis: {}, rule7Tax: "excluded" as const, selection: "all", sorted: false }
 const output = deriveTable(table).output
 
 /** 取り込み用の Excel を書き、SheetJS で読む（職員が Excel で開いたとき） */

@@ -259,6 +259,21 @@ describe("7割ルール", () => {
     ])
   })
 
+  test("7割の計算が税込なら、基準額は税込として比べ、集計も税込の千円で出す（行の金額は Excel の金額の税に合わせてそろえる）", () => {
+    const rows = [row(1, "9", "1", 10000), row(2, "9", "1", 6000), row(3, "9", "1", 4000)]
+    // 税抜 20,000 千円の行に、税込で入れた基準額 22,000（＝税抜 20,000）。税抜で入れた 20,000 と同じ行を選ぶ
+    const incl = { ...netTax, rule7Tax: "included" as const, basis: { "9": { total: 22000, motouke: 22000 } } }
+    const excl = { ...netTax, basis: { "9": { total: 20000, motouke: 20000 } } }
+    expect(selectBy7Rule(rows, incl)).toEqual(selectBy7Rule(rows, excl))
+    const [g] = summarizeKoji(rows, selectKojiRows(rows, { ...incl, manual: new Map() }), incl)
+    expect(g).toMatchObject({ total: 22000, basis: { total: 22000 }, totalRatio: 0.8 })
+    // 同じ基準額 20,000 を税込として読むと、税抜の 18,182 相当なので少なく選ぶ
+    expect(selectBy7Rule(rows, { ...netTax, rule7Tax: "included", basis: { "9": { total: 20000, motouke: 20000 } } }).size).toBe(2)
+    expect(selectBy7Rule(rows, excl).size).toBe(2)
+    expect(selectBy7Rule(rows, { ...netTax, rule7Tax: "included", basis: { "9": { total: 15000, motouke: 15000 } } }).size).toBe(1)
+    expect(selectBy7Rule(rows, { ...netTax, basis: { "9": { total: 15000, motouke: 15000 } } }).size).toBe(2)
+  })
+
   test("軽微な工事（税込500万円未満）は通して10件まで。超える軽微は飛ばして続ける", () => {
     const rows = [...Array.from({ length: 16 }, (_, i) => row(i + 1, "9", "1", 1000)), row(17, "9", "2", 6000)]
     const selected = selectBy7Rule(rows, netTax)

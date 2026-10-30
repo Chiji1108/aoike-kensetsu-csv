@@ -169,7 +169,7 @@ function previousPlanOf() {
 
 const tableOf = (rows: RowResult<KojiFieldId>[]): CaseTable => {
   const w = newWork()
-  return { rows, added: w.added, edits: w.edits, replacements: w.replacements, manual: w.manual, tax: w.tax, basis: w.basis, selection: w.selection, sorted: w.sorted }
+  return { rows, added: w.added, edits: w.edits, replacements: w.replacements, manual: w.manual, tax: w.tax, basis: w.basis, rule7Tax: w.rule7Tax, selection: w.selection, sorted: w.sorted }
 }
 
 /** 文字の2つ組の重なり（行の対応づけに使う。法人格と空白は除いて比べ、2文字に満たなければ 0） */

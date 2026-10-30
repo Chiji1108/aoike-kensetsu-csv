@@ -48,7 +48,7 @@ import { convertRows, countByStatus, editKey, editSession, resolveRows, staffEdi
 import { csvFileName, datedFileName, toCsvBytes } from "@/lib/convert/csv"
 import { compareFormats, describeFormatDiff } from "@/lib/convert/format-diff"
 import { heuristicPlan, planSheets, primarySheet, sheetByNames } from "@/lib/convert/heuristic-plan"
-import { SELECTION_LABELS, SELECTION_MODES, summarizeKoji, TAX_LABELS, type Inclusion, type TaxMode } from "@/lib/convert/koji-selection"
+import { RULE7_TAX_LABELS, SELECTION_LABELS, SELECTION_MODES, summarizeKoji, TAX_LABELS, type Inclusion, type Rule7Tax, type TaxMode } from "@/lib/convert/koji-selection"
 import { personLetters } from "@/lib/convert/persons"
 import { addressInputs, fillAiCache, type AiCache, type AiCaller } from "@/lib/convert/pipeline"
 import { acceptAiPlan, reviewPlanTransforms, type MappingPlan, type SheetGrid } from "@/lib/convert/plan"
@@ -131,6 +131,7 @@ const replanWork = (w: CaseWork, sourceFileId: string): CaseWork => ({
   ...newWork(sourceFileId),
   tax: w.tax,
   basis: w.basis,
+  rule7Tax: w.rule7Tax,
   selection: w.selection,
   rounding: w.rounding,
   sorted: w.sorted,
@@ -199,7 +200,7 @@ function CasePage() {
   return <CaseWorkspace key={page.kase.id} {...page} />
 }
 
-function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled, proposals: recordedProposals, previous }: NonNullable<Awaited<ReturnType<typeof getCasePageFn>>>) {
+function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled, proposals: recordedProposals, previous, settings }: NonNullable<Awaited<ReturnType<typeof getCasePageFn>>>) {
   const router = useRouter()
   const [files, setFiles] = useState(initialFiles)
   const [status, setStatus] = useState(kase.status)
@@ -208,10 +209,11 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
   const addCost = (usd: number) => setCostUsd((c) => c + usd)
   // サーバーが記録した変更案のうち、作業にまだ無いもの（返事を受け取り損ねたもの）も作業に入れる
   const [work, setWork] = useState(() => {
-    const w = state ? fromSaved(state.work, state.aiCache) : newWork()
+    // 新しい案件の7割の計算は事務所の設定（全体ルールの画面）
+    const w = state ? fromSaved(state.work, state.aiCache) : newWork(null, settings.rule7Tax)
     return { ...reviewSavedPlan(w), proposals: withRecorded(w.proposals, recordedProposals) }
   })
-  const { edits, replacements, manual, dismissed, answers, tax, basis, selection: selectionMode, rounding, sorted, threshold: thresholdInput, aiNotice } = work
+  const { edits, replacements, manual, dismissed, answers, tax, basis, rule7Tax, selection: selectionMode, rounding, sorted, threshold: thresholdInput, aiNotice } = work
   const update = <K extends keyof CaseWork>(key: K, next: (prev: CaseWork[K]) => CaseWork[K]) => setWork((w) => ({ ...w, [key]: next(w[key]) }))
   /** 値をその場で読んでから入れる（イベントの値を updater の中で読まない） */
   const set = <K extends keyof CaseWork>(key: K, value: CaseWork[K]) => update(key, () => value)
@@ -580,8 +582,8 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
   const edited = useMemo(() => (rows ? editRows({ rows, added, edits, replacements }) : null), [rows, added, edits, replacements])
   /** 選び直しは入れ外し・7割の設定が変わったときだけ（並べ替えでは選び直さない） */
   const selected = useMemo(
-    () => (edited ? selectRows({ manual, tax, basis, selection: selectionMode, includeAtLeastYen: threshold }, edited) : null),
-    [edited, manual, tax, basis, selectionMode, threshold],
+    () => (edited ? selectRows({ manual, tax, basis, rule7Tax, selection: selectionMode, includeAtLeastYen: threshold }, edited) : null),
+    [edited, manual, tax, basis, rule7Tax, selectionMode, threshold],
   )
   const view = useMemo(
     () => (rows && edited && selected ? orderAndFinalize({ rows, added, replacements, sorted }, edited, selected) : null),
@@ -602,7 +604,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
   const counts = useMemo(() => (output ? countByStatus(output) : null), [output])
   const filterCounts = useMemo(() => (shown ? countRowFilters(shown, inclusion) : null), [shown, inclusion])
   const inquiries = useMemo(() => (output ? collectInquiries(output, { tax }) : []), [output, tax])
-  const summary = useMemo(() => (edited && selected ? summarizeKoji(edited, selected, { tax, basis }) : []), [edited, selected, tax, basis])
+  const summary = useMemo(() => (edited && selected ? summarizeKoji(edited, selected, { tax, basis, rule7Tax }) : []), [edited, selected, tax, basis, rule7Tax])
   /** 表の絞り込み。職員が選ぶまでは、確かめる行があればその行だけ（無ければすべて） */
   const tableFilter: RowFilter = filter ?? (filterCounts && filterCounts.check.all > 0 ? "check" : "all")
 
@@ -629,7 +631,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
 
   /** 今の表（チャットと工事場所の調査に送る。大きいので送るときだけ作る） */
   function tableWire() {
-    return rows ? toWire({ rows, added, edits, replacements, manual, tax, basis, selection: selectionMode, includeAtLeastYen: threshold, sorted }) : null
+    return rows ? toWire({ rows, added, edits, replacements, manual, tax, basis, rule7Tax, selection: selectionMode, includeAtLeastYen: threshold, sorted }) : null
   }
 
   function chatRequest() {
@@ -1217,6 +1219,8 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
                   onRounding={(r) => set("rounding", r)}
                   tax={tax}
                   onTax={(t) => set("tax", t)}
+                  rule7Tax={rule7Tax}
+                  onRule7Tax={(t) => set("rule7Tax", t)}
                   selection={selectionMode}
                   onSelection={(m) => set("selection", m)}
                   threshold={thresholdInput}
@@ -1225,7 +1229,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
                   onClearManual={() => set("manual", new Map())}
                   roundingTotals={roundingTotals}
                 >
-                  <GyoshuSummaryTable summary={summary} basis={basis} onBasisChange={(code, side, v) => update("basis", (prev) => ({ ...prev, [code]: { ...prev[code], [side]: v } }))} />
+                  <GyoshuSummaryTable summary={summary} basis={basis} rule7Tax={rule7Tax} onBasisChange={(code, side, v) => update("basis", (prev) => ({ ...prev, [code]: { ...prev[code], [side]: v } }))} />
                 </SelectionPanel>
               </div>
               <div className="pt-2" hidden={tab !== "inquiry"} role="tabpanel">
@@ -1281,6 +1285,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
           output={output}
           summary={summary}
           basis={basis}
+          rule7Tax={rule7Tax}
           onBasisChange={(code, side, v) => update("basis", (prev) => ({ ...prev, [code]: { ...prev[code], [side]: v } }))}
           onExcel={() => void downloadFinalExcel()}
           onCsv={downloadCsv}
@@ -1319,6 +1324,8 @@ function SelectionPanel(p: {
   onRounding: (r: Rounding) => void
   tax: TaxMode
   onTax: (t: TaxMode) => void
+  rule7Tax: Rule7Tax
+  onRule7Tax: (t: Rule7Tax) => void
   selection: CaseWork["selection"]
   onSelection: (m: CaseWork["selection"]) => void
   threshold: CaseWork["threshold"]
@@ -1331,8 +1338,11 @@ function SelectionPanel(p: {
   return (
     <div className="grid gap-3">
       <div className="flex flex-wrap items-end gap-x-6 gap-y-3">
-        <Field label="Excel の金額" hint="7割は税抜で判定します。税込・分からないなら 1.1 で割ります（金額は変えません）">
+        <Field label="Excel の金額" hint="顧客の Excel の金額が税込か税抜か。7割の計算と違えば 1.1 で掛け割りして比べます（金額は変えません）">
           <Segmented label="Excel の金額" value={p.tax} options={(Object.keys(TAX_LABELS) as TaxMode[]).map((v) => ({ value: v, label: TAX_LABELS[v] }))} onChange={p.onTax} testId="tax" />
+        </Field>
+        <Field label="7割の計算" hint="決算書の完成工事高（基準額）が税抜か税込か。初期値は全体ルールの画面の設定">
+          <Segmented label="7割の計算" value={p.rule7Tax} options={(Object.keys(RULE7_TAX_LABELS) as Rule7Tax[]).map((v) => ({ value: v, label: RULE7_TAX_LABELS[v] }))} onChange={p.onRule7Tax} testId="rule7-tax" />
         </Field>
         <Field label="千円未満">
           <Segmented label="千円未満の端数" value={p.rounding} options={[{ value: "floor", label: "切り捨て" }, { value: "round", label: "四捨五入" }]} onChange={p.onRounding} testId="rounding" />
@@ -1361,7 +1371,7 @@ function SelectionPanel(p: {
       {p.roundingTotals && <RoundingNote floor={p.roundingTotals.floor} round={p.roundingTotals.round} current={p.rounding} />}
       {p.children}
       <p className="text-xs text-muted-foreground" title="業種ごとに、元請を金額の大きい順に元請の基準額の7割を超えるまで、続いて残りを合計の基準額の7割を超えるまで載せます。軽微な工事（税込500万円未満、建築一式は1,500万円未満）は10件まで">
-        基準額は決算書の業種ごとの完成工事高（税抜・千円）。空欄なら行の合計。
+        基準額は決算書の業種ごとの完成工事高（{RULE7_TAX_LABELS[p.rule7Tax]}・千円）。空欄なら行の合計。
         {p.tax === "unknown" && <strong data-testid="tax-unknown-note"> Excel の金額が分からないので、税込とみなして判定しています。</strong>}
       </p>
     </div>
