@@ -260,7 +260,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
   const workRef = useRef(work)
   workRef.current = work
 
-  const saveStatus = useCaseAutosave(kase.id, { version: state?.version ?? 0, saved: state ? work : null }, work)
+  const { status: saveStatus, settle: settleSave } = useCaseAutosave(kase.id, { version: state?.version ?? 0, saved: state ? work : null }, work)
 
   const shownPlan = work.plan ?? planDraft
   const plan = shownPlan?.plan ?? null
@@ -632,6 +632,8 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
     setProposalChanges((m) => new Map(m).set(r.proposal.id, r.changes))
     update("proposals", (ps) => (ps.some((p) => p.id === r.proposal.id) ? ps : [...ps, r.proposal]))
   }
+  /** まだ決めていない振り返りの案がある（決めるまで振り返りの案内を重ねて出さない） */
+  const pendingReview = work.proposals.some((p) => p.state === "open" && (proposalChanges.get(p.id) ?? []).some((c, i) => c.kind === "rule" && c.source === "review" && decisionOf(p, i) === "pending"))
   // 未決の工事場所の項目がある変更案（一括調査のものも、チャットの「この現場ってどこ？」のものも）を決めるまで、次の一括調査を始めさせない
   const undecidedLocation = work.proposals.some((p) => p.state === "open" && (proposalChanges.get(p.id) ?? []).some((c, i) => c.kind === "location" && decisionOf(p, i) === "pending"))
   const locationSearch = useLocationSearch({ caseId: kase.id, view, table: tableWire, undecided: undecidedLocation, onRecord: addRecorded, onCaseCost: setCostUsd })
@@ -654,16 +656,14 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
       sourceFileId: work.sourceFileId,
       plan: grid && work.plan ? { plan: work.plan.plan, shape: sheetShapeOf(grid) } : null,
       rounding: work.rounding,
-      // 振り返り（get_review）に使う変更案の状態と、どの承認を取り消したか（記録の中身は送らない）
-      review: { proposals: work.proposals, undo: work.undo.map((e) => ({ proposalId: e.proposalId, ...(e.undone ? { undone: true as const } : {}) })) },
     }
   }
 
   const updateProposal = (id: string, next: (p: Proposal) => Proposal) => update("proposals", (ps) => ps.map((p) => (p.id === id ? next(p) : p)))
 
-  /** 承認の記録を作って作業に足す（cases/undo.ts）。before と after は承認の前後の作業 */
-  function withUndo(before: CaseWork, after: CaseWork, proposalId: string, external: UndoEntry["external"] = []): CaseWork {
-    const entry = undoEntry(before, after, { id: crypto.randomUUID(), proposalId, label: proposalId, at: Date.now(), external })
+  /** 承認の記録を作って作業に足す（cases/undo.ts）。before と after は承認の前後の作業、items は承認した項目の番号 */
+  function withUndo(before: CaseWork, after: CaseWork, proposalId: string, items: number[], external: UndoEntry["external"] = []): CaseWork {
+    const entry = undoEntry(before, after, { id: crypto.randomUUID(), proposalId, items, label: proposalId, at: Date.now(), external })
     return entry ? { ...after, undo: pushUndo(after.undo, entry) } : after
   }
 
@@ -716,7 +716,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
         const overlaid = applyChanges(w, edited, indices.map((i) => changes[i]!))
         const replanned = nextPlan && indices.some((i) => changes[i]!.kind === "plan") && w.plan ? { ...overlaid, plan: { ...w.plan, plan: nextPlan }, converted: false } : overlaid
         const decided = { ...replanned, proposals: w.proposals.map((x) => (x.id === id ? decide(x, indices, "applied") : x)) }
-        return withUndo(w, decided, id, external)
+        return withUndo(w, decided, id, indices, external)
       })
     }
     if (nextPlan) supersedeConversion()
@@ -739,7 +739,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
       for (const i of rules) {
         // サーバーが変更案の記録から追記し、足した印も一緒に書く（開き直して同じ項目をもう一度承認しても二度足さない）
         await approveRuleFn({ data: { caseId: kase.id, proposalId: id, item: i } })
-        setWork((w) => withUndo(w, { ...w, proposals: w.proposals.map((x) => (x.id === id ? decide(x, [i], "applied") : x)) }, id, ["rule"]))
+        setWork((w) => withUndo(w, { ...w, proposals: w.proposals.map((x) => (x.id === id ? decide(x, [i], "applied") : x)) }, id, [i], ["rule"]))
       }
       toast.success("ルールに追記しました")
     } catch (e) {
@@ -1078,17 +1078,21 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
                 prompt: aiAnswerPrompt(h.name),
               }))
             : []),
-          ...(reviewHint
+          ...(reviewHint && !pendingReview
             ? [
                 {
                   id: REVIEW_SUGGESTION,
                   text: "案件を完了にしました。今年の指示・手直し・聞き返しの答えを AI が振り返り、来年のための顧客ルールの案（毎年の決まり）を出せます。今年だけの事情は分けて伝え、ルールには足しません。承認した項目だけ顧客ルールに足します。",
                   label: "振り返って顧客ルールの案を出す",
                   prompt: REVIEW_PROMPT,
+                  // サーバーは保存した作業の変更案の状態から振り返る。会話に一度送ったら案内しない
+                  needsSaved: true as const,
+                  once: true as const,
                 },
               ]
             : []),
         ]}
+        beforeSend={settleSave}
         onSuggestionSent={(id) => (id === REVIEW_SUGGESTION ? setReviewHint(false) : setAnswerHints((hs) => hs.filter((h) => h.fileId !== id)))}
       />
     </Suspense>

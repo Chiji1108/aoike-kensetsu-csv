@@ -107,9 +107,17 @@ export type ChatPanelProps = {
    * AI に頼むとよいこと（返ってきた記入用Excelの、決まった欄で読めなかった記入〔ファイルごと。fileName はそのファイル〕と、案件を完了にしたときの振り返り）。
    * 押すと prompt を送り、送れたら onSuggestionSent。会話の最後に出す
    */
-  suggestions: readonly { id: string; fileName?: string; text: string; label: string; prompt: string }[]
+  suggestions: readonly Suggestion[]
   onSuggestionSent: (id: string) => void
+  /**
+   * 送る前に作業を保存し終える（サーバーが保存した作業を読む道具のため。例: 振り返り）。保存できなければ false。
+   * 保存の要る案内（needsSaved）は false なら送らない。ほかの指示は保存できなくても送る（表は画面が送る）
+   */
+  beforeSend: () => Promise<boolean>
 }
+
+/** チャットの案内。needsSaved は送る前に作業を保存し終える要るもの、once は会話に同じ指示があればもう出さないもの */
+export type Suggestion = { id: string; fileName?: string; text: string; label: string; prompt: string; needsSaved?: true; once?: true }
 
 /**
  * 案件の画面の横のチャット。AI の変更は変更案として返事に付け、職員が承認したものだけを表に入れる。
@@ -175,13 +183,28 @@ export function ChatPanel(props: ChatPanelProps) {
 
   /** 送る。送れなかった（返事の途中・会話の読み込み中、またはサーバーが断った）なら false */
   /** keepInput なら入力欄の書きかけを残す（決まった指示を送るボタン） */
-  async function send(text = input.trim(), options: { carryover?: true; keepInput?: true } = {}) {
-    if (!text || working || !ready) return false
+  /** 送る前の保存を待っている間（続けて押しても二度送らない） */
+  const [preparing, setPreparing] = useState(false)
+  async function send(text = input.trim(), options: { carryover?: true; keepInput?: true; needsSaved?: true } = {}) {
+    if (!text || working || preparing || !ready) return false
+    setPreparing(true)
+    let saved: boolean
+    try {
+      saved = await live.current.beforeSend()
+    } finally {
+      setPreparing(false)
+    }
+    if (!saved && options.needsSaved) {
+      toast.error("作業を保存できていないので送りませんでした（保存の状態を確かめてから、もう一度押してください）")
+      return false
+    }
     if (!options.carryover && !options.keepInput) setInput("")
     failed.current = false
     await sendMessage({ text }, options.carryover ? { body: { carryover: true } } : undefined)
     return !failed.current
   }
+  /** 会話にもう送った指示（once の案内を出さない） */
+  const sentTexts = new Set(messages.flatMap((m) => (m.role === "user" ? [m.parts.map((p) => (p.type === "text" ? p.text : "")).join("")] : [])))
 
   /** 画面の流れを止め、サーバーにも止めるよう伝える（流れを切るだけでは AI の呼び出しが止まらないことがある） */
   function stopTurn() {
@@ -332,15 +355,15 @@ export function ChatPanel(props: ChatPanelProps) {
                 </div>
               )}
               {history === "loaded" &&
-                props.suggestions.map((sg) => (
+                props.suggestions.filter((sg) => !(sg.once && sentTexts.has(sg.prompt))).map((sg) => (
                   <div key={sg.id} className="grid gap-2 rounded-lg border bg-violet-50/60 px-3 py-2 text-xs dark:bg-violet-950/30" data-testid="chat-suggestion" data-suggestion={sg.id} data-file-name={sg.fileName}>
                     <span className="text-muted-foreground">{sg.text}</span>
                     <Button
                       size="sm"
                       variant="outline"
                       className="w-fit"
-                      disabled={!ready || working}
-                      onClick={() => void send(sg.prompt, { keepInput: true }).then((sent) => sent && live.current.onSuggestionSent(sg.id))}
+                      disabled={!ready || working || preparing}
+                      onClick={() => void send(sg.prompt, { keepInput: true, ...(sg.needsSaved ? { needsSaved: true } : {}) }).then((sent) => sent && live.current.onSuggestionSent(sg.id))}
                       data-testid="chat-suggestion-send"
                     >
                       <MessageSquareText /> {sg.label}

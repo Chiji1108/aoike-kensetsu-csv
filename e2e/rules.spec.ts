@@ -210,8 +210,8 @@ test("案件を完了にするとチャットに振り返りの案内が出て�
   const changes: ChatChange[] = [{ kind: "rule", scope: "customer", text: rule, source: "review" }]
   const proposal: Proposal = { id: `review-${Date.now()}`, origin: { kind: "chat", messageId: "m1" }, question: null, state: "open", count: 1, applied: [], rejected: [] }
   putProposalRecord(caseId, { proposal, changes })
-  /** 届いた指示（本文と、振り返りに使う変更案の状態） */
-  const sent: { text: string; review?: { proposals: unknown[]; undo: unknown[] } }[] = []
+  /** 届いた指示（振り返りの材料はサーバーが保存した作業から作るので、画面は変更案の状態を送らない） */
+  const sent: Record<string, unknown>[] = []
   await page.route("**/api/cases/*/chat", async (route) => {
     if (route.request().method() !== "POST") return route.fallback()
     sent.push(route.request().postDataJSON())
@@ -243,7 +243,12 @@ test("案件を完了にするとチャットに振り返りの案内が出て�
   const card = page.getByTestId("proposal").last()
   await expect(card).toBeVisible()
   expect(sent.map((s) => s.text)).toEqual([REVIEW_PROMPT])
-  expect(sent[0]!.review).toEqual({ proposals: [], undo: [] })
+  expect(sent[0]).not.toHaveProperty("review")
+  await expect(hint).toHaveCount(0)
+  // 案件ごとに一度: 送ったあとは、完了にし直しても案内を出さない（未決の振り返りの案もある）
+  await page.getByTestId("case-status-inquiring").click()
+  await page.getByTestId("case-status-done").click()
+  await expect(page.getByTestId("case-status-done")).toHaveAttribute("data-pressed")
   await expect(hint).toHaveCount(0)
   await card.getByTestId("proposal-open").click()
   await expect(page.getByTestId("proposal-dialog").getByTestId("proposal-item")).toContainText("項目を足す（振り返り）")
