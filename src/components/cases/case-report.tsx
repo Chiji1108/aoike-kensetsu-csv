@@ -4,6 +4,7 @@ import { Item, ItemContent, ItemDescription, ItemMedia, ItemTitle } from "@/comp
 import { Message, MessageContent, MessageHeader } from "@/components/ui/message"
 import type { RowFilter } from "@/components/convert/status"
 import { cn } from "@/lib/utils"
+import type { ReportPhase } from "@/lib/cases/phase"
 
 /**
  * 変換の報告（チャットの最初の返事）。ファイルを読む → 列の対応を考える → 変換する の進み具合と、変換のあとの注意書き
@@ -11,14 +12,10 @@ import { cn } from "@/lib/utils"
  * 次にできること（書き出す・問い合わせ・工事場所）を出す。案件の作業から作るので保存しない（変われば書き直る）
  */
 
-export type ReportPhase =
-  | { kind: "empty" }
-  | { kind: "noSheet" }
-  | { kind: "reading"; name: string }
-  | { kind: "planning"; name: string }
-  | { kind: "converting"; name: string }
-  | { kind: "failed"; message: string }
-  | { kind: "done" }
+export type { ReportPhase }
+
+/** 落とした・付けたファイルをどう扱ったか */
+export type UploadNote = { name: string; text: string; tone?: "error" }
 
 export type ReportQuestion = {
   id: string
@@ -46,6 +43,7 @@ export type ReportProps = {
   /** 次にできること */
   next: { export: () => void; inquiry: (() => void) | null; location: (() => void) | null; locationSites: number }
   onRetry: (() => void) | null
+  uploads: UploadNote[]
 }
 
 const PHASE_TEXT = {
@@ -70,6 +68,15 @@ export function CaseReport(p: ReportProps) {
           <Sparkles className="size-3.5 text-violet-500" /> 変換の報告
         </MessageHeader>
         <Body {...p} />
+        {p.uploads.length > 0 && (
+          <ul className="grid gap-0.5 text-xs" data-testid="report-uploads">
+            {p.uploads.map((u, i) => (
+              <li key={i} className={u.tone === "error" ? "text-red-700" : "text-muted-foreground"} data-testid="report-upload" data-tone={u.tone}>
+                {u.name}: {u.text}
+              </li>
+            ))}
+          </ul>
+        )}
       </MessageContent>
     </Message>
   )
@@ -82,6 +89,12 @@ function Body(p: ReportProps) {
       <p className="flex items-start gap-2 text-sm" data-testid="report-empty">
         <FileUp className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
         顧客から届いた Excel をここか表の欄に落としてください。AI が列の対応を考えて変換し、気になる点をまとめてお知らせします。
+      </p>
+    )
+  if (phase.kind === "noAi")
+    return (
+      <p className="text-sm text-red-800" data-testid="report-no-ai">
+        AI が使えないため変換できません（APIキーが未設定）。管理者に連絡してください。
       </p>
     )
   if (phase.kind === "noSheet")

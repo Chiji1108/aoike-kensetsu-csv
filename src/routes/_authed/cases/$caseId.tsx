@@ -3,7 +3,8 @@ import { Link, createFileRoute, notFound, useRouter } from "@tanstack/react-rout
 import { FileSpreadsheet, FileText, FileUp, Loader2, MessageSquare, TriangleAlert } from "lucide-react"
 import { toast } from "sonner"
 import { AppShell, PageHeader } from "@/components/app-shell"
-import { CaseReport, type ReportPhase, type ReportProps, type ReportQuestion } from "@/components/cases/case-report"
+import { CaseReport, type ReportProps, type ReportQuestion, type UploadNote } from "@/components/cases/case-report"
+import { reportPhase } from "@/lib/cases/phase"
 import { DeleteButton } from "@/components/cases/delete-dialog"
 import { useCaseAutosave, type SaveStatus } from "@/components/cases/use-case-autosave"
 import { EditExcelPanel, type EditImport } from "@/components/convert/edit-excel-panel"
@@ -216,6 +217,11 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
   const set = <K extends keyof CaseWork>(key: K, value: CaseWork[K]) => update(key, () => value)
   const [source, setSource] = useState<Source | null>(null)
   const [loadingSource, setLoadingSource] = useState<string | null>(null)
+  /** 変換の元を読めなかった（報告に理由とやり直しを出す） */
+  const [sourceError, setSourceError] = useState<{ file: CaseFile; message: string } | null>(null)
+  /** 落とした・付けたファイルをどう扱ったか（報告に出す。保存しない） */
+  const [uploadNotes, setUploadNotes] = useState<UploadNote[]>([])
+  const note = (n: UploadNote) => setUploadNotes((ns) => [...ns.slice(-9), n])
   /** AI が列の対応を考えている間の、見出しからの推定（保存しない） */
   const [planDraft, setPlanDraft] = useState<SavedPlan | null>(null)
   const planning = planDraft !== null
@@ -332,9 +338,13 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
     setPlanDraft(null)
   }
 
-  /** 変換の元のファイルを読む。計画がまだ無ければ（初めて選んだ・計画の途中で閉じた）計画を立てる */
+  /**
+   * 変換の元のファイルを読む。計画がまだ無ければ（初めて選んだ・計画の途中で閉じた）計画を立てる。
+   * AI が使えない（APIキーが無い）ときは計画を立てない（このツールは AI で列の対応を決める。見出しの推定で黙って進めない）
+   */
   async function openSource(file: CaseFile, replan: boolean) {
     setLoadingSource(file.name)
+    setSourceError(null)
     try {
       const { readWorkbook } = await import("@/lib/convert/workbook")
       const sheets = readWorkbook(file.name, await fetchCaseFile(file.id))
@@ -342,9 +352,9 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
       const src = { fileId: file.id, name: file.name, sheets }
       setSource(src)
       setLoadingSource(null)
-      if (replan) await startPlanning(src)
+      if (replan && chatEnabled) await startPlanning(src)
     } catch (e) {
-      toast.error(errorMessage(e, "ファイルを読み込めませんでした"))
+      setSourceError({ file, message: errorMessage(e, "ファイルを読み込めませんでした") })
     } finally {
       setLoadingSource(null)
     }
@@ -380,7 +390,9 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
           const { readWorkbook } = await import("@/lib/convert/workbook")
           kind = uploadKind(readWorkbook(f.name, new Uint8Array(await f.arrayBuffer())))
         } catch (e) {
-          toast.error(errorMessage(e, `${f.name} を読めませんでした`))
+          const text = errorMessage(e, "読めませんでした")
+          toast.error(`${f.name}: ${text}`)
+          note({ name: f.name, text, tone: "error" })
           continue
         }
       }
@@ -396,7 +408,11 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
         continue
       }
       const saved = await keepFile("source", f, f.name)
-      if (!saved || isPdf(saved.name) || !isSheetFile(saved.name)) continue
+      if (!saved) continue
+      if (isPdf(saved.name) || !isSheetFile(saved.name)) {
+        note({ name: f.name, text: "届いたファイルとして保存しました（チャットの AI は読めます）" })
+        continue
+      }
       if (!hasSource) {
         hasSource = true
         // PDF から足した行があれば、変換の元にすると消えるので確かめる
@@ -575,6 +591,9 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
   const inclusion = view?.inclusion ?? NO_INCLUSION
   const letters = view?.letters ?? NO_LETTERS
   const output = view?.output ?? null
+  /** 待っている間・続けて処理するファイルの間で読む、最新の表と元（古い描画の値で取り込まない） */
+  const live = useRef({ view, shown, source, addresses, plan })
+  live.current = { view, shown, source, addresses, plan }
   const openProposals = work.proposals.filter((p) => p.state === "open" && p.origin.kind === "chat").length
   /** 欄に出す変更案: 開いているものと、承認を取り消せるもの（決め終わっても、取り消すまで欄に残す） */
   const shownInPanel = (p: Proposal) => p.state === "open" || work.undo.some((e) => e.proposalId === p.id && canUndo(e))
@@ -761,15 +780,15 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
    * 差分は取り込み始めたときの表と比べる。待っている間に変換の元が変わったら捨てる
    */
   async function readEditFile(f: File) {
-    const against = view
+    const against = live.current.view
     if (!against) return { error: "表がまだありません。変換が済んでから上げてください" }
     const generation = caseGeneration.current
     const { readWorkbook } = await import("@/lib/convert/workbook")
     const sheets = readWorkbook(f.name, new Uint8Array(await f.arrayBuffer()))
     const failures = new Set<string>()
-    const cache: AiCache = new Map(work.aiCache)
+    const cache: AiCache = new Map(workRef.current.aiCache)
     // 件数の上限は readEditSheet が AI を呼ぶ前に確かめる。案件のファイルに残すのは読めたあと
-    const result = await readEditSheet(sheets, against, { rounding, cache, callAi: serverAi(kase.id, failures, addCost), lookup: (raws) => ensureAddresses([...raws]) })
+    const result = await readEditSheet(sheets, against, { rounding: workRef.current.rounding, cache, callAi: serverAi(kase.id, failures, addCost), lookup: (raws) => ensureAddresses([...raws]) })
     if (generation !== caseGeneration.current) return undefined
     if ("error" in result) return result
     if (failures.size) toast.warning(`AI を使えなかった値があります: ${[...failures].join(" / ")}`)
@@ -784,15 +803,25 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
     return { report: result.report }
   }
 
-  /** チャット欄・表の欄に落とした編集用の Excel（結果は「Excel で直す」の欄に出す） */
+  /** チャット欄・表の欄に落とした編集用の Excel。結果は報告と通知に出す（表がまだ無くて「Excel で直す」の欄が見えないときも） */
   async function importEditFile(f: File): Promise<EditImport | undefined> {
+    let r: EditImport | undefined
     try {
-      const r = await readEditFile(f)
-      if (r && "report" in r) toast.success(`直した Excel を読みました（${f.name}）。変更案は「Excel で直す」の欄にあります`)
-      return r
+      r = await readEditFile(f)
     } catch (e) {
-      return { error: errorMessage(e, "Excel を取り込めませんでした") }
+      r = { error: errorMessage(e, "Excel を取り込めませんでした") }
     }
+    if (!r) return r
+    if ("error" in r) {
+      toast.error(r.error)
+      note({ name: f.name, text: r.error, tone: "error" })
+    } else {
+      const n = r.report.cells + r.report.added + r.report.included + r.report.excluded
+      const text = n ? `直した Excel の変更 ${n} 件を変更案にしました（「Excel で直す」の欄）` : "直した Excel に変わったところはありませんでした"
+      toast.success(text)
+      note({ name: f.name, text })
+    }
+    return r
   }
 
   /**
@@ -802,17 +831,17 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
   async function readAnswerFile(f: File, against: RowResult<KojiFieldId>[]) {
     const generation = caseGeneration.current
     // 照合に使う計画・元のファイル・引いた住所は、取り込み始めたときのものにそろえる（against と同じ時点）
-    const planAtStart = work.plan
-    const sourceAtStart = source
-    const addressesAtStart = addresses
-    if (work.converted && !addressesAtStart) return { error: "住所を読み込んでいます。少し待ってから取り込んでください" }
+    const planAtStart = workRef.current.plan
+    const sourceAtStart = live.current.source
+    const addressesAtStart = live.current.addresses
+    if (workRef.current.converted && !addressesAtStart) return { error: "住所を読み込んでいます。少し待ってから取り込んでください" }
     void keepFile("answer", f, f.name)
     const { readWorkbook } = await import("@/lib/convert/workbook")
     const sheets = readWorkbook(f.name, new Uint8Array(await f.arrayBuffer()))
     const failures = new Set<string>()
-    const cache: AiCache = new Map(work.aiCache)
+    const cache: AiCache = new Map(workRef.current.aiCache)
     // 住所は変換と同じ仕組みで引く（住所データを読めなければ、その値は読めない記入として出す。取り込み全体は止めない）
-    const report = await readAnswers(sheets, against, { ctx: { rounding }, lookup: (raws) => ensureAddresses([...raws]), cache, callAi: serverAi(kase.id, failures, addCost), fields: plan?.fields ?? {} })
+    const report = await readAnswers(sheets, against, { ctx: { rounding: workRef.current.rounding }, lookup: (raws) => ensureAddresses([...raws]), cache, callAi: serverAi(kase.id, failures, addCost), fields: planAtStart?.plan.fields ?? {} })
     if (generation !== caseGeneration.current) return undefined
     if ("error" in report) return report
     if (workRef.current.plan !== planAtStart) return { error: "取り込んでいる間に列の対応が変わりました。もう一度取り込んでください" }
@@ -825,22 +854,23 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
     return { aiFailures: [...failures] }
   }
 
+  /** 記入された Excel を取り込む（問い合わせの欄・チャット欄・表の欄）。結果は報告と通知に出す */
   async function importAnswers(f: File) {
-    if (!shown) {
-      toast.error("表がまだありません。変換が済んでから取り込んでください")
-      return
+    const fail = (text: string) => {
+      toast.error(text)
+      note({ name: f.name, text, tone: "error" })
     }
+    const against = live.current.shown
+    if (!against) return fail("表がまだありません。変換が済んでから取り込んでください")
     try {
-      const read = await readAnswerFile(f, shown)
+      const read = await readAnswerFile(f, against)
       if (!read) return
-      if ("error" in read) {
-        toast.error(read.error)
-        return
-      }
-      toast.success("顧客の回答を取り込みました。反映した件数は「問い合わせ」の欄に出ています")
-      if (read.aiFailures.length) toast.warning(`AI を使えず反映していない記入があります（${read.aiFailures.join(" / ")}）。一覧を確認してください`)
+      if ("error" in read) return fail(read.error)
+      toast.success("顧客の回答を取り込みました（結果は「問い合わせ」の欄）")
+      note({ name: f.name, text: "顧客の回答を取り込みました（結果は「問い合わせ」の欄）" })
+      if (read.aiFailures.length) toast.warning(`AI を使えず反映していない記入があります（${read.aiFailures.join(" / ")}）`)
     } catch (e) {
-      toast.error(errorMessage(e, "回答のファイルを読み込めませんでした"))
+      fail(errorMessage(e, "回答のファイルを読み込めませんでした"))
     }
   }
 
@@ -889,21 +919,17 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
 
   // ---- 変換の報告（チャットの最初の返事） ----
   const sourceFile = files.find((f) => f.id === work.sourceFileId)
-  const phase: ReportPhase = loadingSource
-    ? { kind: "reading", name: loadingSource }
-    : planning
-      ? { kind: "planning", name: sourceFile?.name ?? "" }
-      : convertError && convertError.plan === work.plan
-        ? { kind: "failed", message: convertError.message }
-        : work.plan && (!work.converted || reconverting)
-          ? { kind: "converting", name: sourceFile?.name ?? "" }
-          : hasTable
-            ? { kind: "done" }
-            : noSheetSource
-              ? { kind: "noSheet" }
-              : work.sourceFileId
-                ? { kind: "reading", name: sourceFile?.name ?? "" }
-                : { kind: "empty" }
+  const phase = reportPhase({
+    aiEnabled: chatEnabled,
+    loading: loadingSource,
+    sourceError: sourceError?.message ?? null,
+    planning,
+    convertError: convertError && convertError.plan === work.plan ? convertError.message : null,
+    converting: !!work.plan && (!work.converted || reconverting),
+    hasTable,
+    noSheetSource,
+    sourceName: work.sourceFileId ? (sourceFile?.name ?? "") : null,
+  })
   const sourceSheets = work.plan?.plan.sheets ?? []
   const reportNotes: ReportProps["notes"] = [
     ...(work.plan?.notice ? [{ text: work.plan.notice, tone: "warning" as const }] : []),
@@ -969,9 +995,11 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
         locationSites,
       }}
       onRetry={() => {
+        if (phase.kind === "failed" && phase.retry === "source" && sourceError) return void openSource(sourceError.file, !work.plan)
         setConvertError(null)
         void convert()
       }}
+      uploads={uploadNotes}
     />
   )
 
@@ -1115,7 +1143,9 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
             className="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-2xl border border-dashed bg-muted/30 px-4 py-16 text-center text-sm transition-colors hover:bg-muted/60"
             data-testid="drop-zone"
           >
-            {phase.kind === "empty" || phase.kind === "noSheet" ? (
+            {phase.kind === "noAi" ? (
+              <span className="text-red-800" data-testid="no-ai">AI が使えないため変換できません（APIキーが未設定）。管理者に連絡してください。</span>
+            ) : phase.kind === "empty" || phase.kind === "noSheet" ? (
               <>
                 <FileUp className="size-7 text-muted-foreground" />
                 <span className="text-base font-medium">顧客から届いたファイルを落とす</span>
@@ -1128,7 +1158,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
               </>
             ) : (
               <span className="flex items-center gap-2 text-muted-foreground">
-                <Loader2 className="size-4 animate-spin" /> {phase.kind === "reading" ? "ファイルを読んでいます…" : phase.kind === "planning" ? "AI が列の対応を考えています…" : phase.kind === "failed" ? "変換できませんでした（チャットの報告をご覧ください）" : "変換しています…"}
+                <Loader2 className="size-4 animate-spin" /> {phase.kind === "reading" ? "ファイルを読んでいます…" : phase.kind === "planning" ? "AI が列の対応を考えています…" : phase.kind === "failed" ? "止まっています（報告にやり直しがあります）" : "変換しています…"}
               </span>
             )}
           </label>
