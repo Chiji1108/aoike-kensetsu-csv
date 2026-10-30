@@ -1,20 +1,18 @@
-import { useState } from "react"
+import { useRef, useState } from "react"
 import { Link } from "@tanstack/react-router"
 import { ArrowDown, ArrowUp, Check, Loader2, Pencil, Plus, Trash2, X } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
-import { MAX_RULE_ITEM_LENGTH, originLabel, type RuleItem } from "@/lib/chat/rules"
+import { originLabel, type RuleItem, type RuleTarget } from "@/lib/chat/rules"
 import { errorMessage } from "@/lib/errors"
 import { addRuleItemFn, deleteRuleItemFn, moveRuleItemFn, updateRuleItemFn, type RulesResult } from "@/server/rules-fns"
-
-type Target = { scope: "global" } | { scope: "customer"; customerId: string }
 
 /**
  * 全体ルール・顧客ルールの箇条書き。項目ごとに直す・消す・並べ替える・足す（サーバーの操作も項目ごとなので、2つの画面で別の項目を直しても消し合わない）。
  * 同じ項目がほかの画面で直されていたら保存を断り、入力を残したまま今の文章を見せる（もう一度保存すると、その文章を直したことになる）
  */
-export function RuleList({ target, initial, testId }: { target: Target; initial: RuleItem[]; testId: string }) {
+export function RuleList({ target, initial, testId }: { target: RuleTarget; initial: RuleItem[]; testId: string }) {
   const [items, setItems] = useState(initial)
   const [loaded, setLoaded] = useState(initial)
   if (initial !== loaded) {
@@ -22,11 +20,17 @@ export function RuleList({ target, initial, testId }: { target: Target; initial:
     setItems(initial)
   }
   const [busy, setBusy] = useState(false)
+  /** 送っている途中か（同じ描画のうちに続けて押されても二度送らない。busy は次の描画まで変わらない） */
+  const sending = useRef(false)
+  /** 日本語入力の変換中か（Safari は確定の Enter で isComposing が false になるので、compositionstart・end でも持つ） */
+  const composing = useRef(false)
   const [editing, setEditing] = useState<{ id: string; text: string; conflict: string | null } | null>(null)
   const [draft, setDraft] = useState("")
 
   /** 操作をして今の一覧に入れ替える。断られたら（ほかの画面と食い違った・上限）知らせて false */
   async function run(op: () => Promise<RulesResult>, onStale?: (r: RuleItem[]) => void) {
+    if (sending.current) return false
+    sending.current = true
     setBusy(true)
     try {
       const r = await op()
@@ -39,13 +43,16 @@ export function RuleList({ target, initial, testId }: { target: Target; initial:
       toast.error(errorMessage(e, "ルールを保存できませんでした"))
       return false
     } finally {
+      sending.current = false
       setBusy(false)
     }
   }
 
   async function add(e: React.FormEvent) {
     e.preventDefault()
-    if (await run(() => addRuleItemFn({ data: { target, text: draft } }))) setDraft("")
+    const text = draft
+    if (!text.trim()) return
+    if (await run(() => addRuleItemFn({ data: { target, text } }))) setDraft("")
   }
 
   async function save(item: RuleItem) {
@@ -94,7 +101,6 @@ export function RuleList({ target, initial, testId }: { target: Target; initial:
                       <Textarea
                         className="min-h-16"
                         value={edit.text}
-                        maxLength={MAX_RULE_ITEM_LENGTH}
                         onChange={(e) => setEditing({ ...edit, text: e.target.value })}
                         aria-label={`${i + 1}番目の項目`}
                         data-testid="rule-item-input"
@@ -150,10 +156,13 @@ export function RuleList({ target, initial, testId }: { target: Target; initial:
           className="min-h-9 flex-1"
           rows={1}
           value={draft}
-          maxLength={MAX_RULE_ITEM_LENGTH}
           onChange={(e) => setDraft(e.target.value)}
+          onCompositionStart={() => (composing.current = true)}
+          onCompositionEnd={() => (composing.current = false)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+            // 変換の確定の Enter は送らない（keyCode 229 は変換中のキー）
+            const imeEnter = e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229 || composing.current
+            if (e.key === "Enter" && !e.shiftKey && !imeEnter) {
               e.preventDefault()
               e.currentTarget.form?.requestSubmit()
             }

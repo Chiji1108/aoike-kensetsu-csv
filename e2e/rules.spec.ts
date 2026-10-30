@@ -6,7 +6,7 @@ import { expect, test, type Page } from "@playwright/test"
 import { createUIMessageStream, createUIMessageStreamResponse } from "ai"
 import type { ChatMetadata } from "../src/lib/chat/messages"
 import { proposalKey, type ChatChange, type Proposal, type ProposalRecord } from "../src/lib/chat/proposals"
-import { convertFixture, deleteCustomer, open, openNewCase, reload } from "./helpers"
+import { callsServerFn, convertFixture, deleteCustomer, open, openNewCase, reload } from "./helpers"
 
 const FIXTURE = new URL("../fixtures/sample-messy.xlsx", import.meta.url).pathname
 
@@ -64,6 +64,52 @@ test("全体ルール: 項目を足す・直す・並べ替える・消す。開
   await page.getByTestId("rule7-tax-excluded").click()
   await reload(page)
   await expect(page.getByTestId("rule7-tax-excluded")).toHaveAttribute("aria-pressed", "true")
+})
+
+test("足す欄: Enter を続けて押しても1つだけ足し、空なら何も送らない。日本語入力の確定の Enter（keyCode 229）では送らない", async ({ page }) => {
+  const { customer } = await openNewCase(page)
+  created.push(customer)
+  await page.getByRole("link", { name: customer }).click()
+  const list = "customer-rules"
+  const input = page.getByTestId(list).getByTestId("rule-add-input")
+  let calls = 0
+  // 足す処理を遅らせ、返る前に Enter を続けて押す
+  await page.route(
+    (url) => callsServerFn(url.href, ["addRuleItemFn"]),
+    async (route) => {
+      calls++
+      await new Promise((r) => setTimeout(r, 800))
+      await route.fallback()
+    },
+  )
+  await input.fill("備考に「除外」とある行は載せない")
+  await input.press("Enter")
+  await input.press("Enter")
+  await input.press("Enter")
+  await expect(items(page, list)).toHaveCount(1)
+  expect(calls).toBe(1)
+
+  // 空の欄で Enter: 送らず、エラーも出さない
+  await input.fill("   ")
+  await input.press("Enter")
+  await page.waitForTimeout(300)
+  expect(calls).toBe(1)
+  await expect(page.locator("[data-sonner-toast]")).toHaveCount(0)
+
+  // 変換の確定の Enter（Safari は isComposing が false で keyCode 229）
+  await input.fill("かんせいねんげつ")
+  await input.evaluate((el) => el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", keyCode: 229, bubbles: true, cancelable: true })))
+  // compositionstart〜end の間の Enter
+  await input.evaluate((el) => {
+    el.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }))
+    el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", keyCode: 13, bubbles: true, cancelable: true }))
+  })
+  await page.waitForTimeout(300)
+  expect(calls).toBe(1)
+  await input.evaluate((el) => el.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true })))
+  await input.press("Enter")
+  await expect(items(page, list)).toHaveCount(2)
+  expect(calls).toBe(2)
 })
 
 test("顧客ルール: 2つの画面で別の項目を直しても両方残る。同じ項目を後から直すと食い違いを知らせ、黙って上書きしない", async ({ page, context }) => {
