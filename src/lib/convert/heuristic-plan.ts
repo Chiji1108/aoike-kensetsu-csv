@@ -1,6 +1,6 @@
 import type { CsvSpec } from "../spec/types"
 import { columnCount, planColumns, type FieldPlan, type FlagColumn, type MappingPlan, type SheetGrid } from "./plan"
-import { defaultSheetSelection, isSkippableRow, lastNonBlankRow } from "./sources"
+import { defaultSheetSelection, isSkippableRow, lastNonBlankRow, rowIsBlank } from "./sources"
 import { matchKey } from "./text"
 import { isFlagOn, type TransformId } from "./transforms"
 
@@ -46,6 +46,33 @@ function hintScore(header: string, words: readonly string[]) {
 
 type Matched<F extends string> = { columns: number[]; transform: TransformId; pairField?: F } | { flags: FlagColumn[] }
 
+/** 先頭30行のうち、項目の見出しの語にあてはまる項目がいちばん多い行と、その項目の数 */
+export function headerMatch<F extends string>(spec: CsvSpec<F>, hints: PlanHints<F>, grid: SheetGrid) {
+  let headerRow = 0
+  let fields = 0
+  for (let r = 0; r < Math.min(grid.rows.length, 30); r++) {
+    const row = grid.rows[r] ?? []
+    const score = spec.fields.filter((f) => hints.columns[f.id].some((h) => "match" in h && row.some((c) => hintScore(c, h.match) > 0))).length
+    if (score > fields) [fields, headerRow] = [score, r]
+  }
+  return { headerRow, fields }
+}
+
+/**
+ * 変換の元にするシート。見出しが項目にあてはまる数が多いシートを選び、同じなら空でない行の多いシート。
+ * 行の数だけで選ぶと、顧客一覧のような工事でない大きなシートを選んでしまう。空のシートしか無ければ undefined
+ */
+export function primarySheet<F extends string>(spec: CsvSpec<F>, hints: PlanHints<F>, sheets: readonly SheetGrid[]): SheetGrid | undefined {
+  let best: { sheet: SheetGrid; fields: number; rows: number } | undefined
+  for (const sheet of sheets) {
+    const rows = sheet.rows.filter((r) => !rowIsBlank(r)).length
+    if (rows === 0) continue
+    const { fields } = headerMatch(spec, hints, sheet)
+    if (!best || fields > best.fields || (fields === best.fields && rows > best.rows)) best = { sheet, fields, rows }
+  }
+  return best?.sheet
+}
+
 /** 見出しの語だけで列の対応を推定する（APIキーが無いとき、AI の計画の初期値） */
 export function heuristicPlan<F extends string>(
   spec: CsvSpec<F>,
@@ -54,15 +81,7 @@ export function heuristicPlan<F extends string>(
   workbook: readonly SheetGrid[] = [grid],
 ): MappingPlan<F> {
   const nCols = columnCount(grid)
-  const scan = Math.min(grid.rows.length, 30)
-
-  let headerRow = 0
-  let best = 0
-  for (let r = 0; r < scan; r++) {
-    const row = grid.rows[r] ?? []
-    const score = spec.fields.filter((f) => hints.columns[f.id].some((h) => "match" in h && row.some((c) => hintScore(c, h.match) > 0))).length
-    if (score > best) [best, headerRow] = [score, r]
-  }
+  const { headerRow } = headerMatch(spec, hints, grid)
   const headers = Array.from({ length: nCols }, (_, c) => grid.rows[headerRow]?.[c] ?? "")
   const body = grid.rows.slice(headerRow + 1).filter((r) => !isSkippableRow(r, headers.map((_, c) => c)))
   const values = headers.map((_, c) => body.map((r) => r[c]?.trim() ?? "").filter(Boolean))
