@@ -35,7 +35,14 @@ const CONTENT_TYPES: Record<string, string> = {
   xls: "application/vnd.ms-excel",
   csv: "text/csv",
   pdf: "application/pdf",
+  // 顧客の回答（メールを保存したもの・Word の文書）。チャットの AI が読む
+  txt: "text/plain",
+  eml: "message/rfc822",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 }
+
+/** ファイルを付けるボタンで選べるファイル（落とすときは選ばない。表として読めないファイルは届いたファイルとして保存し、チャットの AI が読む） */
+export const ATTACH_ACCEPT = ".xlsx,.xls,.csv,.pdf,.txt,.eml,.docx"
 
 /** 保存して返すときの種類。名前の拡張子で決め、送り手の Content-Type は使わない（ほかの種類は中身を開かせない octet-stream） */
 export function contentTypeOf(name: string) {

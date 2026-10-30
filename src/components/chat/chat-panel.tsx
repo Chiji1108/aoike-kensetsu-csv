@@ -23,6 +23,7 @@ import { Cost } from "@/components/cost"
 import type { UsdJpy } from "@/lib/fx"
 import { errorMessage } from "@/lib/errors"
 import { cn } from "@/lib/utils"
+import { ATTACH_ACCEPT } from "@/lib/cases/types"
 import { endChatFn, stopChatFn } from "@/server/chat-fns"
 
 const historySchema = z.object({ messages: z.array(z.unknown()), carryover: z.boolean() })
@@ -60,6 +61,8 @@ const TOOL_LABELS: Record<string, string> = {
   ask_staff: "聞き返し",
   propose_rule: "ルールの項目の案",
   find_location: "工事場所を調べる",
+  get_inquiries: "問い合わせを読む",
+  record_answers: "顧客の回答の変更案",
 }
 
 export type ChatPanelProps = {
@@ -98,6 +101,12 @@ export type ChatPanelProps = {
   plan: MappingPlan<KojiFieldId> | null
   /** 狭い画面で、閉じるボタンを出すか（広い画面ではチャットは閉じない） */
   closable: boolean
+  /**
+   * AI に頼むとよいこと（返ってきた記入用Excelの、決まった欄で読めなかった記入など）。押すと prompt を送り、送れたら onSuggestionSent。
+   * 会話の最後に出す
+   */
+  suggestion: { text: string; label: string; prompt: string } | null
+  onSuggestionSent: () => void
 }
 
 /**
@@ -319,6 +328,24 @@ export function ChatPanel(props: ChatPanelProps) {
                   {error.message}
                 </div>
               )}
+              {props.suggestion && history === "loaded" && (
+                <div className="grid gap-2 rounded-lg border bg-violet-50/60 px-3 py-2 text-xs dark:bg-violet-950/30" data-testid="chat-suggestion">
+                  <span className="text-muted-foreground">{props.suggestion.text}</span>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="w-fit"
+                    disabled={!ready || working}
+                    onClick={() => {
+                      const { prompt } = props.suggestion!
+                      void send(prompt).then((sent) => sent && live.current.onSuggestionSent())
+                    }}
+                    data-testid="chat-suggestion-send"
+                  >
+                    <MessageSquareText /> {props.suggestion.label}
+                  </Button>
+                </div>
+              )}
             </MessageScrollerContent>
           </MessageScrollerViewport>
           <MessageScrollerButton />
@@ -356,7 +383,7 @@ export function ChatPanel(props: ChatPanelProps) {
               ref={fileInput}
               type="file"
               multiple
-              accept=".xlsx,.xls,.csv,.pdf"
+              accept={ATTACH_ACCEPT}
               className="sr-only"
               data-testid="chat-file-input"
               onChange={(e) => {

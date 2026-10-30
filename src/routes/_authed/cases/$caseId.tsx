@@ -34,7 +34,7 @@ import { Segmented } from "@/components/segmented"
 import { MAX_ADDED_ROWS } from "@/lib/cases/added"
 import { fetchCaseFile, uploadCaseFile } from "@/lib/cases/files-client"
 import { fromSaved, newWork, type CaseWork, type SavedPlan } from "@/lib/cases/state"
-import { CASE_STATUSES, CASE_STATUS_LABELS, contentTypeOf, FILE_KIND_LABELS, fileUrl, isSheetFile, onlyNonSheetSources, type CaseFile, type CaseStatus, type FileKind } from "@/lib/cases/types"
+import { ATTACH_ACCEPT, CASE_STATUSES, CASE_STATUS_LABELS, contentTypeOf, FILE_KIND_LABELS, fileUrl, isSheetFile, onlyNonSheetSources, type CaseFile, type CaseStatus, type FileKind } from "@/lib/cases/types"
 import { canUndo, pushUndo, undo, undoEntry, type UndoEntry } from "@/lib/cases/undo"
 import { uploadKind } from "@/lib/cases/upload-kind"
 import { baseRows, editRows, orderAndFinalize, selectRows } from "@/lib/cases/view"
@@ -64,7 +64,7 @@ import { CASE_COST_NOTICE_USD } from "@/lib/cost"
 import type { UsdJpy } from "@/lib/fx"
 import { errorMessage } from "@/lib/errors"
 import { saveFile } from "@/lib/save-file"
-import { collectInquiries, mergeAnswers, readAnswers } from "@/lib/inquiry/inquiry"
+import { collectInquiries, mergeAnswers, outsideCells, readAnswers } from "@/lib/inquiry/inquiry"
 import { KOJI_KEIREKI, KOJI_PLAN_HINTS, type KojiFieldId } from "@/lib/spec/koji-keireki"
 import { cn } from "@/lib/utils"
 import { planWithAi, runAiBatch } from "@/server/ai"
@@ -235,6 +235,8 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
   const [filter, setFilter] = useState<RowFilter | null>(null)
   const [tab, setTab] = useState<Tab>("selection")
   const [editResult, setEditResult] = useState<EditImport | null>(null)
+  /** 返ってきた記入用Excelのうち、決まった欄で読めなかった記入（AI に読ませるかをチャットに出す。保存しない） */
+  const [answerHint, setAnswerHint] = useState<{ name: string; count: number } | null>(null)
   const wide = useMediaQuery(WIDE_QUERY)
   /** 狭い画面でチャットを開いているか（広い画面ではいつも開いている） */
   const [chatShown, setChatShown] = useState(false)
@@ -641,6 +643,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
       context: source && grid && plan ? caseContext(source.sheets, grid, plan, previous && formatDiff ? { fiscalYear: previous.fiscalYear, lines: formatDiff.lines } : undefined) : NO_SOURCE_CONTEXT,
       sourceFileId: work.sourceFileId,
       plan: grid && work.plan ? { plan: work.plan.plan, shape: sheetShapeOf(grid) } : null,
+      rounding: work.rounding,
     }
   }
 
@@ -837,7 +840,8 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
     const sourceAtStart = live.current.source
     const addressesAtStart = live.current.addresses
     if (workRef.current.converted && !addressesAtStart) return { error: "住所を読み込んでいます。少し待ってから取り込んでください" }
-    void keepFile("answer", f, f.name)
+    // 決まった欄で読めなかった記入を AI に読ませるときは、保存したファイルを AI に渡す（保存を待ってから頼めるようにする）
+    const saving = keepFile("answer", f, f.name)
     const { readWorkbook } = await import("@/lib/convert/workbook")
     const sheets = readWorkbook(f.name, new Uint8Array(await f.arrayBuffer()))
     const failures = new Set<string>()
@@ -853,7 +857,11 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
       const merged = mergeAnswers(report, against, { rows: baseRows({ rows: converted, added: w.added }), replacements: w.replacements, edits: w.edits })
       return { ...w, aiCache: new Map([...cache, ...w.aiCache]), edits: merged.edits, answers: merged.report }
     })
-    return { aiFailures: [...failures] }
+    // 決まった欄の外（別の列・別のシート）に記入があるか、読めなかった記入があれば、まだ聞いている項目の答えを AI に読ませられる
+    const left = report.unanswered.length + report.invalid.length + report.unreadable.length
+    const readable = outsideCells(sheets) > 0 || report.invalid.length > 0 || report.unreadable.length > 0
+    const forAi = left > 0 && readable && (await saving) !== undefined ? left : 0
+    return { aiFailures: [...failures], forAi }
   }
 
   /** 記入された Excel を取り込む（問い合わせの欄・チャット欄・表の欄）。結果は報告と通知に出す */
@@ -868,8 +876,11 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
       const read = await readAnswerFile(f, against)
       if (!read) return
       if ("error" in read) return fail(read.error)
-      toast.success("顧客の回答を取り込みました（結果は「問い合わせ」の欄）")
-      note({ name: f.name, text: "顧客の回答を取り込みました（結果は「問い合わせ」の欄）" })
+      const forAi = read.forAi > 0 && chatEnabled
+      const text = `顧客の回答を取り込みました（結果は「問い合わせ」の欄）${forAi ? "。色付きの欄の外の記入は、チャットの「AI で読む」で読めます" : ""}`
+      toast.success(text)
+      note({ name: f.name, text })
+      setAnswerHint(forAi ? { name: f.name, count: read.forAi } : null)
       if (read.aiFailures.length) toast.warning(`AI を使えず反映していない記入があります（${read.aiFailures.join(" / ")}）`)
     } catch (e) {
       fail(errorMessage(e, "回答のファイルを読み込めませんでした"))
@@ -1046,6 +1057,14 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
         onCaseCost={setCostUsd}
         location={locationSearch}
         onClose={() => setChatShown(false)}
+        suggestion={
+          answerHint && {
+            text: `返ってきた記入用Excel「${answerHint.name}」に、色付きの欄の外（別の列・別のシート）の記入や読めなかった記入があり、まだ答えの無い問い合わせが ${answerHint.count} 件あります。`,
+            label: "AI で読む",
+            prompt: `返ってきた記入用Excel「${answerHint.name}」の、色付きの欄の外（別の列・メモ・別のシート）の記入と読めなかった記入を読んで、まだ聞いている項目の答えを変更案にして`,
+          }
+        }
+        onSuggestionSent={() => setAnswerHint(null)}
       />
     </Suspense>
   ) : null
@@ -1097,7 +1116,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
             id="case-file-input"
             type="file"
             multiple
-            accept=".xlsx,.xls,.csv,.pdf"
+            accept={ATTACH_ACCEPT}
             className="sr-only"
             data-testid="file-input"
             onChange={(e) => {
