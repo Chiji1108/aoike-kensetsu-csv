@@ -19,8 +19,6 @@ export type CaseTable = {
   selection: SelectionMode
   /** この金額（円）以上の行も載せる */
   includeAtLeastYen?: number
-  /** 業種ごとに元請→下請、金額の大きい順に並べる */
-  sorted: boolean
   /** 職員が外した問い合わせ（inquiryKey）。チャットの問い合わせの道具はこれを除く */
   dismissed: ReadonlySet<string>
   /** 問い合わせの文面（承認した AI の文・職員が直した文） */
@@ -48,9 +46,9 @@ export const selectRows = (t: Pick<CaseTable, "tax" | "basis" | "rule7Tax" | "se
 /** edited（editRows の結果）から、選ぶ・並べる・記号と検証を当てる */
 export const viewOf = (t: CaseTable, edited: Edited) => orderAndFinalize(t, edited, selectRows(t, edited))
 
-/** 選んだ行（inclusion）を画面と CSV の順に並べ、記号と検証を当てる */
-export function orderAndFinalize(t: Pick<CaseTable, "rows" | "added" | "replacements" | "sorted">, edited: Edited, inclusion: ReturnType<typeof selectRows>) {
-  const ordered = t.sorted ? orderKojiRows(edited) : edited
+/** 選んだ行（inclusion）を画面と CSV の順（記載順: 業種ごとに元請→下請、金額の大きい順。記載ルールの決まり）に並べ、記号と検証を当てる */
+export function orderAndFinalize(t: Pick<CaseTable, "rows" | "added" | "replacements">, edited: Edited, inclusion: ReturnType<typeof selectRows>) {
+  const ordered = orderKojiRows(edited)
   const { rows: shown, letters } = finalizeRows(KOJI_KEIREKI, ordered, { exported: (r) => inclusion.get(r.key)?.included === true, original: baseRows(t), replacements: t.replacements })
   const output = shown.filter((r) => inclusion.get(r.key)?.included)
   return { edited, inclusion, shown, letters, output }

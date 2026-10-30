@@ -58,7 +58,6 @@ describe("案件の状態の保存と読み出し", () => {
       basis: { "01": { total: 1000, motouke: 500 } },
       selection: "all",
       rounding: "round",
-      sorted: false,
       threshold: { on: true, yen: "3000000" },
     }
 
