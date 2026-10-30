@@ -23,8 +23,23 @@ type Target = { customerId: string } | { caseId: string }
  * 顧客か案件を消す。開いたときに消える件数を読み、顧客名を入力したら消せる。
  * 失敗してももう一度押せば続きから消し切れる（サーバーの削除は何度実行しても同じ結果）
  */
-export function DeleteButton({ target, title, customerName, onDeleted }: { target: Target; title: string; customerName: string; onDeleted: () => void }) {
+type DeleteProps = { target: Target; title: string; customerName: string; onDeleted: () => void }
+
+export function DeleteButton(props: DeleteProps) {
   const [open, setOpen] = useState(false)
+  return (
+    <>
+      <Button variant="outline" size="sm" onClick={() => setOpen(true)} data-testid="delete-button">
+        <Trash2 />
+        削除
+      </Button>
+      <DeleteDialog {...props} open={open} onOpenChange={setOpen} />
+    </>
+  )
+}
+
+/** 削除の確かめ（開くのは呼び出し側。案件の画面は「…」のメニューから開く） */
+export function DeleteDialog({ target, title, customerName, onDeleted, open, onOpenChange: setOpen }: DeleteProps & { open: boolean; onOpenChange: (open: boolean) => void }) {
   const [counts, setCounts] = useState<DeletionCounts | null>(null)
   const [typed, setTyped] = useState("")
   const [pending, setPending] = useState(false)
@@ -57,12 +72,7 @@ export function DeleteButton({ target, title, customerName, onDeleted }: { targe
   }
 
   return (
-    <>
-      <Button variant="outline" size="sm" onClick={() => setOpen(true)} data-testid="delete-button">
-        <Trash2 />
-        削除
-      </Button>
-      <AlertDialog open={open} onOpenChange={setOpen}>
+    <AlertDialog open={open} onOpenChange={setOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>{title}を削除しますか</AlertDialogTitle>
@@ -84,7 +94,6 @@ export function DeleteButton({ target, title, customerName, onDeleted }: { targe
             </Button>
           </AlertDialogFooter>
         </AlertDialogContent>
-      </AlertDialog>
-    </>
+    </AlertDialog>
   )
 }

@@ -23,6 +23,8 @@ export const mappingPlanSchema: z.ZodType<MappingPlan<KojiFieldId>> = z.object({
   skipRows: z.array(z.number().int()),
   rowFilter: z.object({ excludeHidden: z.boolean(), excludeColumns: z.array(z.number().int()) }),
   amountUnit: z.enum(["yen", "thousandYen"]),
+  // 前の版の保存済みの計画には無い
+  amountTax: z.enum(["included", "excluded"]).optional(),
   fields: z.record(fieldIdSchema, fieldPlanSchema),
   unusedColumns: z.array(z.object({ column: z.number().int(), header: z.string(), reason: z.string() })),
   notes: z.array(z.string()),

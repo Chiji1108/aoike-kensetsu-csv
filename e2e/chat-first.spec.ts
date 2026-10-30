@@ -80,12 +80,14 @@ test("ファイルを落とすと自動で変換して報告で聞き返し、�
     const report = page.getByTestId("case-report")
     await expect(report).toHaveAttribute("data-phase", "done")
     await expect(report.getByTestId("report-notes")).toContainText("見出しから列を推定しました")
-    await expect(page.getByTestId("convert-button")).toHaveCount(0)
-    await expect(page.getByTestId("row-filters").locator('[data-filter="check"]')).toHaveAttribute("aria-pressed", "true")
-    await expect(report.getByTestId("report-count").first()).toBeVisible()
+    await expect(page.getByTestId("row-filters-check")).toHaveAttribute("aria-pressed", "true")
+    // 件数・問い合わせ・書き出すは表と見出しにあるので、報告には出さない
+    await expect(report.getByTestId("report-count")).toHaveCount(0)
+    await expect(report.getByTestId("report-export")).toHaveCount(0)
+    await expect(report.getByTestId("report-inquiry")).toHaveCount(0)
   })
 
-  await test.step("聞き返し（税込か税抜か）に答えると設定に入る", async () => {
+  await test.step("計画の AI を使えず税込・税抜が分からないので聞き返し、答えると設定に入る", async () => {
     const q = page.locator('[data-testid="report-question"][data-question="tax"]')
     await q.locator('[data-value="included"]').click()
     await expect(q).toHaveAttribute("data-answered", "税込")

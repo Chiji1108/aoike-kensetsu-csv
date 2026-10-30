@@ -10,6 +10,7 @@ import type { AnswerReport, CellInquiry } from "../inquiry/inquiry"
 import { proposalSchema, type Proposal } from "../chat/proposals"
 import { EMPTY_INQUIRY_TEXT, inquiryTextSchema, type InquiryText } from "../inquiry/text"
 import { addedRowSchema, MAX_ADDED_ROWS, type AddedRow } from "./added"
+import { taxBySchema, type TaxBy } from "./tax"
 import { undoEntrySchema, type UndoEntry } from "./undo"
 import { basisSchema, cellEditSchema, fieldIdSchema, legacySelection, replacementsSchema, roundingSchema, rule7TaxSchema, selectionSchema, taxSchema } from "../schemas"
 import type { KojiFieldId } from "../spec/koji-keireki"
@@ -32,15 +33,16 @@ export type CaseWork = {
   manual: ReadonlyMap<string, boolean>
   dismissed: ReadonlySet<string>
   answers: AnswerReport | null
+  /** Excel の金額が税込か税抜か。書くのは cases/tax.ts の setTax だけ（出どころ taxBy と一緒に書く） */
   tax: TaxMode
+  /** tax を誰が決めたか（cases/tax.ts）。前の作業には無いので、読むときは null */
+  taxBy: TaxBy | null
   basis: Basis
   /** 7割の計算（基準額が税抜か税込か）。新しい案件は事務所の設定、この項目より前に保存した作業は税抜（前はいつも税抜） */
   rule7Tax: Rule7Tax
   /** 載せる工事の選び方（koji-selection.ts の SelectionMode） */
   selection: SelectionMode
   rounding: Rounding
-  sorted: boolean
-  threshold: { on: boolean; yen: string }
   /** チャットの変更案の状態（中身は R2。lib/chat/proposals.ts）。この項目より前に保存した作業には無いので、読むときは空 */
   proposals: Proposal[]
   /** 元のファイルに無い、足した工事（cases/added.ts。値は edits）。この項目より前に保存した作業には無いので、読むときは空 */
@@ -67,12 +69,11 @@ export const newWork = (sourceFileId: string | null = null, rule7Tax: Rule7Tax =
   dismissed: new Set(),
   answers: null,
   tax: "unknown",
+  taxBy: null,
   basis: {},
   rule7Tax,
   selection: "rule7",
   rounding: "floor",
-  sorted: true,
-  threshold: { on: false, yen: "" },
   proposals: [],
   added: [],
   undo: [],
@@ -126,14 +127,13 @@ export const savedWorkSchema = z
   dismissed: z.array(z.string()),
   answers: answerReport.nullable(),
   tax: taxSchema,
+  taxBy: taxBySchema.default(null),
   basis: basisSchema,
   rule7Tax: rule7TaxSchema.default("excluded"),
   selection: selectionSchema.optional(),
   /** 前の形（7割適用済み＝全行を載せる）。読むときに selection にそろえる */
   alreadyApplied: z.boolean().optional(),
   rounding: roundingSchema,
-  sorted: z.boolean(),
-  threshold: z.object({ on: z.boolean(), yen: z.string() }),
   proposals: z.array(proposalSchema).default([]),
   added: z.array(addedRowSchema).max(MAX_ADDED_ROWS).default([]),
   undo: z.array(undoEntrySchema).default([]),

@@ -78,7 +78,9 @@ ai.inferPrefecture / ai.inferPlace は columns に [工事名の列…, 注文�
 - ai.freeform を使うときだけ instruction に指示文を書く。それ以外は instruction は null。
 - amountUnit は請負代金の列が円か千円か。見出しや値の桁から判断する。
 - excludeColumns には「工事実績から除外」のように、値があればその行を出力しない列を入れる（無ければ空）。
-- unusedColumns には使わない列を理由つきで、notes には職員への注意（金額が税込か不明、など）を短く書く。
+- amountTax は請負代金の列の金額が税込か税抜か。見出し・表題・注記に「税込」「税抜」「消費税込」などとはっきり書いてあるときだけ included / excluded にする。書いていなければ推測せず unknown（職員が顧客に確かめる）。
+- unusedColumns には使わない列を理由つきで書く。
+- notes は職員が判断・確認すべきことだけを、1件1文で短く、多くても3件まで書く（例: 備考に「追加工事あり」とある行の金額に追加分が入っているか）。無ければ空にする。こちらで決まった処理として行うこと（無い列の自動補完、個人名の匿名化、都道府県の補完、7割の選定、千円への丸め）や、どの列を使ったかの説明、amountTax で答えた税込・税抜は notes に書かない。
 
 ## 値ごとの判断を頼まれたとき
 items の各 input について、results に同じ id で1件ずつ返す。推測で埋めず、迷うものは needsReview を true にして note に理由を書く。

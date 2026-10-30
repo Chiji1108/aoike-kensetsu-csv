@@ -16,49 +16,40 @@ export function cellClass(c: CellResult) {
   return needsReview(c) ? STATUS.warning.cell : STATUS[c.status].cell
 }
 
-export type RowFilter = "check" | "ask" | "guessed" | "error" | "review" | "changed" | "all"
+/** 表の絞り込み。確かめる（CSV に載せる行のうち、確かめるセルがある行）か、すべて（載せない行も） */
+export type RowFilter = "check" | "all"
 
 /** AI が推定した値（AI 自身も自信がない値・AI が補った値） */
 const aiGuess = (c: CellResult) => c.guessed === true || (c.status === "ai" && !!c.message)
 
-/** 表の絞り込み。行のどれかのセルが matches なら表に出す（field はそのセルの項目） */
-export const ROW_FILTERS: Record<RowFilter, { label: string; title: string; matches: (c: CellResult, field: string) => boolean }> = {
-  check: {
-    label: "確かめる行",
-    title: "確かめる行（エラー・要確認・AI の推定・顧客への問い合わせが要るセルがある行）",
-    matches: (c, field) => c.status === "error" || needsReview(c) || aiGuess(c) || askReasonOf(field, c) !== undefined,
-  },
-  ask: { label: "問い合わせが要る", title: "顧客への問い合わせが要るセル（データに無い・推定に自信がない）がある行", matches: (c, field) => askReasonOf(field, c) !== undefined },
-  guessed: { label: "AI の推定", title: "AI が推定した・補った値のセルがある行", matches: aiGuess },
-  error: { label: "エラー", title: "エラーのセルがある行", matches: (c) => c.status === "error" },
-  review: { label: "要確認", title: "黄色（要確認）のセルがある行", matches: needsReview },
-  changed: {
-    label: "変更あり",
-    title: "元データと値が違うセル（ルール・AIで変換、補った値、手直し、顧客の回答）がある行",
-    matches: (c) => c.value !== c.original || c.by === "staff" || c.by === "customer" || c.by === "excel" || c.by === "location",
-  },
-  all: { label: "すべて", title: "すべての行", matches: () => true },
+/** 確かめるセル: エラー・要確認・AI の推定・顧客への問い合わせが要る（field はそのセルの項目） */
+export const needsCheck = (c: CellResult, field: string) => c.status === "error" || needsReview(c) || aiGuess(c) || askReasonOf(field, c) !== undefined
+
+/** 元データと値が違うセル（ルール・AIで変換、補った値、手直し、顧客の回答）。表のセルの印（data-changed）に使う */
+export const changedCell = (c: CellResult) => c.value !== c.original || c.by === "staff" || c.by === "customer" || c.by === "excel" || c.by === "location"
+
+export const ROW_FILTERS: Record<RowFilter, { label: string; empty: string }> = {
+  check: { label: "確かめる", empty: "確かめる行" },
+  all: { label: "すべて", empty: "行" },
 }
 
-export const FILTER_ORDER = Object.keys(ROW_FILTERS) as RowFilter[]
-
-/** 行がどの絞り込みに合うか（セルを1回ずつ見る） */
-export function rowFilters<F extends string>(row: RowResult<F>): Record<RowFilter, boolean> {
-  const cells = Object.entries<CellResult>(row.cells)
-  return Object.fromEntries(FILTER_ORDER.map((f) => [f, cells.some(([field, c]) => ROW_FILTERS[f].matches(c, field))])) as Record<RowFilter, boolean>
+/** 行に確かめるセルがあるか */
+export function rowNeedsCheck<F extends string>(row: RowResult<F>) {
+  return Object.entries<CellResult>(row.cells).some(([field, c]) => needsCheck(c, field))
 }
 
-/** 絞り込みごとの行数。csv は CSV に載せる行、all は表に出る行（載せない行も含む） */
-export function countRowFilters<F extends string>(rows: readonly RowResult<F>[], inclusion: ReadonlyMap<string, { included: boolean }>, matches?: ReadonlyMap<string, Record<RowFilter, boolean>>) {
-  const c = Object.fromEntries(FILTER_ORDER.map((f) => [f, { csv: 0, all: 0 }])) as Record<RowFilter, { csv: number; all: number }>
-  for (const r of rows) {
-    const included = inclusion.get(r.key)?.included ?? false
-    const m = matches?.get(r.key) ?? rowFilters(r)
-    for (const f of FILTER_ORDER) {
-      if (!m[f]) continue
-      c[f].all++
-      if (included) c[f].csv++
-    }
-  }
-  return c
+/** 行がその絞り込みに出るか。確かめるは CSV に載せる行だけ（載せない行は「すべて」でだけ見える） */
+export function inFilter<F extends string>(filter: RowFilter, row: RowResult<F>, included: boolean, check = rowNeedsCheck(row)) {
+  return filter === "all" || (included && check)
+}
+
+/** 絞り込みごとの行数（表に出る行の数と同じ） */
+export function countRowFilters<F extends string>(
+  rows: readonly RowResult<F>[],
+  inclusion: ReadonlyMap<string, { included: boolean }>,
+  checks?: ReadonlyMap<string, boolean>,
+): Record<RowFilter, number> {
+  let check = 0
+  for (const r of rows) if (inFilter("check", r, inclusion.get(r.key)?.included ?? false, checks?.get(r.key) ?? rowNeedsCheck(r))) check++
+  return { check, all: rows.length }
 }

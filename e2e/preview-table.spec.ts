@@ -6,23 +6,11 @@ const FIXTURE = new URL("../fixtures/sample-messy.xlsx", import.meta.url).pathna
 const LARGE = new URL("../fixtures/sample-large.xlsx", import.meta.url).pathname
 const ROWS = '[data-testid="preview-table"] tbody tr[data-row-key]'
 
-/** 絞り込みごとに、表に出た行が持っているはずのセル */
-const FILTER_CELL = {
-  error: 'td[data-status="error"]',
-  review: 'td[data-status="warning"], td[data-status="ai"]:has(> button[title*="\\a "])',
-  changed: 'td[data-changed="1"]',
-} as const
-
-const filterButton = (page: Page, f: string) => page.getByTestId("row-filters").locator(`[data-filter="${f}"]`)
-/** 絞り込みのボタンの件数。csv は CSV に載せる行、all は表に出る行（載せない行も含む。同じなら出さない） */
-async function filterCount(page: Page, f: string, kind: "csv" | "all" = "csv") {
-  const button = filterButton(page, f)
-  const csv = Number(await button.locator('[data-count="csv"]').textContent())
-  if (kind === "csv") return csv
-  const all = button.locator('[data-count="all"]')
-  return (await all.count()) ? Number(/\d+/.exec((await all.textContent()) ?? "")![0]) : csv
-}
-const shownCount = async (page: Page) => Number(/\d+/.exec((await page.getByTestId("shown-count").textContent()) ?? "")![0])
+const filterButton = (page: Page, f: "check" | "all") => page.getByTestId(`row-filters-${f}`)
+/** 絞り込みの件数（確かめるは CSV に載せる行だけ。すべては表の全行） */
+const filterCount = async (page: Page, f: "check" | "all") => Number(/(\d+)\s*$/.exec((await filterButton(page, f).textContent()) ?? "")![1])
+/** 選んだセルの注意書き（表の上の1行） */
+const cellNote = (page: Page) => page.getByTestId("cell-note")
 const cellText = (td: Locator) => td.locator("button > span").first().textContent()
 const rowKeys = (page: Page) => page.locator(ROWS).evaluateAll((trs) => trs.map((tr) => (tr as HTMLElement).dataset.rowKey!))
 const scrollTable = (page: Page, to: "top" | "bottom" | number) =>
@@ -65,36 +53,33 @@ test.afterEach(async ({ page }) => {
 
 test("プレビューの表で絞り込み・並べ替え・列の表示・手直し・行の入れ外しをして CSV を書き出す", async ({ page }) => {
   created.push((await convertFixture(page, FIXTURE)).customer)
-  await test.step("はじめは確かめる行（エラー・要確認・AI の推定・問い合わせ）だけを出し、報告の件数を押すとその行に絞る", async () => {
+  await test.step("はじめは確かめる（CSV に載せる行のうち、エラー・要確認・AI の推定・問い合わせのある行）だけを出す。載せない行は出さない", async () => {
     await expect(filterButton(page, "check")).toHaveAttribute("aria-pressed", "true")
-    const check = await filterCount(page, "check", "all")
+    const check = await filterCount(page, "check")
     expect(check).toBeGreaterThan(0)
     await expect(page.locator(ROWS)).toHaveCount(check)
-    const chip = page.getByTestId("report-count").first()
-    const f = (await chip.getAttribute("data-filter"))!
-    await chip.click()
-    await expect(filterButton(page, f)).toHaveAttribute("aria-pressed", "true")
-    await expect(page.locator(ROWS)).toHaveCount(await filterCount(page, f, "all"))
+    for (const tr of await page.locator(ROWS).all()) await expect(tr).toHaveAttribute("data-included", "1")
   })
+  const checkKeys = await rowKeys(page)
   await showAllRows(page)
-  const total = await filterCount(page, "all", "all")
-  expect(await shownCount(page)).toBe(total)
+  const total = await filterCount(page, "all")
   await expect(page.locator(ROWS)).toHaveCount(total)
+  // 載せない行は「すべて」でだけ見える
+  await expect(page.locator(`${ROWS}[data-included="0"]`).first()).toBeAttached()
 
-  for (const f of ["error", "review", "changed"] as const) {
-    await test.step(`絞り込み: ${f}`, async () => {
-      const count = await filterCount(page, f, "all")
-      await filterButton(page, f).click()
-      await expect(filterButton(page, f)).toHaveAttribute("aria-pressed", "true")
-      const rows = page.locator(ROWS)
-      await expect(rows).toHaveCount(count)
-      expect(await shownCount(page)).toBe(count)
-      for (const tr of await rows.all()) await expect(tr.locator(FILTER_CELL[f]).first()).toBeAttached()
-      if (count === 0) await expect(page.getByTestId("no-match")).toBeVisible()
-    })
-  }
-  await filterButton(page, "all").click()
-  await expect(page.locator(ROWS)).toHaveCount(total)
+  await test.step("注意書きはセルの下に出さず、セルを選ぶ（キーボードでも）と表の上に出る", async () => {
+    await expect(page.locator('[data-testid="preview-table"] td .line-clamp-2')).toHaveCount(0)
+    const colored = page.locator(`${ROWS} td[data-status="warning"] button, ${ROWS} td[data-status="ai"] button`).first()
+    await colored.focus()
+    await expect(cellNote(page)).toHaveAttribute("data-status", /warning|ai/)
+    await expect(colored).toHaveAttribute("aria-describedby", "preview-cell-note")
+    // マウスを乗せただけのセルは、注意書きを出しても説明につながない（読み上げは選んだときだけ）
+    const other = page.locator(`${ROWS} td[data-field="workName"] button`).first()
+    await other.hover()
+    await expect(cellNote(page)).toContainText("工事名")
+    await expect(other).not.toHaveAttribute("aria-describedby", /./)
+    await expect(page.getByTestId("cell-note")).not.toHaveAttribute("aria-live", /./)
+  })
 
   await test.step("並べ替え: 請負代金の昇順・降順・元に戻す", async () => {
     const original = await rowKeys(page)
@@ -118,7 +103,7 @@ test("プレビューの表で絞り込み・並べ替え・列の表示・手�
   await test.step("列の表示: 工事名を隠して戻す", async () => {
     const toggle = async () => {
       await page.getByRole("button", { name: "表示する列" }).click()
-      await page.getByRole("menuitemcheckbox", { name: "E 工事名" }).click()
+      await page.getByRole("menuitemcheckbox", { name: "工事名" }).click()
       await page.keyboard.press("Escape")
     }
     await toggle()
@@ -127,8 +112,9 @@ test("プレビューの表で絞り込み・並べ替え・列の表示・手�
     await expect(page.locator('td[data-field="workName"]')).toHaveCount(total)
   })
 
-  const row = page.locator(`${ROWS}[data-included="1"]`).first()
-  const key = await row.getAttribute("data-row-key")
+  // 確かめるに入っていない、載せる行を直す
+  const key = (await page.locator(`${ROWS}[data-included="1"]`).evaluateAll((trs, skip) => trs.map((tr) => (tr as HTMLElement).dataset.rowKey!).find((k) => !skip.includes(k)), checkKeys))!
+  expect(key).toBeTruthy()
   const edited = page.locator(`tr[data-row-key="${key}"]`)
 
   await test.step("手直し: 場所名を直すと手入力の値になる", async () => {
@@ -136,25 +122,23 @@ test("プレビューの表で絞り込み・並べ替え・列の表示・手�
     await page.getByLabel("セルの値").fill("テスト市")
     await page.getByLabel("セルの値").press("Enter")
     const td = edited.locator('td[data-field="place"]')
-    await expect(td.locator("button")).toHaveAttribute("title", /手入力/)
+    await expect(td).toHaveAttribute("data-changed", "1")
+    await expect(cellNote(page)).toContainText("手入力")
     expect(await cellText(td)).toBe("テスト市")
-    await filterButton(page, "changed").click()
-    await expect(edited).toBeVisible()
-    await filterButton(page, "all").click()
   })
 
-  await test.step("手直しでエラーにすると、エラーの絞り込みにその行が出る", async () => {
-    const before = await filterCount(page, "error")
+  await test.step("手直しでエラーにすると、確かめるにその行が出る", async () => {
+    const before = await filterCount(page, "check")
     await edited.locator('td[data-field="startYm"] button').click()
     await page.getByLabel("セルの値").fill("20231")
     await page.getByLabel("セルの値").press("Enter")
     await expect(edited.locator('td[data-field="startYm"]')).toHaveAttribute("data-status", "error")
-    await expect.poll(() => filterCount(page, "error")).toBe(before + 1)
-    await filterButton(page, "error").click()
+    await expect.poll(() => filterCount(page, "check")).toBe(before + 1)
+    await filterButton(page, "check").click()
     await expect(edited).toBeVisible()
   })
 
-  await test.step("エラーの絞り込みで直すと、行はその場に残って「条件に合いません」と出て、「更新」で外れる", async () => {
+  await test.step("確かめるの中で直すと、行はその場に残って「条件に合いません」と出て、「更新」で外れる", async () => {
     const keys = await rowKeys(page)
     await edited.locator('td[data-field="startYm"] button').click()
     await page.getByLabel("セルの値").fill("202304")
@@ -211,16 +195,14 @@ test("プレビューの表で絞り込み・並べ替え・列の表示・手�
 test("行の多い表: 仮想スクロールの先でも絞り込み・検索・並べ替え・手直しができ、手直しの下書きはスクロールで消えない", async ({ page }) => {
   created.push((await convertFixture(page, LARGE)).customer)
   await showAllRows(page)
-  await page.getByRole("switch", { name: "記載順に並べ替え" }).click()
-  await expect(page.locator(`${ROWS}[data-index="0"]`)).toHaveAttribute("data-row-key", "工事経歴!3")
   // データ行の範囲は AI の計画で決まり、最後の行を外すことがあるので、行数とキーは画面から読む
-  const total = await filterCount(page, "all", "all")
+  const total = await filterCount(page, "all")
   expect(total).toBeGreaterThanOrEqual(239)
-  expect(await shownCount(page)).toBe(total)
   const rendered = await page.locator(ROWS).count()
   expect(rendered).toBeLessThan(100)
-  const errors = await filterCount(page, "error", "all")
-  expect(errors).toBeGreaterThanOrEqual(7)
+  const keyAt = async (i: number) => (await page.locator(`${ROWS}[data-index="${i}"]`).getAttribute("data-row-key"))!
+  const firstKey = await keyAt(0)
+  const secondKey = await keyAt(1)
   let lastKey = ""
   let nextToLastKey = ""
 
@@ -229,45 +211,44 @@ test("行の多い表: 仮想スクロールの先でも絞り込み・検索・
     const last = page.locator(`${ROWS}[data-index="${total - 1}"]`)
     await expect(last).toBeVisible()
     lastKey = (await last.getAttribute("data-row-key"))!
-    nextToLastKey = (await page.locator(`${ROWS}[data-index="${total - 2}"]`).getAttribute("data-row-key"))!
-    await expect(page.locator(`${ROWS}[data-row-key="工事経歴!3"]`)).toHaveCount(0)
+    nextToLastKey = await keyAt(total - 2)
+    await expect(page.locator(`${ROWS}[data-row-key="${firstKey}"]`)).toHaveCount(0)
     await scrollTable(page, "top")
-    await expect(page.locator(`${ROWS}[data-row-key="工事経歴!3"]`)).toBeVisible()
+    await expect(page.locator(`${ROWS}[data-row-key="${firstKey}"]`)).toBeVisible()
   })
 
-  await test.step("件数: 金額がエラーの行は7割の選択で CSV に載らないので、エラーの件数は0で、かっこ内に表の行数が出る", async () => {
-    expect(await filterCount(page, "error")).toBe(0)
-  })
-
-  await test.step("絞り込み: エラーの行は、すべて金額がエラー", async () => {
-    await filterButton(page, "error").click()
-    await expect(page.locator(ROWS)).toHaveCount(errors)
-    for (const tr of await page.locator(ROWS).all()) await expect(tr.locator('td[data-field="amount"]')).toHaveAttribute("data-status", "error")
+  const search = page.getByLabel("表の中を検索")
+  await test.step("確かめるは載せる行だけ: 金額がエラーの行は7割の選択で載らないので、確かめるには出ず、すべてでだけ見える", async () => {
+    await search.fill("第30倉庫")
+    await expect(page.locator(ROWS)).toHaveCount(1)
+    await expect(page.locator(ROWS).locator('td[data-field="amount"]')).toHaveAttribute("data-status", "error")
+    await expect(page.locator(ROWS)).toHaveAttribute("data-included", "0")
+    await filterButton(page, "check").click()
+    await expect(page.getByTestId("no-match")).toContainText("「第30倉庫」を含む確かめる行")
+    expect(await filterCount(page, "check")).toBeLessThan(total)
+    await search.fill("")
+    for (const tr of await page.locator(ROWS).all()) await expect(tr).toHaveAttribute("data-included", "1")
     await filterButton(page, "all").click()
   })
 
-  await test.step("検索: 表に出ている列の文字で絞り込み、絞り込みのボタンと組み合わさる", async () => {
-    const search = page.getByLabel("表の中を検索")
+  await test.step("検索: 表に出ている列の文字で絞り込む", async () => {
     await search.fill("第123倉庫")
-    await expect.poll(() => shownCount(page)).toBe(1)
     await expect(page.locator(ROWS)).toHaveCount(1)
     await expect(page.locator(ROWS).locator('td[data-field="workName"]')).toContainText("サンプル第123倉庫改修工事")
-    await search.fill("第30倉庫")
-    await filterButton(page, "error").click()
-    await expect.poll(() => shownCount(page)).toBe(1)
     await search.fill("第31倉庫")
+    await filterButton(page, "check").click()
     await expect(page.getByTestId("no-match")).toContainText("「第31倉庫」を含む")
     await filterButton(page, "all").click()
     await search.fill("第123倉庫")
     await page.getByRole("button", { name: "表示する列" }).click()
-    await page.getByRole("menuitemcheckbox", { name: "E 工事名" }).click()
+    await page.getByRole("menuitemcheckbox", { name: "工事名" }).click()
     await page.keyboard.press("Escape")
-    await expect.poll(() => shownCount(page)).toBe(0)
+    await expect(page.getByTestId("no-match")).toBeVisible()
     await page.getByRole("button", { name: "表示する列" }).click()
-    await page.getByRole("menuitemcheckbox", { name: "E 工事名" }).click()
+    await page.getByRole("menuitemcheckbox", { name: "工事名" }).click()
     await page.keyboard.press("Escape")
     await search.fill("")
-    await expect.poll(() => shownCount(page)).toBe(total)
+    await expect(page.locator(`${ROWS}[data-row-key="${firstKey}"]`)).toBeVisible()
   })
 
   await test.step("並べ替え: 請負代金の降順は、スクロールした先まで降順", async () => {
@@ -300,13 +281,13 @@ test("行の多い表: 仮想スクロールの先でも絞り込み・検索・
     await td.locator("button").click()
     await page.getByLabel("セルの値").fill("テスト町")
     await page.getByLabel("セルの値").press("Enter")
-    await expect(td.locator("button")).toHaveAttribute("title", /手入力/)
+    await expect(cellNote(page)).toContainText("手入力")
     expect(await cellText(td)).toBe("テスト町")
     await scrollTable(page, "top")
   })
 
   await test.step("下書き: 手直しの途中でスクロールして戻っても入力が残り、Enter で確定する", async () => {
-    const td = placeOf("工事経歴!3")
+    const td = placeOf(firstKey)
     await td.locator("button").click()
     await page.getByLabel("セルの値").fill("下書きの町")
     await scrollTable(page, "bottom")
@@ -314,35 +295,35 @@ test("行の多い表: 仮想スクロールの先でも絞り込み・検索・
     await scrollTable(page, "top")
     await expect(page.getByLabel("セルの値")).toHaveValue("下書きの町")
     await page.getByLabel("セルの値").press("Enter")
-    await expect(td.locator("button")).toHaveAttribute("title", /手入力/)
+    await expect(td).toHaveAttribute("data-changed", "1")
     expect(await cellText(td)).toBe("下書きの町")
   })
 
   await test.step("下書き: スクロールで隠れたまま別のセルを直し始めると、前の下書きを確定する", async () => {
-    await placeOf("工事経歴!4").locator("button").click()
+    await placeOf(secondKey).locator("button").click()
     await page.getByLabel("セルの値").fill("隠れた下書き")
     await scrollTable(page, "bottom")
     await expect(page.getByLabel("セルの値")).toHaveCount(0)
     await placeOf(nextToLastKey).locator("button").click()
     await page.getByLabel("セルの値").press("Escape")
     await scrollTable(page, "top")
-    await expect(placeOf("工事経歴!4").locator("button > span").first()).toHaveText("隠れた下書き")
-    await expect(placeOf("工事経歴!4").locator("button")).toHaveAttribute("title", /手入力/)
+    await expect(placeOf(secondKey).locator("button > span").first()).toHaveText("隠れた下書き")
+    await placeOf(secondKey).locator("button").hover()
+    await expect(cellNote(page)).toContainText("手入力")
   })
 
-  await test.step("絞り込みの中で直してもその場に残り、「更新」で外れる", async () => {
-    await filterButton(page, "error").click()
-    const key = "工事経歴!32"
-    const amount = page.locator(`tr[data-row-key="${key}"] td[data-field="amount"]`)
-    await amount.locator("button").click()
-    await page.getByLabel("セルの値").fill("5000")
+  await test.step("検索の中で直してもその場に残り、「更新」で外れる", async () => {
+    await search.fill("第123倉庫")
+    const row = page.locator(ROWS).first()
+    const key = (await row.getAttribute("data-row-key"))!
+    const work = page.locator(`tr[data-row-key="${key}"] td[data-field="workName"]`)
+    await work.locator("button").click()
+    await page.getByLabel("セルの値").fill("サンプル倉庫改修工事")
     await page.getByLabel("セルの値").press("Enter")
-    await expect(amount).not.toHaveAttribute("data-status", "error")
-    await expect(page.locator(ROWS)).toHaveCount(errors)
+    await expect(page.locator(ROWS)).toHaveCount(1)
     await expect(page.locator(`tr[data-row-key="${key}"]`).getByTestId("row-unmatched")).toBeVisible()
-    await expect.poll(() => filterCount(page, "error", "all")).toBe(errors - 1)
     await page.getByTestId("outdated").getByRole("button", { name: "更新" }).click()
-    await expect(page.locator(ROWS)).toHaveCount(errors - 1)
+    await expect(page.locator(ROWS)).toHaveCount(0)
   })
 })
 

@@ -117,13 +117,12 @@ export type SelectionMode = (typeof SELECTION_MODES)[number]
 export const SELECTION_LABELS: Record<SelectionMode, string> = { rule7: "7割ルール", all: "全件" }
 
 export type Inclusion =
-  | { included: true; reason: "rule7" | "all" | "threshold" | "manual" }
+  | { included: true; reason: "rule7" | "all" | "manual" }
   | { included: false; reason: "excluded" | "manual" | "unselected" }
 
 export const INCLUSION_LABELS: Record<Inclusion["reason"], string> = {
   rule7: "7割ルール",
   all: "全件",
-  threshold: "金額で追加",
   manual: "手動",
   excluded: "除外",
   unselected: "",
@@ -135,13 +134,11 @@ export type SelectionOptions = {
   /** 7割の計算（基準額が税抜か税込か）。無ければ税抜 */
   rule7Tax?: Rule7Tax
   selection: SelectionMode
-  /** この金額（円）以上の行は7割に関係なく載せる */
-  includeAtLeastYen?: number
   /** 職員がチェックで入れ外しした行（key → 載せるか） */
   manual: ReadonlyMap<string, boolean>
 }
 
-/** 行ごとに載せるか。手動 > 除外 > 全件 > 7割ルール > 金額で追加 の順に決める */
+/** 行ごとに載せるか。手動 > 除外 > 全件 > 7割ルール の順に決める */
 export function selectKojiRows(rows: readonly KojiRow[], opts: SelectionOptions): Map<string, Inclusion> {
   const all = opts.selection === "all"
   const rule7 = all ? new Set<string>() : selectBy7Rule(rows, opts)
@@ -152,7 +149,6 @@ export function selectKojiRows(rows: readonly KojiRow[], opts: SelectionOptions)
     else if (r.excluded) result.set(r.key, { included: false, reason: "excluded" })
     else if (all) result.set(r.key, { included: true, reason: "all" })
     else if (rule7.has(r.key)) result.set(r.key, { included: true, reason: "rule7" })
-    else if (opts.includeAtLeastYen !== undefined && yenOf(r) >= opts.includeAtLeastYen) result.set(r.key, { included: true, reason: "threshold" })
     else result.set(r.key, { included: false, reason: "unselected" })
   }
   return result

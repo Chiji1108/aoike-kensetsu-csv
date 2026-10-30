@@ -2,7 +2,7 @@ import { expect, test, type Page, type Route } from "@playwright/test"
 import { createUIMessageStream, createUIMessageStreamResponse } from "ai"
 import type { ChatMetadata } from "../src/lib/chat/messages"
 import type { ChatChange, Proposal } from "../src/lib/chat/proposals"
-import { callsServerFn, convertFixture, csvCount, deleteCustomer, downloadCsv, open, openNewCase, reload, showAllRows } from "./helpers"
+import { callsServerFn, caseCostText, caseCostUsd, convertFixture, csvCount, deleteCustomer, downloadCsv, open, openNewCase, reload, showAllRows } from "./helpers"
 import { syntheticPdf } from "./pdf"
 
 const FIXTURE = new URL("../fixtures/sample-messy.xlsx", import.meta.url).pathname
@@ -112,9 +112,11 @@ test("チャットの変更案を一覧で確かめて承認すると、表と C
   await expect(reply.locator('a[href="https://example.com/"], a[href="https://example.com"]')).toHaveCount(1)
   await expect(reply.locator('a[href^="javascript"]')).toHaveCount(0)
   await expect(page.getByTestId("chat-reply-cost")).toContainText("$0.012")
-  await expect(page.getByTestId("case-cost")).toContainText("$0.500")
+  // 案件の費用は見出しの「…」に出す（チャットの見出しには出さない）
+  await expect(page.getByTestId("chat-cost")).toHaveCount(0)
+  await expect.poll(() => caseCostText(page)).toContain("$0.500")
   // 円はサーバーが為替のサービスから取れたときだけ出る（取れたときはレートの日付も出る）
-  const costText = (await page.getByTestId("case-cost").textContent()) ?? ""
+  const costText = await caseCostText(page)
   if (costText.includes("円")) expect(costText).toMatch(/\d{2}\/\d{2} のレート/)
 
   expect(await downloadCsv(page)).not.toContain(target.to)
@@ -181,7 +183,7 @@ test("失敗した回でも、その回の費用は画面の案件の合計に�
   await fakeChat(page, [() => ({ text: "途中まで進めました。", changes: [], caseUsd: 3.25, failAfterCost: "AI の呼び出しに失敗しました" })])
   await send(page, "工事名の空白を取って")
   await expect(page.getByTestId("chat-error")).toContainText("AI の呼び出しに失敗しました")
-  await expect(page.getByTestId("case-cost")).toContainText("$3.25")
+  await expect.poll(() => caseCostText(page)).toContain("$3.25")
 })
 
 test("聞き返しに答えるまで承認できない。「いいえ」で全部を却下し、「はい」なら承認できる", async ({ page }) => {
@@ -204,7 +206,7 @@ test("聞き返しに答えるまで承認できない。「いいえ」で全�
   expect(await csvCount(page)).toBe(before)
 
   await send(page, "やはり外して")
-  await expect(page.getByTestId("case-cost")).toHaveAttribute("data-over", "true")
+  await expect(page.getByTestId("case-menu")).toHaveAttribute("data-over", "true")
   const second = page.getByTestId("proposal").last()
   await expect(second.getByTestId("proposal-apply-all")).toBeDisabled()
   await second.getByTestId("confirmation-yes").click()
@@ -323,7 +325,7 @@ test("本物の AI: 指示 → 変更案 → 承認 → CSV。会話は開き直
   await proposal.getByTestId("proposal-apply-all").click()
   await expect(page.getByTestId("proposal-closed").last()).toContainText("反映")
   expect(await downloadCsv(page)).toContain("㈱")
-  await expect(page.getByTestId("case-cost")).not.toContainText("$0.000")
+  expect(await caseCostText(page)).not.toContain("$0.000")
 
   await expect(page.getByTestId("save-status")).toHaveAttribute("data-status", "saved")
   await open(page, caseUrl)
@@ -336,7 +338,7 @@ test("本物の AI: 指示 → 変更案 → 承認 → CSV。会話は開き直
   expect(proposalParts.map((p) => [p.type, Object.keys(p.data ?? {})])).toEqual([["data-proposal", ["id"]]])
 
   // 途中で止めても、次の指示は受け付けられ（処理中の印が下りている）、止めた回の費用も案件の合計に入る
-  const costBefore = Number(/\$([\d.]+)/.exec((await page.getByTestId("case-cost").textContent()) ?? "")![1])
+  const costBefore = await caseCostUsd(page)
   await send(page, "工事名の空白を全部取る案を出して")
   await expect(page.getByTestId("chat-assistant").last().getByText("コードを実行").first()).toBeVisible({ timeout: 120_000 })
   await page.getByTestId("chat-stop").click()
@@ -346,7 +348,7 @@ test("本物の AI: 指示 → 変更案 → 承認 → CSV。会話は開き直
   await expect(page.getByTestId("chat-reply-cost")).toHaveCount(replies + 1, { timeout: 300_000 })
   await expect(page.getByTestId("chat-error")).toHaveCount(0)
   await open(page, caseUrl)
-  await expect.poll(async () => Number(/\$([\d.]+)/.exec((await page.getByTestId("case-cost").textContent()) ?? "")![1])).toBeGreaterThan(costBefore)
+  await expect.poll(() => caseCostUsd(page)).toBeGreaterThan(costBefore)
 
   await page.getByTestId("chat-end").click()
   await expect(page.getByTestId("chat-messages")).toContainText("会話を終えました")

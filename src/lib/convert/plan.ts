@@ -39,6 +39,11 @@ export type MappingPlan<F extends string> = {
   skipRows: number[]
   rowFilter: RowFilter
   amountUnit: "yen" | "thousandYen"
+  /**
+   * 請負代金の列の金額が税込か税抜か（見出し・注記に書いてあって計画の AI が分かったときだけ。分からなければ無い）。
+   * 案件の税の設定が未設定なら、これを入れる。前の版の保存済みの計画には無い
+   */
+  amountTax?: "included" | "excluded"
   fields: Record<F, FieldPlan>
   unusedColumns: { column: number; header: string; reason: string }[]
   notes: string[]
@@ -89,6 +94,7 @@ export function mappingPlanWireSchema<F extends string>(spec: CsvSpec<F>) {
     skipRows: z.array(z.number().int()),
     excludeColumns: z.array(z.number().int()),
     amountUnit: z.enum(["yen", "thousandYen"]),
+    amountTax: z.enum(["included", "excluded", "unknown"]),
     fields: z.object(fields),
     unusedColumns: z.array(z.object({ column: z.number().int(), header: z.string(), reason: z.string() })),
     notes: z.array(z.string()),
@@ -175,6 +181,7 @@ export function acceptAiPlan<F extends string>(
         : fallback.skipRows,
       rowFilter: { ...fallback.rowFilter, excludeColumns: [...new Set(wire.excludeColumns)].filter((c) => c >= 0 && c < nCols) },
       amountUnit: wire.amountUnit,
+      ...(wire.amountTax !== "unknown" ? { amountTax: wire.amountTax } : {}),
       fields,
       unusedColumns: wire.unusedColumns.filter((c) => c.column >= 0 && c.column < nCols),
       notes: [...sheetNote, ...wire.notes, ...problems],

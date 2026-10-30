@@ -303,12 +303,12 @@ describe("7割ルール", () => {
     expect(selectBy7Rule(rows, { tax: "excluded" }).size).toBe(12)
   })
 
-  test("除外した行は数えない。金額で追加・手動の入れ外しは7割より優先", () => {
+  test("除外した行は数えない。手動の入れ外しは7割より優先", () => {
     const rows = [row(1, "8", "1", 9000), row(2, "8", "1", 1000), row(3, "8", "2", 500), row(4, "8", "1", 50000, "除外の印")]
-    const inclusion = selectKojiRows(rows, { ...netTax, includeAtLeastYen: 1_000_000, manual: new Map([["s!1", false], ["s!4", true]]) })
+    const inclusion = selectKojiRows(rows, { ...netTax, manual: new Map([["s!1", false], ["s!4", true]]) })
     expect(rows.map((r) => inclusion.get(r.key))).toEqual([
       { included: false, reason: "manual" },
-      { included: true, reason: "threshold" },
+      { included: false, reason: "unselected" },
       { included: false, reason: "unselected" },
       { included: true, reason: "manual" },
     ])

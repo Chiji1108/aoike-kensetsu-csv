@@ -1,8 +1,9 @@
 import { z } from "zod"
 import type { CellEdit, CellEdits } from "../convert/convert"
-import type { Basis, SelectionMode, TaxMode } from "../convert/koji-selection"
+import type { Basis, SelectionMode } from "../convert/koji-selection"
 import { savedPlanSchema } from "../convert/plan-schema"
-import { basisSchema, cellEditSchema, selectionSchema, taxSchema } from "../schemas"
+import { basisSchema, cellEditSchema, selectionSchema } from "../schemas"
+import { setTax, taxSettingSchema, type TaxBy, type TaxSetting } from "./tax"
 import type { AddedRow } from "./added"
 import { addedRowSchema } from "./added"
 import type { SavedPlan } from "./state"
@@ -20,7 +21,8 @@ export type Undoable = {
   edits: CellEdits
   manual: ReadonlyMap<string, boolean>
   added: readonly AddedRow[]
-  tax: TaxMode
+  tax: TaxSetting["tax"]
+  taxBy: TaxBy | null
   selection: SelectionMode
   basis: Basis
   plan: SavedPlan | null
@@ -42,7 +44,8 @@ export type UndoEntry = {
   manual: [string, boolean | null, boolean | null][]
   /** 承認で足した行（取り消すと外す） */
   added: AddedRow[]
-  tax?: Pair<TaxMode>
+  /** 税の設定と出どころ（一緒に戻す） */
+  tax?: Pair<TaxSetting>
   selection?: Pair<SelectionMode>
   basis?: Pair<Basis>
   plan?: Pair<SavedPlan | null>
@@ -81,7 +84,9 @@ export function undoEntry(
     edits,
     manual,
     added,
-    ...(before.tax !== after.tax ? { tax: [before.tax, after.tax] as Pair<TaxMode> } : {}),
+    ...(before.tax !== after.tax || before.taxBy !== after.taxBy
+      ? { tax: [{ tax: before.tax, taxBy: before.taxBy }, { tax: after.tax, taxBy: after.taxBy }] as Pair<TaxSetting> }
+      : {}),
     ...(before.selection !== after.selection ? { selection: [before.selection, after.selection] as Pair<SelectionMode> } : {}),
     ...(!same(before.basis, after.basis) ? { basis: [before.basis, after.basis] as Pair<Basis> } : {}),
     ...(before.plan !== after.plan && !same(before.plan, after.plan) ? { plan: [before.plan, after.plan] as Pair<SavedPlan | null> } : {}),
@@ -164,6 +169,7 @@ export function undo<W extends Undoable & { undo: readonly UndoEntry[] }>(work: 
     return pair[0]
   }
   const plan = revert(entry.plan, work.plan)
+  const tax = revert(entry.tax, { tax: work.tax, taxBy: work.taxBy })
   // 問い合わせの文面は質問ごと・件名・前置きごとに戻す（あとで直した文は残す）
   const text = entry.inquiryText ? revertInquiryText(work.inquiryText, entry.inquiryText) : { text: work.inquiryText, reverted: 0, kept: 0 }
   reverted += text.reverted
@@ -173,14 +179,13 @@ export function undo<W extends Undoable & { undo: readonly UndoEntry[] }>(work: 
     edits,
     manual,
     added: work.added.filter((a) => !removed.has(a.key)),
-    tax: revert(entry.tax, work.tax),
     selection: revert(entry.selection, work.selection),
     basis: revert(entry.basis, work.basis),
     plan,
     inquiryText: text.text,
     undo: work.undo.map((e) => (e.id === entryId ? { ...e, undone: true as const } : e)),
   }
-  return { work: next, reverted, kept, planChanged: plan !== work.plan }
+  return { work: setTax(next, tax.tax, tax.taxBy), reverted, kept, planChanged: plan !== work.plan }
 }
 
 const pair = <T extends z.ZodType>(s: T) => z.tuple([s, s])
@@ -194,7 +199,7 @@ export const undoEntrySchema: z.ZodType<UndoEntry> = z.object({
   edits: z.array(z.tuple([z.string(), cellEditSchema.nullable(), cellEditSchema.nullable()])),
   manual: z.array(z.tuple([z.string(), z.boolean().nullable(), z.boolean().nullable()])),
   added: z.array(addedRowSchema),
-  tax: pair(taxSchema).optional(),
+  tax: pair(taxSettingSchema).optional(),
   selection: pair(selectionSchema).optional(),
   basis: pair(basisSchema).optional(),
   plan: pair(savedPlanSchema.nullable()).optional(),

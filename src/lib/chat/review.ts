@@ -230,7 +230,6 @@ export function reviewMaterial(input: { turns: readonly ReviewTurn[]; table: Cas
       rule7Tax: RULE7_TAX_LABELS[table.rule7Tax],
       rounding: input.rounding === "round" ? "四捨五入" : "切り捨て",
       basis: Object.keys(table.basis),
-      ...(table.includeAtLeastYen !== undefined ? { includeAtLeastYen: table.includeAtLeastYen } : {}),
     },
     rows: { all: input.view.shown.length, output: input.view.output.length },
   }

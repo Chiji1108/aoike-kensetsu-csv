@@ -44,6 +44,7 @@ function wireOf(plan: MappingPlan<string>, sheets: number[]) {
     skipRows: [],
     excludeColumns: [],
     amountUnit: plan.amountUnit,
+    amountTax: "unknown",
     fields,
     unusedColumns: [],
     notes: [],

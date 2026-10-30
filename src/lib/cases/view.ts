@@ -17,10 +17,6 @@ export type CaseTable = {
   /** 7割の計算（基準額が税抜か税込か） */
   rule7Tax: Rule7Tax
   selection: SelectionMode
-  /** この金額（円）以上の行も載せる */
-  includeAtLeastYen?: number
-  /** 業種ごとに元請→下請、金額の大きい順に並べる */
-  sorted: boolean
   /** 職員が外した問い合わせ（inquiryKey）。チャットの問い合わせの道具はこれを除く */
   dismissed: ReadonlySet<string>
   /** 問い合わせの文面（承認した AI の文・職員が直した文） */
@@ -42,15 +38,15 @@ export const editRows = (t: Pick<CaseTable, "rows" | "added" | "edits" | "replac
 type Edited = ReturnType<typeof editRows>
 
 /** CSV に載せる行を選ぶ（入れ外し・7割の設定が変わったときだけ作り直せばよい。並べ替えでは変わらない） */
-export const selectRows = (t: Pick<CaseTable, "tax" | "basis" | "rule7Tax" | "selection" | "includeAtLeastYen" | "manual">, edited: Edited) =>
-  selectKojiRows(edited, { tax: t.tax, basis: t.basis, rule7Tax: t.rule7Tax, selection: t.selection, includeAtLeastYen: t.includeAtLeastYen, manual: t.manual })
+export const selectRows = (t: Pick<CaseTable, "tax" | "basis" | "rule7Tax" | "selection" | "manual">, edited: Edited) =>
+  selectKojiRows(edited, { tax: t.tax, basis: t.basis, rule7Tax: t.rule7Tax, selection: t.selection, manual: t.manual })
 
 /** edited（editRows の結果）から、選ぶ・並べる・記号と検証を当てる */
 export const viewOf = (t: CaseTable, edited: Edited) => orderAndFinalize(t, edited, selectRows(t, edited))
 
-/** 選んだ行（inclusion）を画面と CSV の順に並べ、記号と検証を当てる */
-export function orderAndFinalize(t: Pick<CaseTable, "rows" | "added" | "replacements" | "sorted">, edited: Edited, inclusion: ReturnType<typeof selectRows>) {
-  const ordered = t.sorted ? orderKojiRows(edited) : edited
+/** 選んだ行（inclusion）を画面と CSV の順（記載順: 業種ごとに元請→下請、金額の大きい順。記載ルールの決まり）に並べ、記号と検証を当てる */
+export function orderAndFinalize(t: Pick<CaseTable, "rows" | "added" | "replacements">, edited: Edited, inclusion: ReturnType<typeof selectRows>) {
+  const ordered = orderKojiRows(edited)
   const { rows: shown, letters } = finalizeRows(KOJI_KEIREKI, ordered, { exported: (r) => inclusion.get(r.key)?.included === true, original: baseRows(t), replacements: t.replacements })
   const output = shown.filter((r) => inclusion.get(r.key)?.included)
   return { edited, inclusion, shown, letters, output }
