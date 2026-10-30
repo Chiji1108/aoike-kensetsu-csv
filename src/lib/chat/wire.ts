@@ -50,7 +50,6 @@ export const caseTableWireSchema: z.ZodType<CaseTableWire> = z.object({
   /** 7割の計算。無い形（この項目より前の画面が送る表）は税抜（前はいつも税抜） */
   rule7Tax: rule7TaxSchema.default("excluded"),
   selection: selectionSchema,
-  includeAtLeastYen: z.number().optional(),
   /** 外した問い合わせと問い合わせの文面。無い形（この項目より前の画面が送る表）は空 */
   dismissed: z.array(z.string().max(300)).max(50_000).default([]),
   inquiryText: inquiryTextSchema.default(EMPTY_INQUIRY_TEXT),

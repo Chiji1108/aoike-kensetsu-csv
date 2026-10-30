@@ -44,7 +44,6 @@ export type CaseWork = {
   /** 載せる工事の選び方（koji-selection.ts の SelectionMode） */
   selection: SelectionMode
   rounding: Rounding
-  threshold: { on: boolean; yen: string }
   /** チャットの変更案の状態（中身は R2。lib/chat/proposals.ts）。この項目より前に保存した作業には無いので、読むときは空 */
   proposals: Proposal[]
   /** 元のファイルに無い、足した工事（cases/added.ts。値は edits）。この項目より前に保存した作業には無いので、読むときは空 */
@@ -88,7 +87,6 @@ export const newWork = (sourceFileId: string | null = null, rule7Tax: Rule7Tax =
   rule7Tax,
   selection: "rule7",
   rounding: "floor",
-  threshold: { on: false, yen: "" },
   proposals: [],
   added: [],
   undo: [],
@@ -149,7 +147,6 @@ export const savedWorkSchema = z
   /** 前の形（7割適用済み＝全行を載せる）。読むときに selection にそろえる */
   alreadyApplied: z.boolean().optional(),
   rounding: roundingSchema,
-  threshold: z.object({ on: z.boolean(), yen: z.string() }),
   proposals: z.array(proposalSchema).default([]),
   added: z.array(addedRowSchema).max(MAX_ADDED_ROWS).default([]),
   undo: z.array(undoEntrySchema).default([]),

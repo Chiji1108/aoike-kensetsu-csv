@@ -27,7 +27,6 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
 import { NativeSelect } from "@/components/ui/native-select"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Segmented } from "@/components/segmented"
@@ -55,7 +54,6 @@ import { acceptAiPlan, reviewPlanTransforms, type MappingPlan, type SheetGrid } 
 import { applyPlanPatch, sheetShapeOf } from "@/lib/convert/plan-patch"
 import { planExcerpt, previousPlanContext } from "@/lib/convert/prompt"
 import { collectSourceRows, sameHeader, sourceKey } from "@/lib/convert/sources"
-import { parseInputNumber } from "@/lib/convert/text"
 import type { Rounding } from "@/lib/convert/transforms"
 import { editSheet, readEditSheet } from "@/lib/excel/edit-sheet"
 import { finalSheetRows } from "@/lib/excel/final-sheet"
@@ -140,7 +138,6 @@ const replanWork = (w: CaseWork, sourceFileId: string): CaseWork => ({
   rule7Tax: w.rule7Tax,
   selection: w.selection,
   rounding: w.rounding,
-  threshold: w.threshold,
   reportAnswers: w.reportAnswers,
   // 件名・前置きと項目と理由で選んだ質問は行に依らないので引き継ぐ（行の key で選んだものは前の元の行を指すので外す）
   inquiryText: carryInquiryText(w.inquiryText),
@@ -220,7 +217,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
     const w = state ? fromSaved(state.work, state.aiCache) : newWork(null, settings.rule7Tax)
     return { ...reviewSavedPlan(w), proposals: withRecorded(w.proposals, recordedProposals) }
   })
-  const { edits, replacements, manual, dismissed, answers, tax, basis, rule7Tax, selection: selectionMode, rounding, threshold: thresholdInput, aiNotice } = work
+  const { edits, replacements, manual, dismissed, answers, tax, basis, rule7Tax, selection: selectionMode, rounding, aiNotice } = work
   const update = <K extends keyof CaseWork>(key: K, next: (prev: CaseWork[K]) => CaseWork[K]) => setWork((w) => ({ ...w, [key]: next(w[key]) }))
   /** 値をその場で読んでから入れる（イベントの値を updater の中で読まない） */
   const set = <K extends keyof CaseWork>(key: K, value: CaseWork[K]) => update(key, () => value)
@@ -599,13 +596,12 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
     return { floor: total("floor"), round: total("round") }
   }, [sources, plan, addresses])
 
-  const threshold = thresholdInput.on ? parseInputNumber(thresholdInput.yen) : undefined
   /** 画面と CSV の表。個人名の記号（letters）は CSV に書く行からこの順に付け、手直し・置換先の「〔Ａ〕」をその人に戻すのにも使う */
   const edited = useMemo(() => (rows ? editRows({ rows, added, edits, replacements }) : null), [rows, added, edits, replacements])
   /** 選び直しは入れ外し・7割の設定が変わったときだけ（並べ替えでは選び直さない） */
   const selected = useMemo(
-    () => (edited ? selectRows({ manual, tax, basis, rule7Tax, selection: selectionMode, includeAtLeastYen: threshold }, edited) : null),
-    [edited, manual, tax, basis, rule7Tax, selectionMode, threshold],
+    () => (edited ? selectRows({ manual, tax, basis, rule7Tax, selection: selectionMode }, edited) : null),
+    [edited, manual, tax, basis, rule7Tax, selectionMode],
   )
   const view = useMemo(
     () => (rows && edited && selected ? orderAndFinalize({ rows, added, replacements }, edited, selected) : null),
@@ -664,7 +660,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
 
   /** 今の表（チャットと工事場所の調査に送る。大きいので送るときだけ作る） */
   function tableWire() {
-    return rows ? toWire({ rows, added, edits, replacements, manual, tax, basis, rule7Tax, selection: selectionMode, includeAtLeastYen: threshold, dismissed, inquiryText: work.inquiryText }) : null
+    return rows ? toWire({ rows, added, edits, replacements, manual, tax, basis, rule7Tax, selection: selectionMode, dismissed, inquiryText: work.inquiryText }) : null
   }
 
   function chatRequest() {
@@ -1289,8 +1285,6 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
                   onRule7Tax={(t) => set("rule7Tax", t)}
                   selection={selectionMode}
                   onSelection={(m) => set("selection", m)}
-                  threshold={thresholdInput}
-                  onThreshold={(t) => set("threshold", t)}
                   manualCount={manual.size}
                   onClearManual={() => set("manual", new Map())}
                   roundingTotals={roundingTotals}
@@ -1386,7 +1380,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
   )
 }
 
-/** 7割と金額の設定（Excel の金額が税込か・端数・載せる工事・金額で追加）と業種ごとの件数と7割 */
+/** 7割と金額の設定（Excel の金額が税込か・端数・載せる工事）と業種ごとの件数と7割 */
 function SelectionPanel(p: {
   rounding: Rounding
   onRounding: (r: Rounding) => void
@@ -1396,8 +1390,6 @@ function SelectionPanel(p: {
   onRule7Tax: (t: Rule7Tax) => void
   selection: CaseWork["selection"]
   onSelection: (m: CaseWork["selection"]) => void
-  threshold: CaseWork["threshold"]
-  onThreshold: (t: CaseWork["threshold"]) => void
   manualCount: number
   onClearManual: () => void
   roundingTotals: { floor: number; round: number } | null
@@ -1418,18 +1410,6 @@ function SelectionPanel(p: {
         <Field label="載せる工事" hint="全件: 7割以上なら件数は自由。顧客が絞ったデータもこちら">
           <Segmented label="載せる工事" value={p.selection} options={SELECTION_MODES.map((m) => ({ value: m, label: SELECTION_LABELS[m] }))} onChange={p.onSelection} testId="selection" />
         </Field>
-        <label className="flex items-center gap-2 text-sm">
-          <input type="checkbox" checked={p.threshold.on} onChange={(e) => p.onThreshold({ ...p.threshold, on: e.target.checked })} data-testid="threshold-on" />
-          <Input
-            className="h-8 w-32"
-            inputMode="numeric"
-            aria-label="追加で含める金額（円）"
-            value={p.threshold.yen}
-            onChange={(e) => p.onThreshold({ ...p.threshold, yen: e.target.value })}
-            placeholder="例: 3000000"
-          />
-          円以上も載せる
-        </label>
         {p.manualCount > 0 && (
           <Button variant="outline" size="sm" onClick={p.onClearManual}>
             手動の入れ外し（{p.manualCount}件）を戻す
