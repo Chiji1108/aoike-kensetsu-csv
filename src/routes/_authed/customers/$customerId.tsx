@@ -4,7 +4,6 @@ import { Plus } from "lucide-react"
 import { toast } from "sonner"
 import { AppShell, PageHeader } from "@/components/app-shell"
 import { DeleteButton } from "@/components/cases/delete-dialog"
-import { TextSetting } from "@/components/cases/text-setting"
 import { RuleList } from "@/components/rules/rule-list"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -14,7 +13,7 @@ import { Cost, useUsdJpy } from "@/components/cost"
 import { formatUsd } from "@/lib/cost"
 import { errorMessage } from "@/lib/errors"
 import { groupBy } from "@/lib/group-by"
-import { createCaseFn, getCustomerPageFn, updateCustomerFn } from "@/server/cases"
+import { createCaseFn, getCustomerPageFn } from "@/server/cases"
 
 export const Route = createFileRoute("/_authed/customers/$customerId")({
   loader: async ({ params }) => {
@@ -101,14 +100,11 @@ function CustomerPage() {
         </section>
       )}
 
-      <section className="mt-10 grid gap-6 lg:grid-cols-2">
-        <div className="grid content-start gap-1.5">
-          <h2 className="text-sm font-medium" title="この顧客のデータに当てる決まり。チャットの AI への指示に入ります">
-            顧客ルール
-          </h2>
-          <RuleList target={{ scope: "customer", customerId: customer.id }} initial={rules} testId="customer-rules" />
-        </div>
-        <TextSetting id="format-note" label="元データの形式のメモ" hint="届くファイルのシート構成・見出し・癖など。" initial={customer.formatNote} onSave={(formatNote) => updateCustomerFn({ data: { id: customer.id, formatNote } })} />
+      <section className="mt-10 grid max-w-3xl gap-1.5">
+        <h2 className="text-sm font-medium" title="この顧客のデータに当てる決まり。チャットの AI への指示に入ります">
+          顧客ルール
+        </h2>
+        <RuleList target={{ scope: "customer", customerId: customer.id }} initial={rules} testId="customer-rules" />
       </section>
     </AppShell>
   )

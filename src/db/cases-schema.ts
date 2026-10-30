@@ -11,7 +11,6 @@ import { createdAt, updatedAt } from "./auth-schema"
 export const csvCustomers = sqliteTable("csv_customers", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
-  formatNote: text("format_note").notNull().default(""),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 })
