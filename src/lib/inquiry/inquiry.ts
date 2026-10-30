@@ -451,6 +451,10 @@ export function outsideCells(sheets: readonly SheetGrid[]): number {
   return n
 }
 
+/** 返ってきた記入用Excelの、決まった欄で読めなかった記入を AI に読ませる指示（チャットの「AI で読む」と照合で同じ） */
+export const aiAnswerPrompt = (fileName: string) =>
+  `返ってきた記入用Excel「${fileName}」の、色付きの欄の外（別の列・メモ・別のシート）の記入と読めなかった記入を読んで、まだ聞いている項目の答えを変更案にして`
+
 /** AI が姓と名を区切った氏名（自信があってもなくても）。同じ案件の表記として、ほかの記入の区切りには使わない */
 const splitByAi = (c: CellResult) => c.byAi === true
 

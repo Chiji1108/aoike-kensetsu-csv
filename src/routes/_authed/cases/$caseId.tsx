@@ -64,7 +64,7 @@ import { CASE_COST_NOTICE_USD } from "@/lib/cost"
 import type { UsdJpy } from "@/lib/fx"
 import { errorMessage } from "@/lib/errors"
 import { saveFile } from "@/lib/save-file"
-import { collectInquiries, mergeAnswers, outsideCells, readAnswers } from "@/lib/inquiry/inquiry"
+import { aiAnswerPrompt, collectInquiries, mergeAnswers, outsideCells, readAnswers } from "@/lib/inquiry/inquiry"
 import { KOJI_KEIREKI, KOJI_PLAN_HINTS, type KojiFieldId } from "@/lib/spec/koji-keireki"
 import { cn } from "@/lib/utils"
 import { planWithAi, runAiBatch } from "@/server/ai"
@@ -1061,7 +1061,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
           answerHint && {
             text: `返ってきた記入用Excel「${answerHint.name}」に、色付きの欄の外（別の列・別のシート）の記入や読めなかった記入があり、まだ答えの無い問い合わせが ${answerHint.count} 件あります。`,
             label: "AI で読む",
-            prompt: `返ってきた記入用Excel「${answerHint.name}」の、色付きの欄の外（別の列・メモ・別のシート）の記入と読めなかった記入を読んで、まだ聞いている項目の答えを変更案にして`,
+            prompt: aiAnswerPrompt(answerHint.name),
           }
         }
         onSuggestionSent={() => setAnswerHint(null)}
