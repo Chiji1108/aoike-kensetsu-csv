@@ -1,6 +1,6 @@
 import type { CsvSpec } from "../spec/types"
 import { columnCount, planColumns, type FieldPlan, type FlagColumn, type MappingPlan, type SheetGrid } from "./plan"
-import { defaultSheetSelection, isSkippableRow, lastNonBlankRow, rowIsBlank } from "./sources"
+import { isSkippableRow, lastNonBlankRow, rowIsBlank } from "./sources"
 import { matchKey } from "./text"
 import { isFlagOn, type TransformId } from "./transforms"
 
@@ -59,7 +59,7 @@ export function headerMatch<F extends string>(spec: CsvSpec<F>, hints: PlanHints
 }
 
 /**
- * 変換の元にするシート。見出しが項目にあてはまる数が多いシートを選び、同じなら空でない行の多いシート。
+ * AI が使えないときの、変換の元にするシート（ふだんは計画の AI がシートを選ぶ）。見出しが項目にあてはまる数が多いシートを選び、同じなら空でない行の多いシート。
  * 行の数だけで選ぶと、顧客一覧のような工事でない大きなシートを選んでしまう。空のシートしか無ければ undefined
  */
 export function primarySheet<F extends string>(spec: CsvSpec<F>, hints: PlanHints<F>, sheets: readonly SheetGrid[]): SheetGrid | undefined {
@@ -73,13 +73,11 @@ export function primarySheet<F extends string>(spec: CsvSpec<F>, hints: PlanHint
   return best?.sheet
 }
 
-/** 見出しの語だけで列の対応を推定する（APIキーが無いとき、AI の計画の初期値） */
-export function heuristicPlan<F extends string>(
-  spec: CsvSpec<F>,
-  hints: PlanHints<F>,
-  grid: SheetGrid,
-  workbook: readonly SheetGrid[] = [grid],
-): MappingPlan<F> {
+/**
+ * 見出しの語だけで、grid の列の対応を推定する（APIキーが無いとき・AI の計画が使えないとき、AI の計画の項目ごとの予備）。
+ * 使うシートは grid だけ（見出しが同じシートを足すかは、計画の AI か職員が決める）
+ */
+export function heuristicPlan<F extends string>(spec: CsvSpec<F>, hints: PlanHints<F>, grid: SheetGrid): MappingPlan<F> {
   const nCols = columnCount(grid)
   const { headerRow } = headerMatch(spec, hints, grid)
   const headers = Array.from({ length: nCols }, (_, c) => grid.rows[headerRow]?.[c] ?? "")
@@ -178,7 +176,7 @@ export function heuristicPlan<F extends string>(
   const excludeColumns = headers.flatMap((h, c) => (!used.includes(c) && hintScore(h, hints.excludeHeaders) > 0 ? [c] : []))
 
   return {
-    sheets: defaultSheetSelection(workbook, grid, headerRow),
+    sheets: [grid.name],
     headerRow,
     dataRows: { start, end },
     skipRows,

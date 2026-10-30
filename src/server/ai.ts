@@ -3,7 +3,7 @@ import Anthropic from "@anthropic-ai/sdk"
 import { createServerFn } from "@tanstack/react-start"
 import { z } from "zod"
 import { AI_TASK_IDS, MAX_ITEMS_PER_REQUEST } from "@/lib/convert/ai-tasks"
-import { MAX_PREVIOUS_CONTEXT } from "@/lib/convert/prompt"
+import { MAX_EXCERPT_CELLS, MAX_EXCERPT_SHEETS, MAX_PREVIOUS_CONTEXT } from "@/lib/convert/prompt"
 import { getDb } from "@/db"
 import { addCaseCost } from "./case-store"
 import { batchWithClaude, planWithClaude, type AiFailure } from "./claude"
@@ -29,17 +29,28 @@ async function charged<T extends { usd: number }>(id: string, res: T) {
   return res
 }
 
-/** 列の計画。送るのはシートの先頭・末尾の数十行と、列ごとの値の例だけ。費用は案件の合計に足す */
+/** 列の計画。送るのはシートごとの先頭・末尾の数十行と、列ごとの値の例だけ（上限は planExcerpt と同じ）。費用は案件の合計に足す */
 export const planWithAi = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator(
     z.object({
       caseId,
-      sheetName: z.string().max(100),
-      rowCount: z.number().int().min(0),
-      hiddenCount: z.number().int().min(0),
-      rows: z.array(z.object({ index: z.number().int().min(0), cells: z.array(cell).max(100) })).max(60),
-      columns: z.array(z.object({ index: z.number().int().min(0), filled: z.number().int().min(0), examples: z.array(z.string().max(40)).max(6) })).max(100),
+      sheets: z
+        .array(
+          z.object({
+            name: z.string().max(100),
+            rowCount: z.number().int().min(0),
+            columnCount: z.number().int().min(0),
+            hiddenCount: z.number().int().min(0),
+            rows: z.array(z.object({ index: z.number().int().min(0), cells: z.array(cell).max(100) })).max(60),
+            columns: z.array(z.object({ index: z.number().int().min(0), filled: z.number().int().min(0), examples: z.array(z.string().max(40)).max(6) })).max(100),
+            overlap: z.object({ sheet: z.string().max(100), percent: z.number().int().min(0).max(100) }).optional(),
+          }),
+        )
+        .min(1)
+        .max(MAX_EXCERPT_SHEETS)
+        .refine((sheets) => sheets.reduce((n, s) => n + s.rows.reduce((m, r) => m + r.cells.length, 0), 0) <= MAX_EXCERPT_CELLS, "抜粋が大きすぎます"),
+      requiredSheet: z.string().max(100).optional(),
       previous: z.string().max(MAX_PREVIOUS_CONTEXT + 100).optional(),
     }),
   )

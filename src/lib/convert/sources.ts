@@ -80,34 +80,38 @@ export function collectSourceRows<F extends string>(
   return { rows, duplicates }
 }
 
-/** 中身の9割以上が他のシートにあれば、そのシートの写し（フィルタをかけて一部を手直ししたものを含む）とみなす */
-const COPY_RATIO = 0.9
-
 /**
- * 最初に選ぶシート: 計画の元のシートと見出しが同じシートのうち、
- * 中身がほぼ他の選んだシートに含まれているもの（フィルタをかけた写しや空のシート）は外す。
- * 合計行はシートごとに値が変わる（SUBTOTAL など）ので比べない。
+ * シートごとに、行の内容がいちばん多く重なる別のシートと、その割合（0〜1）。重なる行が無ければ undefined。
+ * 業種ごとにフィルタをかけた写しのシートを、計画の AI が見分けるための手がかり（抜粋だけでは分からない）。
+ * 空行・合計行は比べない（合計行はシートごとに値が変わる。SUBTOTAL など）
  */
-export function defaultSheetSelection(sheets: readonly SheetGrid[], primary: SheetGrid, headerRow: number): string[] {
-  const candidates = sheets.filter((s) => s === primary || sameHeader(s, primary, headerRow))
-  const contents = new Map(
-    candidates.map((s) => {
-      const all = Array.from({ length: columnCountOf(s) }, (_, c) => c)
-      const rows = s.rows.slice(headerRow + 1).filter((r) => !isSkippableRow(r, all))
-      return [s.name, new Set(rows.map((r) => JSON.stringify(r.map((c) => c.trim()))))]
-    }),
-  )
-  const kept: SheetGrid[] = [primary]
-  for (const s of candidates) {
-    if (s === primary) continue
-    const mine = [...contents.get(s.name)!]
-    const covered = kept.some((k) => {
-      const theirs = contents.get(k.name)!
-      return mine.filter((row) => theirs.has(row)).length >= mine.length * COPY_RATIO
+export function sheetOverlaps(sheets: readonly SheetGrid[]): Map<string, { sheet: string; ratio: number }> {
+  const contents = sheets.map((s) => {
+    const all = Array.from({ length: columnCountOf(s) }, (_, c) => c)
+    // 右端の空セルは列の範囲の違いなので比べない
+    const key = (r: string[]) => {
+      const cells = r.map((c) => c.trim())
+      while (cells.length && !cells[cells.length - 1]) cells.pop()
+      return JSON.stringify(cells)
+    }
+    return new Set(s.rows.filter((r) => !isSkippableRow(r, all)).map(key))
+  })
+  const result = new Map<string, { sheet: string; ratio: number }>()
+  sheets.forEach((s, i) => {
+    const mine = contents[i]!
+    if (!mine.size) return
+    let best: { sheet: string; ratio: number } | undefined
+    sheets.forEach((o, j) => {
+      if (i === j) return
+      const theirs = contents[j]!
+      let shared = 0
+      for (const row of mine) if (theirs.has(row)) shared++
+      const ratio = shared / mine.size
+      if (shared && (!best || ratio > best.ratio)) best = { sheet: o.name, ratio }
     })
-    if (!covered) kept.push(s)
-  }
-  return kept.map((s) => s.name)
+    if (best) result.set(s.name, best)
+  })
+  return result
 }
 
 /** 行を出力しない理由（除外しないなら undefined） */

@@ -1,5 +1,5 @@
 import { CODE_SETS } from "../spec/code-sets"
-import { lastNonBlankRow } from "./sources"
+import { lastNonBlankRow, rowIsBlank, sheetOverlaps } from "./sources"
 import type { CsvSpec, ValueType } from "../spec/types"
 import { autoFillOf } from "../spec/types"
 import { AI_TASKS, type AiBatchRequest } from "./ai-tasks"
@@ -64,6 +64,10 @@ rule.joinWorkName は複数の列（現場名１・現場名２など）を区�
 ai.inferPrefecture / ai.inferPlace は columns に [工事名の列…, 注文者の列] を渡すと、AI が工事場所を推定する。都道府県・場所名が元データに無い（列が無い・列が空）ときだけ使う。
 
 ## 列の計画を作るとき
+- ブックの全部のシートの抜粋を渡す。まず工事の一覧（工事ごとに1行）のシートを選び、sheets の先頭に名前を書く。顧客一覧・技術者の一覧・集計・メモなど工事の一覧でないシートは、行が多くても選ばない。
+- 工事が同じ見出し（同じ行に同じ並びの見出し）の複数のシートに分かれている（年度ごと・部署ごとなど）ときだけ、2枚目以降を sheets に足す。ほかのシートの写し（行の内容のほとんどが別のシートにもある、業種ごとにフィルタをかけたシートなど）は足さない。
+- sheetReason に、そのシートを選んだ理由を職員向けに短く書く（他のシートを選ばなかった理由も、あれば）。
+- 見出し行・データの行・列番号は、すべて sheets の先頭のシートのもの。
 - 行番号・列番号は 0 始まり。表題行・空行の後に見出し行があることが多い。
 - dataStart はデータの最初の行。データの終わりはこちらでシートの最後の空でない行とする。データでない行（合計行・小計行・空行・注記行、表の後ろの注記・署名・作成者など）は、見える範囲のものをすべて skipRows に入れる。
 - fields には全項目を必ず1つずつ入れる。元データの列から作れるなら column / columns、全行同じ値なら constant（reason に理由）、無ければ missing。
@@ -87,25 +91,50 @@ function tsvRows(rows: { index: number; cells: string[] }[]) {
   return [head, ...body].join("\n")
 }
 
-export type PlanExcerpt = {
-  sheetName: string
+/** 計画の AI に渡す1枚のシートの抜粋 */
+export type SheetExcerpt = {
+  name: string
   rowCount: number
+  columnCount: number
   hiddenCount: number
+  /** 先頭と末尾の行（重複なし）。抜粋の大きさの上限に合わせて、シートが多いと減らす */
   rows: { index: number; cells: string[] }[]
   /** 列ごとの空でない行数と値の例（先頭・末尾だけでは分からない、ほとんど空の列や記号の列のため） */
   columns: { index: number; filled: number; examples: string[] }[]
+  /** 行の内容がいちばん多く重なる別のシートと、その割合（%。sheetOverlaps。フィルタをかけた写しを見分ける） */
+  overlap?: { sheet: string; percent: number }
+}
+
+/** 計画の AI に渡すブックの抜粋 */
+export type PlanExcerpt = {
+  sheets: SheetExcerpt[]
+  /** 職員が計画の元に指定したシート（無ければ AI が選ぶ） */
+  requiredSheet?: string
   /** 同じ顧客の去年の列の対応と、去年の Excel との違い（previousPlanContext。参考） */
   previous?: string
 }
 
-export function planUserMessage(excerpt: PlanExcerpt) {
-  const columns = excerpt.columns.map((c) => `${c.index}(${columnLetter(c.index)}): ${c.filled}行 ${JSON.stringify(c.examples)}`).join("\n")
-  return `シート「${excerpt.sheetName}」（全${excerpt.rowCount}行、うち非表示${excerpt.hiddenCount}行）の先頭と末尾です。列の計画を作ってください。
+function sheetSection(s: SheetExcerpt) {
+  const head = `### シート「${s.name}」（全${s.rowCount}行・${s.columnCount}列、うち非表示${s.hiddenCount}行）${
+    s.overlap ? `\n行の内容の${s.overlap.percent}%はシート「${s.overlap.sheet}」にもある。` : ""
+  }`
+  if (!s.rows.length) return `${head}\n（空のシート）`
+  const columns = s.columns.map((c) => `${c.index}(${columnLetter(c.index)}): ${c.filled}行 ${JSON.stringify(c.examples)}`).join("\n")
+  return `${head}
 
-${tsvRows(excerpt.rows)}
+${tsvRows(s.rows)}
 
 列ごとの空でない行数と値の例（全行から）:
-${columns}${excerpt.previous ? `\n\n${excerpt.previous}` : ""}`
+${columns}`
+}
+
+export function planUserMessage(excerpt: PlanExcerpt) {
+  const ask = excerpt.requiredSheet
+    ? `職員がシート「${excerpt.requiredSheet}」を計画の元に指定しました。sheets の先頭はこのシートにし、このシートの列の計画を作ってください。`
+    : "工事の一覧のシートを選び、そのシートの列の計画を作ってください。"
+  return `ブックの全${excerpt.sheets.length}枚のシートの先頭と末尾です。${ask}
+
+${excerpt.sheets.map(sheetSection).join("\n\n")}${excerpt.previous ? `\n\n${excerpt.previous}` : ""}`
 }
 
 /** 去年の文脈の文字数の上限（列の多い表でも計画の指示が大きくなりすぎないように） */
@@ -150,22 +179,55 @@ ${JSON.stringify(req.items)}`
 }
 
 const MAX_EXAMPLES = 6
+/** 抜粋に入れるシートの数・セルの数の上限（シートの多いブックでも計画の指示が大きくなりすぎないように） */
+export const MAX_EXCERPT_SHEETS = 30
+export const MAX_EXCERPT_CELLS = 10_000
+const HEAD = 30
+const TAIL = 10
+/** シートが多くて行を減らすときも、これだけは残す */
+const MIN_HEAD = 8
+const MIN_TAIL = 3
 
-/** 先頭30行・最後の空でない行までの末尾10行（重複なし）と、列ごとの値の例を AI に送る */
-export function planExcerpt(grid: SheetGrid, head = 30, tail = 10): PlanExcerpt {
+/** 1枚のシートの抜粋: 先頭 head 行・最後の空でない行までの末尾 tail 行（重複なし）と、列ごとの値の例 */
+function sheetExcerpt(grid: SheetGrid, head: number, tail: number, overlap?: { sheet: string; ratio: number }): SheetExcerpt {
   const n = grid.rows.length
   // 書式だけの空行がシートの後ろに続いても、表の後ろの注記が AI に見えるように、末尾は最後の空でない行から数える
-  const last = lastNonBlankRow(grid) + 1
+  const last = n ? lastNonBlankRow(grid) + 1 : 0
   const idx = [...new Set([...Array.from({ length: Math.min(head, n) }, (_, i) => i), ...Array.from({ length: Math.min(tail, last) }, (_, i) => last - Math.min(tail, last) + i)])]
   const width = columnCount(grid)
+  const empty = grid.rows.every(rowIsBlank)
   return {
-    sheetName: grid.name,
+    name: grid.name,
     rowCount: n,
+    columnCount: width,
     hiddenCount: grid.hidden.filter(Boolean).length,
-    rows: idx.map((i) => ({ index: i, cells: grid.rows[i]!.map((c) => c.slice(0, 200)) })),
-    columns: Array.from({ length: width }, (_, c) => {
-      const values = grid.rows.map((r) => r[c]?.trim() ?? "").filter(Boolean)
-      return { index: c, filled: values.length, examples: [...new Set(values.slice(1))].slice(0, MAX_EXAMPLES).map((v) => v.slice(0, 40)) }
-    }),
+    rows: empty ? [] : idx.map((i) => ({ index: i, cells: grid.rows[i]!.map((c) => c.slice(0, 200)) })),
+    columns: empty
+      ? []
+      : Array.from({ length: width }, (_, c) => {
+          const values = grid.rows.map((r) => r[c]?.trim() ?? "").filter(Boolean)
+          return { index: c, filled: values.length, examples: [...new Set(values.slice(1))].slice(0, MAX_EXAMPLES).map((v) => v.slice(0, 40)) }
+        }),
+    ...(overlap ? { overlap: { sheet: overlap.sheet, percent: Math.floor(overlap.ratio * 100) } } : {}),
+  }
+}
+
+/**
+ * 計画の AI に送るブックの抜粋。全部のシート（MAX_EXCERPT_SHEETS 枚まで）の先頭30行・末尾10行と列ごとの値の例。
+ * セルの合計が MAX_EXCERPT_CELLS を超えるときは、どのシートも同じ割合で行を減らす（どのシートが工事の一覧かは AI が決めるので、シートで差をつけない）
+ */
+export function planExcerpt(sheets: readonly SheetGrid[], requiredSheet?: string): PlanExcerpt {
+  const listed = sheets.slice(0, MAX_EXCERPT_SHEETS)
+  const overlaps = sheetOverlaps(listed)
+  const cells = (head: number, tail: number) => listed.reduce((sum, g) => sum + Math.min(g.rows.length, head + tail) * columnCount(g), 0)
+  const scale = Math.min(1, MAX_EXCERPT_CELLS / Math.max(1, cells(HEAD, TAIL)))
+  let head = Math.max(MIN_HEAD, Math.floor(HEAD * scale))
+  let tail = Math.max(MIN_TAIL, Math.floor(TAIL * scale))
+  // 下限の行でも上限を超える（列の多いシートがたくさんある）ときは、先頭だけ減らす
+  while (head > 1 && cells(head, tail) > MAX_EXCERPT_CELLS) head--
+  if (cells(head, tail) > MAX_EXCERPT_CELLS) tail = 0
+  return {
+    sheets: listed.map((g) => sheetExcerpt(g, head, tail, overlaps.get(g.name))),
+    ...(requiredSheet ? { requiredSheet } : {}),
   }
 }

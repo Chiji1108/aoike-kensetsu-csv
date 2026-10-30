@@ -8,7 +8,7 @@ import { runConversion } from "../pipeline"
 import { fileAddressLookup } from "../address-file"
 import { NO_ADDRESSES } from "../address"
 import type { SheetGrid } from "../plan"
-import { collectSourceRows, defaultSheetSelection } from "../sources"
+import { collectSourceRows, sheetOverlaps } from "../sources"
 import { personToken, showPersons } from "../persons"
 import { joinWorkName } from "../transforms"
 import { finalizeAll, kojiRow, valuesOf } from "./helpers"
@@ -35,7 +35,7 @@ const kan = sheet("管工事", [HEADER, ...ROWS, TOTAL], [false, false, true, fa
 const book = [all, kan]
 
 describe("業種シートに分かれ、業種を○で表す表", () => {
-  const plan = heuristicPlan(KOJI_KEIREKI, KOJI_PLAN_HINTS, all, book)
+  const plan = heuristicPlan(KOJI_KEIREKI, KOJI_PLAN_HINTS, all)
 
   test("見出しから ○ の列・現場名の連結・所在地の推定・除外の列を選ぶ", () => {
     expect(plan.sheets).toEqual(["全件"])
@@ -123,24 +123,27 @@ describe("業種シートに分かれ、業種を○で表す表", () => {
 })
 
 describe("シートの選択と重複", () => {
-  test("ほかのシートに中身がすべて含まれるシート・空のシートは最初は選ばない。見出しの右端の空セルは無視する", () => {
+  test("シートごとに、行の内容がいちばん多く重なる別のシートと割合を出す（計画の AI が写しを見分ける手がかり）。右端の空セル・合計行は比べない", () => {
     const part = sheet("一部", [[...HEADER, "", ""], ROWS[1]!])
     const other = sheet("別", [HEADER, ["9", "田中　三郎", "別会社", "元請", "民間物件", "20250101", "20250301", "別現場", "", "900,000", "", "", "", "〇", "", "", ""]])
-    const empty = sheet("空", [HEADER])
     const unrelated = sheet("メモ", [["メモ"], ["何か"]])
-    expect(defaultSheetSelection([all, part, other, empty, unrelated], all, 0)).toEqual(["全件", "別"])
+    const o = sheetOverlaps([all, kan, part, other, unrelated])
+    expect(o.get("管工事")).toEqual({ sheet: "全件", ratio: 1 })
+    expect(o.get("一部")).toEqual({ sheet: "全件", ratio: 1 })
+    expect(o.get("別")).toEqual({ sheet: "全件", ratio: 0.5 })
+    expect(o.get("メモ")).toBeUndefined()
   })
 
-  test("合計行の値が違うだけ・一部の行を手直ししただけの写しのシートも、最初は選ばない", () => {
+  test("合計行の値が違うだけ・一部の行を手直ししただけの写しのシートも、ほとんど重なると分かる", () => {
     const many = Array.from({ length: 20 }, (_, i) => [String(i), "青池　一郎", "株式会社テスト", "元請", "民間物件", "20250401", "20250901", `現場${i}`, "", "1,000,000", "", "", "", "〇", "", "", ""])
     const base = sheet("全件", [HEADER, ...many, [...TOTAL.slice(0, 9), "20,000,000", ...TOTAL.slice(10)]])
     const edited = many.map((r, i) => (i === 3 ? r.map((c, j) => (j === 7 ? "手直しした現場名" : c)) : r))
     const copy = sheet("電気工事", [HEADER, ...edited, [...TOTAL.slice(0, 9), "1,000,000", ...TOTAL.slice(10)]])
-    expect(defaultSheetSelection([base, copy], base, 0)).toEqual(["全件"])
+    expect(sheetOverlaps([base, copy]).get("電気工事")!.ratio).toBeCloseTo(20 / 21)
   })
 
   test("選んだシートをまたいで同じ行は1件にまとめ、件数を数える", () => {
-    const plan = heuristicPlan(KOJI_KEIREKI, KOJI_PLAN_HINTS, all, book)
+    const plan = heuristicPlan(KOJI_KEIREKI, KOJI_PLAN_HINTS, all)
     const { rows, duplicates } = collectSourceRows(book, { ...plan, sheets: ["全件", "管工事"] })
     expect(duplicates).toBe(4)
     expect(rows.map((r) => r.sheet)).toEqual(["全件", "全件", "全件", "全件"])

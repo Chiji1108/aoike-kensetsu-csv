@@ -2,6 +2,7 @@ import { z } from "zod"
 import { CODE_SETS } from "../spec/code-sets"
 import type { CsvSpec } from "../spec/types"
 import type { ValueType } from "../spec/types"
+import { rowIsBlank, sameHeader } from "./sources"
 import { TRANSFORM_IDS, getTransform, preferredTransform, transformFits, type TransformId } from "./transforms"
 
 /**
@@ -76,7 +77,10 @@ const fieldPlanWire = z.discriminatedUnion("kind", [
 
 export function mappingPlanWireSchema<F extends string>(spec: CsvSpec<F>) {
   const fields: Record<string, typeof fieldPlanWire> = Object.fromEntries(spec.fields.map((f) => [f.id, fieldPlanWire]))
+  // シートを先に決めさせる（見出し行・列番号はそのシートのもの）。シートの名前は enum にしない（スキーマを毎回同じにしてキャッシュを効かせる。名前は acceptAiPlan で確かめる）
   return z.object({
+    sheets: z.array(z.string()),
+    sheetReason: z.string(),
     headerRow: z.number().int(),
     dataStart: z.number().int(),
     skipRows: z.array(z.number().int()),
@@ -89,18 +93,29 @@ export function mappingPlanWireSchema<F extends string>(spec: CsvSpec<F>) {
 }
 
 /**
- * AI の計画を検証して取り込む。行・列の範囲外、項目の型に合わない変換は
- * ルールで推定した計画（fallback）の値に戻し、その旨を notes に残す。
+ * AI の計画を検証して取り込む。
+ * - 計画の元のシート（sheets の先頭）がブックに無い・空・職員の指定と違うときは、列の番号の意味が分からないので計画全体を使わない（ok: false）。
+ * - 2枚目以降のシートは、無い・空・重複・見出しが計画の元と違うものを外す。
+ * - 行・列の範囲外、項目の型に合わない変換は、選んだシートについて見出しから推定した計画（fallbackFor）の値に戻す。
+ * 直したことは notes に残す。
  */
 export function acceptAiPlan<F extends string>(
   spec: CsvSpec<F>,
-  grid: SheetGrid,
+  workbook: readonly SheetGrid[],
   json: unknown,
-  fallback: MappingPlan<F>,
+  fallbackFor: (grid: SheetGrid) => MappingPlan<F>,
+  requiredSheet?: string,
 ): { ok: true; plan: MappingPlan<F> } | { ok: false; message: string } {
   const parsed = mappingPlanWireSchema(spec).safeParse(json)
   if (!parsed.success) return { ok: false, message: "AI の計画の形式が正しくありません" }
   const wire = parsed.data
+  const [primaryName, ...extraNames] = wire.sheets
+  if (primaryName === undefined) return { ok: false, message: "AI の計画に使うシートがありません" }
+  const grid = workbook.find((s) => s.name === primaryName)
+  if (!grid) return { ok: false, message: `AI が選んだシート「${primaryName}」がファイルにありません` }
+  if (grid.rows.every(rowIsBlank)) return { ok: false, message: `AI が選んだシート「${primaryName}」は空です` }
+  if (requiredSheet !== undefined && primaryName !== requiredSheet) return { ok: false, message: `AI が指定のシート「${requiredSheet}」でなく「${primaryName}」を選びました` }
+  const fallback = fallbackFor(grid)
   const nRows = grid.rows.length
   const nCols = columnCount(grid)
   const problems: string[] = []
@@ -112,6 +127,22 @@ export function acceptAiPlan<F extends string>(
   if (!rowsOk) problems.push("AI の見出し行・データの開始行がシートと合わないため、ルールの推定を使いました")
   const headerRow = rowsOk ? wire.headerRow : fallback.headerRow
   const dataRows = rowsOk ? { start: wire.dataStart, end } : fallback.dataRows
+
+  const sheets = [grid.name]
+  for (const name of extraNames) {
+    const s = workbook.find((x) => x.name === name)
+    const reason = !s
+      ? "ファイルに無い"
+      : sheets.includes(name)
+        ? undefined
+        : s.rows.every(rowIsBlank)
+          ? "空の"
+          : !sameHeader(s, grid, headerRow)
+            ? `見出しが「${grid.name}」と違う`
+            : undefined
+    if (reason) problems.push(`AI が足したシート「${name}」は${reason}ため外しました`)
+    else if (!sheets.includes(name)) sheets.push(name)
+  }
 
   const wireFields: Record<string, z.infer<typeof fieldPlanWire>> = wire.fields
   const fields = {} as Record<F, FieldPlan>
@@ -131,10 +162,11 @@ export function acceptAiPlan<F extends string>(
     }
   }
 
+  const sheetNote = workbook.length > 1 ? [`使うシート「${sheets.join("」「")}」: ${wire.sheetReason.trim() || "（AI の理由なし）"}`] : []
   return {
     ok: true,
     plan: {
-      sheets: fallback.sheets,
+      sheets,
       headerRow,
       dataRows,
       // 合計・小計の行はルールでも見つける（AI は抜粋しか見ないので、途中の小計を見落とす）
@@ -145,7 +177,7 @@ export function acceptAiPlan<F extends string>(
       amountUnit: wire.amountUnit,
       fields,
       unusedColumns: wire.unusedColumns.filter((c) => c.column >= 0 && c.column < nCols),
-      notes: [...wire.notes, ...problems],
+      notes: [...sheetNote, ...wire.notes, ...problems],
     },
   }
 }

@@ -90,11 +90,14 @@ const PREVIOUS_WAIT_MS = 3_000
 
 type PreviousCase = NonNullable<NonNullable<Awaited<ReturnType<typeof getCasePageFn>>>["previous"]>
 
+/** 去年と今年の Excel を比べるシート: その名前のシート（計画のシート）があればそれ、無ければ見出しから選んだシート */
+const previousComparisonSheet = (sheets: readonly SheetGrid[], name: string | undefined) => sheets.find((s) => s.name === name) ?? primarySheet(SPEC, KOJI_PLAN_HINTS, sheets)
+
 /** 去年の比べるシートと見出しの行（去年の計画のもの。計画が無い・シートが無ければ見出しから推定する）。比べるシートが無ければ null */
 function previousSideOf(previous: PreviousCase, sheets: SheetGrid[]) {
-  const prevGrid = sheets.find((s) => s.name === previous.sheet) ?? primarySheet(SPEC, KOJI_PLAN_HINTS, sheets)
+  const prevGrid = previousComparisonSheet(sheets, previous.sheet ?? undefined)
   if (!prevGrid) return null
-  const headerRow = prevGrid.name === previous.sheet && previous.headerRow !== null ? previous.headerRow : heuristicPlan(SPEC, KOJI_PLAN_HINTS, prevGrid, sheets).headerRow
+  const headerRow = prevGrid.name === previous.sheet && previous.headerRow !== null ? previous.headerRow : heuristicPlan(SPEC, KOJI_PLAN_HINTS, prevGrid).headerRow
   return { sheets, sheet: prevGrid.name, headerRow }
 }
 
@@ -224,35 +227,44 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
   }
 
   /**
-   * 列の計画の AI に渡す去年の文脈: 去年の列の対応と、去年の Excel との違い（今年のシートは計画するシート、見出しの行は見出しからの推定）。
-   * 去年の計画が無い・去年の Excel を読めなければ無し
+   * 列の計画の AI に渡す去年の文脈: 去年の列の対応と、去年の Excel との違い。計画の前なので、今年のどのシートと比べるかは
+   * 職員が指定したシート → 去年と同じ名前のシート → 見出しから選んだシート（previousComparisonSheet）、見出しの行は見出しからの推定。
+   * 比べたシートは違いの文に出る。去年の計画が無い・去年の Excel を読めなければ無し
    */
-  async function previousPlanFor(src: Source, g: SheetGrid, headerRow: number) {
+  async function previousPlanFor(src: Source, requiredSheet: string | undefined) {
     const prevPlan = previous?.plan
     if (!previous || !prevPlan) return undefined
     // 去年の Excel は開いたときから読んでいる。計画をそれ以上待たせない（読み終わらなければ去年の文脈なしで計画する）
     const sheets = await Promise.race([loadPreviousSheets(), new Promise<null>((resolve) => setTimeout(() => resolve(null), PREVIOUS_WAIT_MS))])
     const side = sheets && previousSideOf(previous, sheets)
     const prevGrid = side && sheets.find((s) => s.name === prevPlan.sheets[0])
-    if (!side || !prevGrid) return undefined
-    const diff = describeFormatDiff(compareFormats(side, { sheets: src.sheets, sheet: g.name, headerRow }))
+    const g = previousComparisonSheet(src.sheets, requiredSheet ?? prevPlan.sheets[0]!)
+    if (!side || !prevGrid || !g) return undefined
+    const diff = describeFormatDiff(compareFormats(side, { sheets: src.sheets, sheet: g.name, headerRow: heuristicPlan(SPEC, KOJI_PLAN_HINTS, g).headerRow }))
     return previousPlanContext(SPEC, { fiscalYear: previous.fiscalYear, grid: prevGrid, plan: prevPlan, diff })
   }
 
-  async function startPlanning(src: Source, g: SheetGrid) {
-    const fallback = heuristicPlan(SPEC, KOJI_PLAN_HINTS, g, src.sheets)
+  /**
+   * 列の計画を立てる。どのシートを使うか・見出しの行・列の対応は計画の AI が決める（requiredSheet は職員が指定した計画の元のシート）。
+   * AI を待つ間と AI が使えないときは、見出しから選んだシートの推定を使う
+   */
+  async function startPlanning(src: Source, requiredSheet?: string) {
+    const fallbackFor = (g: SheetGrid) => heuristicPlan(SPEC, KOJI_PLAN_HINTS, g)
+    const g = requiredSheet !== undefined ? src.sheets.find((s) => s.name === requiredSheet) : primarySheet(SPEC, KOJI_PLAN_HINTS, src.sheets)
+    if (!g) throw new Error("シートが空です")
+    const fallback = fallbackFor(g)
     const id = ++caseGeneration.current
     supersedeConversion()
     setPlanDraft({ plan: fallback, source: "rule" })
     setWork((w) => replanWork(w, src.fileId))
     let next: SavedPlan
     try {
-      const previousContext = await previousPlanFor(src, g, fallback.headerRow)
+      const previousContext = await previousPlanFor(src, requiredSheet)
       if (id !== caseGeneration.current) return
-      const res = await planWithAi({ data: { caseId: kase.id, ...planExcerpt(g), ...(previousContext ? { previous: previousContext } : {}) } })
+      const res = await planWithAi({ data: { caseId: kase.id, ...planExcerpt(src.sheets, requiredSheet), ...(previousContext ? { previous: previousContext } : {}) } })
       addCost(res.usd)
       if (res.ok) {
-        const accepted = acceptAiPlan(SPEC, g, res.json, fallback)
+        const accepted = acceptAiPlan(SPEC, src.sheets, res.json, fallbackFor, requiredSheet)
         next = accepted.ok ? { plan: accepted.plan, source: "ai" } : { plan: fallback, source: "rule", notice: `${accepted.message}。見出しから列を推定しました。` }
       } else {
         next = {
@@ -275,11 +287,10 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
     try {
       const { readWorkbook } = await import("@/lib/convert/workbook")
       const sheets = readWorkbook(file.name, await fetchCaseFile(file.id))
-      const primary = primarySheet(SPEC, KOJI_PLAN_HINTS, sheets)
-      if (!primary) throw new Error("シートが空です")
+      if (!primarySheet(SPEC, KOJI_PLAN_HINTS, sheets)) throw new Error("シートが空です")
       const src = { fileId: file.id, name: file.name, sheets }
       setSource(src)
-      if (replan) await startPlanning(src, primary)
+      if (replan) await startPlanning(src)
     } catch (e) {
       toast.error(errorMessage(e, "ファイルを読み込めませんでした"))
     } finally {
@@ -757,8 +768,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
                 id="sheet"
                 value={grid.name}
                 onChange={(e) => {
-                  const g = source.sheets.find((s) => s.name === e.target.value)
-                  if (g) void startPlanning(source, g)
+                  void startPlanning(source, e.target.value)
                 }}
               >
                 {source.sheets.map((s) => (

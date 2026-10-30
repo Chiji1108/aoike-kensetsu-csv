@@ -684,7 +684,7 @@ describe("記入用Excel（.xlsx）", () => {
 
 test("sample-inquiry.xlsx（APIキーなし）: 配置技術者の列が無い・完成日と工事場所が空の行を問い合わせにする", async () => {
   const sheets = readWorkbook("sample-inquiry.xlsx", fixture("sample-inquiry.xlsx"))
-  const plan = heuristicPlan(KOJI_KEIREKI, KOJI_PLAN_HINTS, sheets[0]!, sheets)
+  const plan = heuristicPlan(KOJI_KEIREKI, KOJI_PLAN_HINTS, sheets[0]!)
   const { rows: sources } = collectSourceRows(sheets, plan)
   const noKey = async () => ({ ok: false as const, message: "APIキー未設定" })
   const { rows } = finalizeAll(await runConversion({ lookup: fileAddressLookup, spec: KOJI_KEIREKI, sources, plan, ctx: { rounding: "floor" }, cache: new Map(), callAi: noKey }), {
