@@ -3,11 +3,13 @@ import { AI_TASKS, type AiItemResult } from "../convert/ai-tasks"
 import type { CellEdits, Replacements } from "../convert/convert"
 import type { Basis, SelectionMode, TaxMode } from "../convert/koji-selection"
 import type { AiCache } from "../convert/pipeline"
-import { TRANSFORM_IDS, type Rounding } from "../convert/transforms"
-import type { FieldPlan, MappingPlan } from "../convert/plan"
+import type { Rounding } from "../convert/transforms"
+import type { MappingPlan } from "../convert/plan"
+import { savedPlanSchema } from "../convert/plan-schema"
 import type { AnswerReport, CellInquiry } from "../inquiry/inquiry"
 import { proposalSchema, type Proposal } from "../chat/proposals"
 import { addedRowSchema, MAX_ADDED_ROWS, type AddedRow } from "./added"
+import { undoEntrySchema, type UndoEntry } from "./undo"
 import { basisSchema, cellEditSchema, fieldIdSchema, legacySelection, replacementsSchema, selectionSchema, taxSchema } from "../schemas"
 import type { KojiFieldId } from "../spec/koji-keireki"
 
@@ -40,6 +42,10 @@ export type CaseWork = {
   proposals: Proposal[]
   /** 元のファイルに無い、足した工事（cases/added.ts。値は edits）。この項目より前に保存した作業には無いので、読むときは空 */
   added: AddedRow[]
+  /** 承認の取り消しの記録（cases/undo.ts）。この項目より前に保存した作業には無いので、読むときは空 */
+  undo: UndoEntry[]
+  /** 変換の報告の聞き返しへの答え（聞き返しの id → 答え。例: 金額の税込・税抜を「顧客に聞く」）。前の作業には無いので、読むときは空 */
+  reportAnswers: Record<string, string>
 }
 
 export type SavedPlan = { plan: MappingPlan<KojiFieldId>; source: "ai" | "rule"; notice?: string }
@@ -63,31 +69,11 @@ export const newWork = (sourceFileId: string | null = null): CaseWork => ({
   threshold: { on: false, yen: "" },
   proposals: [],
   added: [],
+  undo: [],
+  reportAnswers: {},
 })
 
 // ---- 保存する形（D1 の csv_case_states.json）。Map・Set は組の配列にする ----
-
-const transformId = z.enum(TRANSFORM_IDS)
-
-const fieldPlan: z.ZodType<FieldPlan> = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("column"), column: z.number().int(), transform: transformId, instruction: z.string().optional() }),
-  z.object({ kind: z.literal("columns"), columns: z.array(z.number().int()), transform: transformId, instruction: z.string().optional() }),
-  z.object({ kind: z.literal("flagColumns"), columns: z.array(z.object({ column: z.number().int(), code: z.string() })) }),
-  z.object({ kind: z.literal("constant"), value: z.string(), reason: z.string() }),
-  z.object({ kind: z.literal("missing") }),
-])
-
-const mappingPlan: z.ZodType<MappingPlan<KojiFieldId>> = z.object({
-  sheets: z.array(z.string()),
-  headerRow: z.number().int(),
-  dataRows: z.object({ start: z.number().int(), end: z.number().int() }),
-  skipRows: z.array(z.number().int()),
-  rowFilter: z.object({ excludeHidden: z.boolean(), excludeColumns: z.array(z.number().int()) }),
-  amountUnit: z.enum(["yen", "thousandYen"]),
-  fields: z.record(fieldIdSchema, fieldPlan),
-  unusedColumns: z.array(z.object({ column: z.number().int(), header: z.string(), reason: z.string() })),
-  notes: z.array(z.string()),
-})
 
 /** AI の結果は種類ごとに項目が違う。strict にして、項目の多い結果（persons 付きなど）が少ない形に削られないようにする */
 const aiResult: z.ZodType<AiItemResult | { error: string }> = z.union([
@@ -124,7 +110,7 @@ const answerReport: z.ZodType<AnswerReport> = z.object({
 export const savedWorkSchema = z
   .object({
   sourceFileId: z.string().nullable(),
-  plan: z.object({ plan: mappingPlan, source: z.enum(["ai", "rule"]), notice: z.string().optional() }).nullable(),
+  plan: savedPlanSchema.nullable(),
   converted: z.boolean(),
   aiNotice: z.string().nullable(),
   edits: z.array(z.tuple([z.string(), cellEditSchema])),
@@ -142,6 +128,8 @@ export const savedWorkSchema = z
   threshold: z.object({ on: z.boolean(), yen: z.string() }),
   proposals: z.array(proposalSchema).default([]),
   added: z.array(addedRowSchema).max(MAX_ADDED_ROWS).default([]),
+  undo: z.array(undoEntrySchema).default([]),
+  reportAnswers: z.record(z.string(), z.string().max(100)).default({}),
   })
   .transform(({ alreadyApplied, selection, ...w }) => ({ ...w, selection: legacySelection(selection, alreadyApplied) ?? "rule7" }))
 export type SavedWork = z.infer<typeof savedWorkSchema>

@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs"
 import { expect, type Locator, type Page } from "@playwright/test"
 
 /** ページを開き、React が画面につながる（<html data-hydrated>）まで待つ。つながる前の入力や押下は効かない */
@@ -41,13 +42,38 @@ export async function openNewCase(page: Page, year = "2026") {
   return { customer, caseUrl: page.url() }
 }
 
-/** 案件の画面で Excel（パスか中身）を付け、列の対応が出たら変換し、プレビューの表が出るまで待つ */
+/** 案件の画面で Excel（パスか中身）を付け、AI が列の対応を考えて自動で変換し、変換の報告とプレビューの表が出るまで待つ */
 export async function attachAndConvert(page: Page, file: Parameters<Locator["setInputFiles"]>[0]) {
   await page.getByTestId("file-input").setInputFiles(file)
-  await expect(page.getByTestId("plan-source")).toBeVisible({ timeout: 60_000 })
-  await expect(page.getByTestId("plan-source")).not.toContainText("考えています", { timeout: 120_000 })
-  await page.getByTestId("convert-button").click()
   await expect(page.getByTestId("preview-table")).toBeVisible({ timeout: 180_000 })
+  await expect(page.getByTestId("case-report")).toHaveAttribute("data-phase", "done", { timeout: 120_000 })
+}
+
+/** 表の絞り込みを「すべて」にする（はじめは確かめる行だけ） */
+export async function showAllRows(page: Page) {
+  await page.getByTestId("row-filters").locator('[data-filter="all"]').click()
+  await expect(page.getByTestId("row-filters").locator('[data-filter="all"]')).toHaveAttribute("aria-pressed", "true")
+}
+
+/** 表の下の欄を開く */
+export async function openTab(page: Page, tab: "selection" | "inquiry" | "excel" | "location" | "replace") {
+  await page.getByTestId(`tab-${tab}`).click()
+}
+
+/** 書き出すボタンの件数（CSV に載せる行） */
+export const csvCount = async (page: Page) => Number(/（(\d+)件/.exec((await page.getByTestId("export-button").textContent()) ?? "")![1])
+
+/** 書き出す前の確認を開いて CSV（控え）を落とし、中身（CP932）を返す。確認は閉じる */
+export async function downloadCsv(page: Page) {
+  await page.getByTestId("export-button").click()
+  const dialog = page.getByTestId("export-dialog")
+  await expect(dialog).toBeVisible()
+  const downloading = page.waitForEvent("download")
+  await dialog.getByTestId("download-button").click()
+  const path = (await (await downloading).path())!
+  await page.keyboard.press("Escape")
+  await expect(dialog).toBeHidden()
+  return new TextDecoder("shift_jis").decode(readFileSync(path))
 }
 
 /** 新しい案件を作って Excel を変換する */

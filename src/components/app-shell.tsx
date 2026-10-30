@@ -13,9 +13,13 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { authClient } from "@/lib/auth-client"
 import { OFFICE_NAME } from "@/lib/constants"
+import { cn } from "@/lib/utils"
 
-/** aside は画面の右に固定する横の欄（チャット）。開いている（asideOpen）間は本文を横の欄の幅だけ空ける */
-export function AppShell({ children, aside, asideOpen = false }: { children: React.ReactNode; aside?: React.ReactNode; asideOpen?: boolean }) {
+/**
+ * aside は画面の右に固定する横の欄（チャット）。開いている（asideOpen）間は、広い画面では本文を横の欄の幅だけ空ける（狭い画面では本文の上に重ねる）。
+ * wide は本文の幅を画面いっぱいにする（案件の画面の表）
+ */
+export function AppShell({ children, aside, asideOpen = false, wide = false }: { children: React.ReactNode; aside?: React.ReactNode; asideOpen?: boolean; wide?: boolean }) {
   const router = useRouter()
   const [pwOpen, setPwOpen] = useState(false)
 
@@ -26,7 +30,7 @@ export function AppShell({ children, aside, asideOpen = false }: { children: Rea
   }
 
   return (
-    <div className="min-h-dvh">
+    <div className="min-h-dvh [--aside-width:400px] 2xl:[--aside-width:440px]">
       <header className="no-print sticky top-0 z-30 border-b bg-background/85 backdrop-blur supports-[backdrop-filter]:bg-background/70">
         <div className="mx-auto flex h-14 max-w-7xl items-center gap-2 px-4 sm:gap-6 sm:px-6">
           <Link to="/" className="flex items-center gap-2.5">
@@ -63,8 +67,8 @@ export function AppShell({ children, aside, asideOpen = false }: { children: Rea
         </div>
       </header>
 
-      <div className={asideOpen ? "xl:pr-[460px]" : undefined}>
-        <main className="mx-auto max-w-7xl px-4 pt-6 pb-16 sm:px-6 sm:pt-8">{children}</main>
+      <div className={asideOpen ? "xl:pr-[var(--aside-width)]" : undefined}>
+        <main className={cn("mx-auto px-4 pt-6 pb-16 sm:px-6 sm:pt-8", wide ? "max-w-none" : "max-w-7xl")}>{children}</main>
       </div>
       {aside}
 

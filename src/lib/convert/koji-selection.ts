@@ -17,7 +17,8 @@ type KojiRow = RowResult<KojiFieldId>
 /** 元データの金額が税込か税抜か（軽微と7割の判定に使う。金額そのものは変換しない）。不明は税込として扱う */
 export type TaxMode = "unknown" | "included" | "excluded"
 
-export const TAX_LABELS: Record<TaxMode, string> = { unknown: "不明", included: "税込", excluded: "税抜" }
+/** 顧客の Excel の金額が税込か税抜か（7割を税抜で判定するために聞く。7割の判定そのものはいつも税抜） */
+export const TAX_LABELS: Record<TaxMode, string> = { included: "税込", excluded: "税抜", unknown: "分からない" }
 
 const KEIBI_YEN = 5_000_000
 const KEIBI_YEN_KENCHIKU = 15_000_000
@@ -104,7 +105,7 @@ export function selectBy7Rule(rows: readonly KojiRow[], opts: { tax: TaxMode; ba
  */
 export const SELECTION_MODES = ["rule7", "all"] as const
 export type SelectionMode = (typeof SELECTION_MODES)[number]
-export const SELECTION_LABELS: Record<SelectionMode, string> = { rule7: "7割ルールで選ぶ（記入例どおり）", all: "全件を載せる（7割以上なら件数は自由）" }
+export const SELECTION_LABELS: Record<SelectionMode, string> = { rule7: "7割ルール", all: "全件" }
 
 export type Inclusion =
   | { included: true; reason: "rule7" | "all" | "threshold" | "manual" }

@@ -284,3 +284,51 @@ test("find_location はサーバーの個人名の確かめで個人名ありと
   expect(await call(chatTools(state), "find_location", {})).toMatchObject({ sites: 1, skipped: 1 })
   expect(asked).toEqual([])
 })
+
+describe("列の対応を直す（set_plan）・ボタン（offer_action）", () => {
+  const plan = {
+    sheets: ["工事経歴"],
+    headerRow: 2,
+    dataRows: { start: 3, end: 20 },
+    skipRows: [],
+    rowFilter: { excludeHidden: true, excludeColumns: [] },
+    amountUnit: "yen" as const,
+    fields: Object.fromEntries(rows[0] ? Object.keys(rows[0].cells).map((f) => [f, { kind: "missing" as const }]) : []) as never,
+    unusedColumns: [],
+    notes: [],
+  }
+  const shape = { rows: 21, columns: 8 }
+
+  test("合う差分は変更案にし、表は変えない。続けて出す差分は前の差分を重ねた計画で確かめる", async () => {
+    const state = newTurnState(table, undefined, undefined, { plan, shape })
+    const tools = chatTools(state)
+    const res = await call(tools, "set_plan", { fields: { amount: { kind: "column", column: "G", transform: "rule.yenToThousand" } }, reason: "金額は税込の列" })
+    expect(res.ok).toBe(true)
+    expect(res.changes[0]).toContain("G列")
+    expect(state.pending).toEqual([{ kind: "plan", patch: { fields: { amount: { kind: "column", column: 6, transform: "rule.yenToThousand" } }, reason: "金額は税込の列" }, before: { fields: { amount: { kind: "missing" } }, reason: "" } }])
+    expect(state.current).toBe(state.start)
+    expect(state.plan!.plan.fields.amount).toEqual({ kind: "column", column: 6, transform: "rule.yenToThousand" })
+    const again = await call(tools, "set_plan", { fields: { amount: { kind: "column", column: "H", transform: "rule.yenToThousand" } }, reason: "やっぱり H" })
+    expect(again.changes[0]).toMatch(/G列.+ → H列/)
+  })
+
+  test("合わない差分（個人名の項目に匿名化しない変換・シートの外の列）は何も変えずに理由を返す。列の対応が無い案件では使えない", async () => {
+    const state = newTurnState(table, undefined, undefined, { plan, shape })
+    const tools = chatTools(state)
+    const res = await call(tools, "set_plan", { fields: { client: { kind: "column", column: "D", transform: "rule.text" }, place: { kind: "column", column: "Z", transform: "rule.addressCity" } }, reason: "x" })
+    expect(res.ok).toBe(false)
+    expect(res.problems).toHaveLength(2)
+    expect(state.pending).toEqual([])
+    const none = newTurnState(table)
+    expect((await call(chatTools(none), "set_plan", { fields: { jv: { kind: "missing" } }, reason: "x" })).ok).toBe(false)
+  })
+
+  test("offer_action は同じボタンを二度足さない", async () => {
+    const state = newTurnState(table)
+    const tools = chatTools(state)
+    await call(tools, "offer_action", { action: "export" })
+    await call(tools, "offer_action", { action: "export" })
+    await call(tools, "offer_action", { action: "inquiry_excel" })
+    expect(state.actions).toEqual(["export", "inquiry_excel"])
+  })
+})

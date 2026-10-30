@@ -1,4 +1,5 @@
 import type { CellResult, CellStatus, RowResult } from "@/lib/convert/convert"
+import { askReasonOf } from "@/lib/inquiry/inquiry"
 
 export const STATUS: Record<CellStatus, { label: string; cell: string; dot: string }> = {
   ok: { label: "そのまま", cell: "", dot: "bg-muted-foreground/40" },
@@ -15,11 +16,20 @@ export function cellClass(c: CellResult) {
   return needsReview(c) ? STATUS.warning.cell : STATUS[c.status].cell
 }
 
-export type RowFilter = "all" | "error" | "review" | "changed"
+export type RowFilter = "check" | "ask" | "guessed" | "error" | "review" | "changed" | "all"
 
-/** 表の絞り込み。行のどれかのセルが matches なら表に出す */
-export const ROW_FILTERS: Record<RowFilter, { label: string; title: string; matches: (c: CellResult) => boolean }> = {
-  all: { label: "すべて", title: "すべての行", matches: () => true },
+/** AI が推定した値（AI 自身も自信がない値・AI が補った値） */
+const aiGuess = (c: CellResult) => c.guessed === true || (c.status === "ai" && !!c.message)
+
+/** 表の絞り込み。行のどれかのセルが matches なら表に出す（field はそのセルの項目） */
+export const ROW_FILTERS: Record<RowFilter, { label: string; title: string; matches: (c: CellResult, field: string) => boolean }> = {
+  check: {
+    label: "確かめる行",
+    title: "確かめる行（エラー・要確認・AI の推定・顧客への問い合わせが要るセルがある行）",
+    matches: (c, field) => c.status === "error" || needsReview(c) || aiGuess(c) || askReasonOf(field, c) !== undefined,
+  },
+  ask: { label: "問い合わせが要る", title: "顧客への問い合わせが要るセル（データに無い・推定に自信がない）がある行", matches: (c, field) => askReasonOf(field, c) !== undefined },
+  guessed: { label: "AI の推定", title: "AI が推定した・補った値のセルがある行", matches: aiGuess },
   error: { label: "エラー", title: "エラーのセルがある行", matches: (c) => c.status === "error" },
   review: { label: "要確認", title: "黄色（要確認）のセルがある行", matches: needsReview },
   changed: {
@@ -27,12 +37,28 @@ export const ROW_FILTERS: Record<RowFilter, { label: string; title: string; matc
     title: "元データと値が違うセル（ルール・AIで変換、補った値、手直し、顧客の回答）がある行",
     matches: (c) => c.value !== c.original || c.by === "staff" || c.by === "customer" || c.by === "excel" || c.by === "location",
   },
+  all: { label: "すべて", title: "すべての行", matches: () => true },
 }
 
-const FILTERS = Object.keys(ROW_FILTERS) as RowFilter[]
+export const FILTER_ORDER = Object.keys(ROW_FILTERS) as RowFilter[]
 
 /** 行がどの絞り込みに合うか（セルを1回ずつ見る） */
 export function rowFilters<F extends string>(row: RowResult<F>): Record<RowFilter, boolean> {
-  const cells = Object.values<CellResult>(row.cells)
-  return Object.fromEntries(FILTERS.map((f) => [f, cells.some(ROW_FILTERS[f].matches)])) as Record<RowFilter, boolean>
+  const cells = Object.entries<CellResult>(row.cells)
+  return Object.fromEntries(FILTER_ORDER.map((f) => [f, cells.some(([field, c]) => ROW_FILTERS[f].matches(c, field))])) as Record<RowFilter, boolean>
+}
+
+/** 絞り込みごとの行数。csv は CSV に載せる行、all は表に出る行（載せない行も含む） */
+export function countRowFilters<F extends string>(rows: readonly RowResult<F>[], inclusion: ReadonlyMap<string, { included: boolean }>, matches?: ReadonlyMap<string, Record<RowFilter, boolean>>) {
+  const c = Object.fromEntries(FILTER_ORDER.map((f) => [f, { csv: 0, all: 0 }])) as Record<RowFilter, { csv: number; all: number }>
+  for (const r of rows) {
+    const included = inclusion.get(r.key)?.included ?? false
+    const m = matches?.get(r.key) ?? rowFilters(r)
+    for (const f of FILTER_ORDER) {
+      if (!m[f]) continue
+      c[f].all++
+      if (included) c[f].csv++
+    }
+  }
+  return c
 }

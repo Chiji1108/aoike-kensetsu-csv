@@ -5,9 +5,9 @@ export type CaseStatus = (typeof CASE_STATUSES)[number]
 export const CASE_STATUS_LABELS: Record<CaseStatus, string> = { converting: "変換中", inquiring: "問い合わせ中", done: "完了" }
 
 /** source: 届いたファイル（Excel・CSV・PDF）。inquiry_sheet: 記入用Excel。answer: 返ってきた Excel。edit_sheet: 職員が直して上げた編集用の Excel。csv: 出力した CSV */
-export const FILE_KINDS = ["source", "inquiry_sheet", "answer", "edit_sheet", "csv"] as const
+export const FILE_KINDS = ["source", "inquiry_sheet", "answer", "edit_sheet", "csv", "final_sheet"] as const
 export type FileKind = (typeof FILE_KINDS)[number]
-export const FILE_KIND_LABELS: Record<FileKind, string> = { source: "届いたファイル", inquiry_sheet: "記入用Excel", answer: "返ってきたExcel", edit_sheet: "直したExcel", csv: "出力したCSV" }
+export const FILE_KIND_LABELS: Record<FileKind, string> = { source: "届いたファイル", inquiry_sheet: "記入用Excel", answer: "返ってきたExcel", edit_sheet: "直したExcel", csv: "出力したCSV", final_sheet: "取り込み用のExcel" }
 
 export const FILE_STATUSES = ["pending", "ready"] as const
 

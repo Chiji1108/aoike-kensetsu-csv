@@ -5,6 +5,7 @@ import type { Basis, SelectionMode, TaxMode } from "../convert/koji-selection"
 import { basisSchema, cellEditSchema, fieldIdSchema, legacySelection, selectionSchema, taxSchema } from "../schemas"
 import type { KojiFieldId } from "../spec/koji-keireki"
 import { foundSchema, siteRefSchema, SOURCE_LABELS, type Found } from "../location/sites"
+import { planPatchSchema, type PlanPatch } from "../convert/plan-patch"
 
 /**
  * 変更案。AI（チャット）や返ってきた Excel が出した変更は、すぐには表に入れず、職員が項目ごとかまとめて承認したものだけを
@@ -27,6 +28,11 @@ export type ChatChange =
   | { kind: "settings"; tax?: TaxMode; selection?: SelectionMode; basis?: Basis }
   /** 全体ルール・顧客ルールへの追記（承認すると保存する） */
   | { kind: "rule"; scope: RuleScope; text: string }
+  /**
+   * 列の対応（計画）の差分（convert/plan-patch.ts）。承認すると、そのときの計画に重ねて変換し直す（表の値は変換し直した値になり、手直しはその上に重なる）。
+   * 表の変更ではないので、ここ（applyChanges）では何もしない。before は変更案を作ったときの同じ項目の値（「前 → 後」で見せる。前の変更案には無い）
+   */
+  | { kind: "plan"; patch: PlanPatch; before?: PlanPatch }
   /**
    * 調べた工事場所（lib/location）。同じ現場（工事名・注文者）の行の都道府県・場所名をまとめて変える。承認すると要確認の値として入り、
    * 顧客の覚えた結果に足す（server/location.ts の rememberLocations。site は外に送ってよい値だけ）
@@ -165,6 +171,7 @@ export function applyChanges<T extends Overlay>(target: T, edited: readonly RowR
         break
       }
       case "rule":
+      case "plan":
         break
       default:
         c satisfies never
@@ -193,6 +200,7 @@ export const chatChangeSchema: z.ZodType<ChatChange> = z.discriminatedUnion("kin
       return { ...c, ...(s ? { selection: s } : {}) }
     }),
   z.object({ kind: z.literal("rule"), scope: z.enum(["global", "customer"]), text: z.string() }),
+  z.object({ kind: z.literal("plan"), patch: planPatchSchema, before: planPatchSchema.optional() }),
   foundSchema.extend({
     kind: z.literal("location"),
     site: siteRefSchema,

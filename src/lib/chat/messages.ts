@@ -1,6 +1,9 @@
 import type { UIMessage } from "ai"
 import { z } from "zod"
 import { chatChangeSchema, proposalSchema, type ChatChange, type Proposal } from "./proposals"
+import type { MappingPlan } from "../convert/plan"
+import type { SheetShape } from "../convert/plan-patch"
+import type { KojiFieldId } from "../spec/koji-keireki"
 
 /**
  * 返事ごとの記録（画面に出す）。usd はこの返事の費用、caseUsd は返事のあとの案件の合計。carryover は返事のあと、この会話で去年のコードを添えたか
@@ -22,9 +25,15 @@ export type ChatDataParts = {
   carryover: { fiscalYear: number; codes: number; skipped?: string }
   /** 工事場所の一括調査を始めるボタン（チャットの find_location。件数と費用の目安。始めるのは職員） */
   "location-offer": { sites: number; memorized: number; usd: number }
+  /** 画面の決まった処理を始めるボタン（チャットの offer_action） */
+  action: { action: ChatAction }
 }
 
 export type ChatMessage = UIMessage<ChatMetadata, ChatDataParts>
+
+/** 返事に付けるボタン（画面の決まった処理を始める）。export: 書き出す前の確認、inquiry_excel: 問い合わせの Excel、edit_excel: 編集用の Excel */
+export const CHAT_ACTIONS = ["export", "inquiry_excel", "edit_excel"] as const
+export type ChatAction = (typeof CHAT_ACTIONS)[number]
 
 /** 保存した会話を読むときの形の確かめ（AI SDK の validateUIMessages に渡す） */
 export const chatMetadataSchema: z.ZodType<ChatMetadata> = z.object({
@@ -41,6 +50,7 @@ export const chatDataSchemas = {
   "proposal-content": z.object({ proposal: proposalSchema, changes: z.array(chatChangeSchema) }),
   carryover: z.object({ fiscalYear: z.number().int(), codes: z.number().int().min(0), skipped: z.string().optional() }),
   "location-offer": z.object({ sites: z.number().int().min(0), memorized: z.number().int().min(0), usd: z.number().min(0) }),
+  action: z.object({ action: z.enum(CHAT_ACTIONS) }),
 }
 
 /** 会話を終えた印（画面にだけ出す。AI の履歴には入らない） */
@@ -62,6 +72,8 @@ export type ChatRequest = {
   /** 元データの見出しと列の対応（lib/chat/context.ts） */
   context: string
   sourceFileId: string | null
+  /** 今の列の対応と計画の元のシートの大きさ（set_plan の確かめ） */
+  plan: { plan: MappingPlan<KojiFieldId>; shape: SheetShape } | null
   /** 去年の案件のコードを参考に添える（「去年のやり方で直す」） */
   carryover?: boolean
   /** 去年の元の Excel の配置技術者の列の値（去年のコードから個人名を消すのに使う） */

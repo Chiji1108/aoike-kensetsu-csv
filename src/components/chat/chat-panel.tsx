@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react"
 import { useChat } from "@ai-sdk/react"
 import { DefaultChatTransport, validateUIMessages } from "ai"
 import { z } from "zod"
-import { Brain, Code2, History, Loader2, MessageSquare, Send, Square, Table2, Trash2, X } from "lucide-react"
+import { Brain, Code2, Download, FileSpreadsheet, History, Loader2, MessageSquare, MessageSquareText, Paperclip, Send, Square, Table2, Trash2, X } from "lucide-react"
 import { toast } from "sonner"
 import { Markdown } from "@/components/chat/markdown"
 import { ProposalCard, type ProposalActions } from "@/components/chat/proposal-card"
@@ -15,7 +15,9 @@ import { Message, MessageContent, MessageFooter } from "@/components/ui/message"
 import { MessageScroller, MessageScrollerButton, MessageScrollerContent, MessageScrollerItem, MessageScrollerProvider, MessageScrollerViewport } from "@/components/ui/message-scroller"
 import { Trace, TraceCollapsible, TraceCollapsibleContent, TraceCollapsibleTrigger, TraceIcon, TraceLine, TraceTitle } from "@/components/ui/trace"
 import type { TableView } from "@/lib/cases/view"
-import { chatDataSchemas, chatMetadataSchema, conversationUsd, type ChatMessage, type ChatRequest } from "@/lib/chat/messages"
+import { chatDataSchemas, chatMetadataSchema, conversationUsd, type ChatAction, type ChatMessage, type ChatRequest } from "@/lib/chat/messages"
+import type { MappingPlan } from "@/lib/convert/plan"
+import type { KojiFieldId } from "@/lib/spec/koji-keireki"
 import type { ChatChange, Proposal } from "@/lib/chat/proposals"
 import { Cost } from "@/components/cost"
 import type { UsdJpy } from "@/lib/fx"
@@ -32,7 +34,11 @@ async function loadHistory(caseId: string): Promise<{ messages: ChatMessage[]; c
   const history = historySchema.parse(await res.json())
   // validateUIMessages は空の並びを受け付けない
   const messages = history.messages.length
-    ? await validateUIMessages<ChatMessage>({ messages: history.messages, metadataSchema: chatMetadataSchema.optional(), dataSchemas: { proposal: chatDataSchemas.proposal, carryover: chatDataSchemas.carryover } })
+    ? await validateUIMessages<ChatMessage>({
+        messages: history.messages,
+        metadataSchema: chatMetadataSchema.optional(),
+        dataSchemas: { proposal: chatDataSchemas.proposal, carryover: chatDataSchemas.carryover, "location-offer": chatDataSchemas["location-offer"], action: chatDataSchemas.action },
+      })
     : []
   return { messages, carried: history.carryover }
 }
@@ -49,6 +55,8 @@ const TOOL_LABELS: Record<string, string> = {
   add_rows: "工事を足す変更案",
   ask_customer: "問い合わせの変更案",
   set_selection: "7割の設定の変更案",
+  set_plan: "列の対応の変更案",
+  offer_action: "ボタンを出す",
   ask_staff: "聞き返し",
   propose_rule: "ルールの追記案",
   find_location: "工事場所を調べる",
@@ -80,6 +88,16 @@ export type ChatPanelProps = {
   onClose: () => void
   /** 工事場所の一括調査（返事の「調べ始める」は案件の画面と同じものを動かす） */
   location: LocationSearch
+  /** 会話の最初に出す変換の報告（案件の作業から作る。保存しない） */
+  report: React.ReactNode
+  /** チャット欄に落とした・付けたファイル（種類は案件の画面が見分ける） */
+  onFiles: (files: File[]) => void
+  /** 返事のボタン（書き出す前の確認・問い合わせ・編集用の Excel） */
+  onAction: (action: ChatAction) => void
+  /** 今の列の対応（列の対応の変更案を「今 → 案」で出す） */
+  plan: MappingPlan<KojiFieldId> | null
+  /** 狭い画面で、閉じるボタンを出すか（広い画面ではチャットは閉じない） */
+  closable: boolean
 }
 
 /**
@@ -87,7 +105,9 @@ export type ChatPanelProps = {
  * 会話は案件に保存し（R2）、開き直すと続きから。「会話を終える」で AI に渡したファイルを消す
  */
 export function ChatPanel(props: ChatPanelProps) {
-  const { caseId, open, proposals, changes, view, actions, busy, fx, carryover, onClose } = props
+  const { caseId, open, proposals, changes, view, actions, busy, fx, carryover, onClose, closable } = props
+  const [dragging, setDragging] = useState(false)
+  const fileInput = useRef<HTMLInputElement>(null)
   const [input, setInput] = useState("")
   const [ending, setEnding] = useState(false)
   const live = useRef(props)
@@ -190,15 +210,37 @@ export function ChatPanel(props: ChatPanelProps) {
       void send(a === "yes" ? "はい" : "いいえ").then((sent) => sent && actions.answer(id, a))
     },
     canSend: ready && !working,
+    undo: actions.undo,
+    undoState: actions.undoState,
   }
   const total = conversationUsd(messages)
 
   return (
-    <aside className={cn("fixed inset-y-0 right-0 z-40 flex w-[460px] max-w-full flex-col border-l bg-background shadow-xl", !open && "hidden")} data-testid="chat-panel">
+    <aside
+      className={cn(
+        "fixed inset-y-0 right-0 z-40 flex w-[var(--aside-width)] max-w-full flex-col border-l bg-background shadow-xl xl:top-14 xl:z-20 xl:shadow-none",
+        !open && "hidden",
+        dragging && "ring-2 ring-violet-400 ring-inset",
+      )}
+      data-testid="chat-panel"
+      onDragOver={(e) => {
+        if (![...e.dataTransfer.types].includes("Files")) return
+        e.preventDefault()
+        setDragging(true)
+      }}
+      onDragLeave={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragging(false)
+      }}
+      onDrop={(e) => {
+        e.preventDefault()
+        setDragging(false)
+        if (e.dataTransfer.files.length) props.onFiles([...e.dataTransfer.files])
+      }}
+    >
       <header className="flex items-center gap-2 border-b px-4 py-3">
         <MessageSquare className="size-4 text-violet-600" />
         <div className="min-w-0 flex-1">
-          <div className="text-sm font-semibold">チャットで直す</div>
+          <div className="text-sm font-semibold">チャット</div>
           <div className="text-xs text-muted-foreground" data-testid="chat-cost">
             この会話の AI の費用 <Cost usd={total} fx={fx} />
           </div>
@@ -207,15 +249,36 @@ export function ChatPanel(props: ChatPanelProps) {
           {ending ? <Loader2 className="animate-spin" /> : <Trash2 />}
           会話を終える
         </Button>
-        <Button size="icon-sm" variant="ghost" onClick={onClose} aria-label="チャットを閉じる">
-          <X />
-        </Button>
+        {closable && (
+          <Button size="icon-sm" variant="ghost" onClick={onClose} aria-label="チャットを閉じる">
+            <X />
+          </Button>
+        )}
       </header>
 
       <MessageScrollerProvider autoScroll>
         <MessageScroller className="flex-1">
           <MessageScrollerViewport>
             <MessageScrollerContent className="gap-4 px-4 py-3" data-testid="chat-messages">
+              {props.report}
+              {carryover && history === "loaded" && !carried && (
+                <div className="grid gap-2 rounded-lg border bg-violet-50/60 px-3 py-2 text-xs dark:bg-violet-950/30" data-testid="chat-carryover">
+                  <span className="text-muted-foreground">
+                    {carryover.fiscalYear}年度の案件があります。顧客ルールと去年承認したコードを添えて直します。
+                  </span>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="w-fit"
+                    disabled={!ready || working || !carryover.ready}
+                    title={carryover.ready ? undefined : "去年の Excel を読んでいます"}
+                    onClick={() => void send(CARRYOVER_TEXT, { carryover: true })}
+                    data-testid="chat-carryover-send"
+                  >
+                    <History /> 去年のやり方で直す
+                  </Button>
+                </div>
+              )}
               {history === "loading" && (
                 <div className="flex items-center gap-2 text-xs text-muted-foreground">
                   <Loader2 className="size-3.5 animate-spin" /> 会話を読んでいます…
@@ -226,11 +289,8 @@ export function ChatPanel(props: ChatPanelProps) {
                   {history.error}
                 </div>
               )}
-              {history === "loaded" && messages.length === 0 && (
-                <p className="text-sm text-muted-foreground">
-                  例:「完成年月は引渡日にして」「工事名の空白を取って」「注文者が字数を超えたら㈱にして」「今日のやり方を顧客ルールに追加して」。AI
-                  は案件のファイルと今の表をコードで読み、直した案を変更案として出します。承認したものだけが表に入ります。
-                </p>
+              {history === "loaded" && messages.length === 0 && props.ready && (
+                <p className="text-xs text-muted-foreground">例:「金額は税込の列で」「完成年月は引渡日にして」「CSV を出して」</p>
               )}
               {messages.map((m, i) => (
                 <MessageScrollerItem key={m.id} messageId={m.id} scrollAnchor={m.role === "user"}>
@@ -244,6 +304,8 @@ export function ChatPanel(props: ChatPanelProps) {
                     busy={busy}
                     fx={fx}
                     location={props.location}
+                    onAction={props.onAction}
+                    plan={props.plan}
                   />
                 </MessageScrollerItem>
               ))}
@@ -263,19 +325,6 @@ export function ChatPanel(props: ChatPanelProps) {
         </MessageScroller>
       </MessageScrollerProvider>
 
-      {carryover && history === "loaded" && !carried && (
-        <div className="flex items-center gap-2 border-t bg-violet-50/60 px-3 py-2 text-xs dark:bg-violet-950/30" data-testid="chat-carryover">
-          <span className="min-w-0 flex-1 text-muted-foreground">
-            {carryover.fiscalYear}年度の案件があります。顧客ルールと、去年のチャットで承認したコード（参考。そのまま実行はしません）を添えて「{CARRYOVER_TEXT}」を送ります。
-          </span>
-          <Button size="sm" variant="outline" disabled={!ready || working || !carryover.ready}
-            title={carryover.ready ? undefined : "去年の Excel を読んでいます"}
-            onClick={() => void send(CARRYOVER_TEXT, { carryover: true })} data-testid="chat-carryover-send">
-            <History /> 去年のやり方で直す
-          </Button>
-        </div>
-      )}
-
       <form
         className="border-t p-3"
         onSubmit={(e) => {
@@ -294,12 +343,27 @@ export function ChatPanel(props: ChatPanelProps) {
                 void send()
               }
             }}
-            placeholder={ready ? "指示を入力（⌘+Enter で送信）" : "変換してから指示できます（PDF だけの案件はそのまま指示できます）"}
+            placeholder={ready ? "指示（⌘+Enter で送る）" : "ファイルを落とすと変換します"}
             disabled={!ready}
             className="min-h-16 text-sm"
             data-testid="chat-input"
           />
-          <InputGroupAddon align="block-end" className="justify-end">
+          <InputGroupAddon align="block-end" className="justify-between">
+            <InputGroupButton size="icon-xs" variant="ghost" onClick={() => fileInput.current?.click()} aria-label="ファイルを付ける" title="ファイルを付ける">
+              <Paperclip />
+            </InputGroupButton>
+            <input
+              ref={fileInput}
+              type="file"
+              multiple
+              accept=".xlsx,.xls,.csv,.pdf"
+              className="sr-only"
+              data-testid="chat-file-input"
+              onChange={(e) => {
+                if (e.target.files?.length) props.onFiles([...e.target.files])
+                e.target.value = ""
+              }}
+            />
             {working ? (
               <InputGroupButton size="icon-xs" variant="outline" onClick={stopTurn} aria-label="止める" data-testid="chat-stop">
                 <Square />
@@ -326,9 +390,13 @@ function ChatMessageView({
   busy,
   fx,
   location,
+  onAction,
+  plan,
 }: {
   message: ChatMessage
   location: LocationSearch
+  onAction: (a: ChatAction) => void
+  plan: MappingPlan<KojiFieldId> | null
   streaming: boolean
   proposals: ReadonlyMap<string, Proposal>
   changes: ReadonlyMap<string, readonly ChatChange[]>
@@ -361,7 +429,8 @@ function ChatMessageView({
                 <div className="text-xs whitespace-pre-wrap text-muted-foreground">{p.text}</div>
               </Step>
             ) : null
-          if (p.type === "data-carryover")
+          // 去年のコードを添えた印は、その返事で会話の記録に添えた印が立ったときだけ出す（止めた・失敗した返事の部品は出さない。同じ印を2回描かない）
+          if (p.type === "data-carryover" && meta?.carryover === true)
             return (
               <p key={i} className="text-xs text-muted-foreground" data-testid="chat-carryover-note">
                 {p.data.skipped
@@ -377,7 +446,8 @@ function ChatMessageView({
                 <LocationSearchStatus search={location} fx={fx} testId="chat-location" />
               </div>
             )
-          if (p.type === "data-proposal") return <ProposalCard key={i} proposal={proposals.get(p.data.id)} changes={changes.get(p.data.id)} view={view} actions={actions} busy={busy} />
+          if (p.type === "data-proposal") return <ProposalCard key={i} proposal={proposals.get(p.data.id)} changes={changes.get(p.data.id)} view={view} actions={actions} busy={busy} plan={plan} />
+          if (p.type === "data-action") return <ActionButton key={i} action={p.data.action} onAction={onAction} />
           if (p.type.startsWith("tool-")) {
             const name = p.type.slice(5)
             const input = (p as { input?: { code?: string } }).input
@@ -411,6 +481,21 @@ function ChatMessageView({
         )}
       </MessageContent>
     </Message>
+  )
+}
+
+const ACTION_BUTTONS = {
+  export: { label: "書き出す前の確認を開く", icon: <FileSpreadsheet /> },
+  inquiry_excel: { label: "顧客への問い合わせを開く", icon: <MessageSquareText /> },
+  edit_excel: { label: "編集用の Excel を落とす", icon: <Download /> },
+} satisfies Record<ChatAction, { label: string; icon: React.ReactNode }>
+
+function ActionButton({ action, onAction }: { action: ChatAction; onAction: (a: ChatAction) => void }) {
+  const b = ACTION_BUTTONS[action]
+  return (
+    <Button size="sm" variant="outline" className="w-fit" onClick={() => onAction(action)} data-testid="chat-action" data-action={action}>
+      {b.icon} {b.label}
+    </Button>
   )
 }
 

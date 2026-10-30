@@ -1,9 +1,8 @@
-import { readFileSync } from "node:fs"
 import { expect, test, type Page, type Route } from "@playwright/test"
 import { createUIMessageStream, createUIMessageStreamResponse } from "ai"
 import type { ChatMetadata } from "../src/lib/chat/messages"
 import type { ChatChange, Proposal } from "../src/lib/chat/proposals"
-import { callsServerFn, convertFixture, deleteCustomer, open, openNewCase, reload } from "./helpers"
+import { callsServerFn, convertFixture, csvCount, deleteCustomer, downloadCsv, open, openNewCase, reload, showAllRows } from "./helpers"
 import { syntheticPdf } from "./pdf"
 
 const FIXTURE = new URL("../fixtures/sample-messy.xlsx", import.meta.url).pathname
@@ -78,14 +77,6 @@ async function send(page: Page, text: string) {
   await page.getByTestId("chat-send").click()
 }
 
-async function downloadCsv(page: Page) {
-  const button = page.getByTestId("download-button")
-  const downloading = page.waitForEvent("download")
-  await button.click()
-  if (await page.getByRole("alertdialog").isVisible()) await page.getByRole("button", { name: "このままダウンロード" }).click()
-  return new TextDecoder("shift_jis").decode(readFileSync((await (await downloading).path())!))
-}
-const csvCount = async (page: Page) => Number(/（(\d+)件/.exec((await page.getByTestId("download-button").textContent()) ?? "")![1])
 
 const created: string[] = []
 const pageErrors: string[] = []
@@ -110,7 +101,6 @@ test("チャットの変更案を一覧で確かめて承認すると、表と C
       return { text: MARKDOWN, changes: [{ kind: "cell", rowKey: row.key, field: "client", edit: { value: target.to, by: "chat" } }] }
     },
   ])
-  await page.getByTestId("chat-open").click()
   await send(page, "注文者の株式会社は㈱にして")
 
   const proposal = page.getByTestId("proposal")
@@ -126,7 +116,6 @@ test("チャットの変更案を一覧で確かめて承認すると、表と C
   // 円はサーバーが為替のサービスから取れたときだけ出る（取れたときはレートの日付も出る）
   const costText = (await page.getByTestId("case-cost").textContent()) ?? ""
   if (costText.includes("円")) expect(costText).toMatch(/\d{2}\/\d{2} のレート/)
-  await expect(page.getByTestId("chat-open")).toContainText("1")
 
   expect(await downloadCsv(page)).not.toContain(target.to)
   await proposal.getByTestId("proposal-open").click()
@@ -139,20 +128,25 @@ test("チャットの変更案を一覧で確かめて承認すると、表と C
   await item.getByTestId("proposal-item-apply").click()
   await expect(page.getByTestId("proposal-dialog")).toBeHidden()
   await expect(page.getByTestId("proposal-closed")).toHaveText("変更案: 反映 1 件・却下 0 件")
+  await showAllRows(page)
   await expect(page.locator(`tr[data-row-key="${target.key}"]`)).toContainText(target.to)
   expect(await downloadCsv(page)).toContain(target.to)
 
   await expect(page.getByTestId("save-status")).toHaveAttribute("data-status", "saved")
   await reload(page)
   await expect(page.getByTestId("preview-table")).toBeVisible({ timeout: 60_000 })
+  await showAllRows(page)
   await expect(page.locator(`tr[data-row-key="${target.key}"]`)).toContainText(target.to)
 })
 
-test("チャット欄を閉じても進めている指示は続き、開き直すと会話と変更案が残る", async ({ page }) => {
+test("狭い画面: チャットは表に重ねて開き、閉じても進めている指示は続き、開き直すと会話と変更案が残る", async ({ page }) => {
+  await page.setViewportSize({ width: 1000, height: 900 })
   const { customer } = await convertFixture(page, FIXTURE)
   created.push(customer)
-  await fakeChat(page, [({ table }) => ({ text: "1行を外す案です。", changes: [{ kind: "include", rowKey: companyRow(table.rows).key, include: false }], delayMs: 3_000 })])
+  await expect(page.getByTestId("chat-panel")).toBeHidden()
   await page.getByTestId("chat-open").click()
+  await expect(page.getByTestId("case-report")).toHaveAttribute("data-phase", "done")
+  await fakeChat(page, [({ table }) => ({ text: "1行を外す案です。", changes: [{ kind: "include", rowKey: companyRow(table.rows).key, include: false }], delayMs: 3_000 })])
   await send(page, "注文者が株式会社の最初の行を外して")
   await page.getByRole("button", { name: "チャットを閉じる" }).click()
   await expect(page.getByTestId("chat-panel")).toBeHidden()
@@ -170,7 +164,6 @@ test("変更案の無い聞き返しの答えは、AI に送れたときだけ�
     () => ({ text: "この案件では別の指示を処理しています", changes: [], refuse: 409 }),
     () => ({ text: "では㈱にする案を出します。", changes: [] }),
   ])
-  await page.getByTestId("chat-open").click()
   await send(page, "注文者を短くして")
   const confirmation = page.getByTestId("confirmation")
   await confirmation.getByTestId("confirmation-yes").click()
@@ -186,7 +179,6 @@ test("失敗した回でも、その回の費用は画面の案件の合計に�
   const { customer } = await convertFixture(page, FIXTURE)
   created.push(customer)
   await fakeChat(page, [() => ({ text: "途中まで進めました。", changes: [], caseUsd: 3.25, failAfterCost: "AI の呼び出しに失敗しました" })])
-  await page.getByTestId("chat-open").click()
   await send(page, "工事名の空白を取って")
   await expect(page.getByTestId("chat-error")).toContainText("AI の呼び出しに失敗しました")
   await expect(page.getByTestId("case-cost")).toContainText("$3.25")
@@ -201,7 +193,6 @@ test("聞き返しに答えるまで承認できない。「いいえ」で全�
     return { text: "この行を CSV から外す案です。", changes: [{ kind: "include", rowKey: key, include: false }], question: "この工事は外してよいですか" }
   }
   await fakeChat(page, [exclude, (body) => ({ ...exclude(body), caseUsd: 10.5 })])
-  await page.getByTestId("chat-open").click()
   const before = await csvCount(page)
 
   await send(page, "注文者が株式会社の最初の行を外して")
@@ -230,7 +221,6 @@ test("本物の AI: 顧客ルールへの追記案を承認すると顧客ルー
   const { customer, caseUrl } = await convertFixture(page, FIXTURE)
   created.push(customer)
   const rule = `E2E${Date.now()}`
-  await page.getByTestId("chat-open").click()
   await send(page, `顧客ルールに「注文者の株式会社は㈱にする（${rule}）」と1行だけ追加する案を出して。表は変えないで`)
   await expect(page.getByTestId("chat-reply-cost")).toBeVisible({ timeout: 300_000 })
   const proposal = page.getByTestId("proposal").last()
@@ -247,7 +237,6 @@ test("本物の AI: 顧客ルールへの追記案を承認すると顧客ルー
   await proposal.getByTestId("proposal-apply-all").click()
   await expect(proposal).toContainText("未決")
   await open(page, caseUrl)
-  await page.getByTestId("chat-open").click()
   await page.getByTestId("proposal").last().getByTestId("proposal-apply-all").click()
   await expect(page.getByTestId("proposal-closed").last()).toContainText("反映")
   await page.getByRole("link", { name: customer }).click()
@@ -286,12 +275,12 @@ test("PDF だけの案件: チャットで AI が作った行は変更案にな�
       }
     },
   ])
-  await page.getByTestId("chat-open-pdf").click()
+  await expect(page.getByTestId("case-report")).toHaveAttribute("data-phase", "noSheet")
   await send(page, "PDF から工事経歴の表を作って")
   const proposal = page.getByTestId("proposal")
   await expect(proposal).toContainText("工事を足す 2")
   await proposal.getByTestId("proposal-apply-all").click()
-  await page.getByRole("button", { name: "チャットを閉じる" }).click()
+  await showAllRows(page)
   const rows = page.locator('[data-testid="preview-table"] tbody tr[data-row-key]')
   await expect(rows).toHaveCount(2)
   await expect(rows.first()).toContainText("サンプル事務所内装改修工事")
@@ -303,6 +292,7 @@ test("PDF だけの案件: チャットで AI が作った行は変更案にな�
 
   await expect(page.getByTestId("save-status")).toHaveAttribute("data-status", "saved")
   await open(page, caseUrl)
+  await showAllRows(page)
   await expect(rows).toHaveCount(2)
 })
 
@@ -310,14 +300,13 @@ test("本物の AI: PDF だけの案件で AI が一から表を作る", async (
   test.skip(process.env.E2E_LIVE_AI !== "1", "E2E_LIVE_AI=1 のときだけ")
   const { customer } = await openPdfCase(page)
   created.push(customer)
-  await page.getByTestId("chat-open-pdf").click()
   await send(page, "PDF から工事経歴の表を作って。業種はどちらも内装仕上（19）")
   await expect(page.getByTestId("chat-reply-cost")).toBeVisible({ timeout: 300_000 })
   const proposal = page.getByTestId("proposal").last()
   if (await proposal.getByTestId("confirmation-yes").isVisible()) await proposal.getByTestId("confirmation-yes").click()
   await expect(proposal).toContainText("工事を足す 2")
   await proposal.getByTestId("proposal-apply-all").click()
-  await page.getByRole("button", { name: "チャットを閉じる" }).click()
+  await showAllRows(page)
   await expect(page.locator('[data-testid="preview-table"] tbody tr[data-row-key]')).toHaveCount(2)
   expect(await downloadCsv(page)).toContain(",5500,")
 })
@@ -327,7 +316,6 @@ test("本物の AI: 指示 → 変更案 → 承認 → CSV。会話は開き直
   test.skip(process.env.E2E_LIVE_AI !== "1", "E2E_LIVE_AI=1 のときだけ")
   const { customer, caseUrl } = await convertFixture(page, FIXTURE)
   created.push(customer)
-  await page.getByTestId("chat-open").click()
   await send(page, "注文者の「株式会社」を「㈱」にして。ほかは変えないで")
   await expect(page.getByTestId("chat-reply-cost")).toBeVisible({ timeout: 300_000 })
   const proposal = page.getByTestId("proposal").last()
@@ -339,7 +327,6 @@ test("本物の AI: 指示 → 変更案 → 承認 → CSV。会話は開き直
 
   await expect(page.getByTestId("save-status")).toHaveAttribute("data-status", "saved")
   await open(page, caseUrl)
-  await page.getByTestId("chat-open").click()
   await expect(page.getByTestId("chat-assistant")).toHaveCount(1)
   await expect(page.getByTestId("proposal-closed")).toContainText("反映")
   // 保存した会話には変更案の id だけを残す（中身は proposals/<id>.json）
@@ -361,7 +348,6 @@ test("本物の AI: 指示 → 変更案 → 承認 → CSV。会話は開き直
   await open(page, caseUrl)
   await expect.poll(async () => Number(/\$([\d.]+)/.exec((await page.getByTestId("case-cost").textContent()) ?? "")![1])).toBeGreaterThan(costBefore)
 
-  await page.getByTestId("chat-open").click()
   await page.getByTestId("chat-end").click()
   await expect(page.getByTestId("chat-messages")).toContainText("会話を終えました")
 })

@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process"
 import { expect, test, type Page } from "@playwright/test"
-import { attachAndConvert, callsServerFn, confirmDelete, deleteCustomer, open, openNewCase, reload } from "./helpers"
+import { attachAndConvert, callsServerFn, confirmDelete, deleteCustomer, open, openNewCase, reload, showAllRows } from "./helpers"
 
 const FIXTURE = new URL("../fixtures/sample-messy.xlsx", import.meta.url).pathname
 const ROWS = '[data-testid="preview-table"] tbody tr[data-row-key]'
@@ -38,6 +38,7 @@ test("顧客と案件を作り、変換と手直しを保存して再読み込�
   await test.step("Excel を付けると変換の元になり、変換できる", async () => {
     await attachAndConvert(page, FIXTURE)
     await expect(page.locator('[data-testid="file-list"] [data-file="sample-messy.xlsx"]')).toContainText("変換の元")
+    await showAllRows(page)
   })
 
   const first = page.locator(ROWS).first()
@@ -64,6 +65,7 @@ test("顧客と案件を作り、変換と手直しを保存して再読み込�
     })
     await reload(page)
     await expect(page.getByTestId("preview-table")).toBeVisible({ timeout: 60_000 })
+    await showAllRows(page)
     await expect(page.locator(`tr[data-row-key="${key}"] td[data-field="place"]`)).toContainText("保存テスト市")
     await expect(page.locator(`tr[data-row-key="${otherKey}"]`)).toHaveAttribute("data-included", "0")
     await expect(page.getByTestId("save-status")).toHaveAttribute("data-status", "saved")
@@ -142,12 +144,13 @@ test("顧客と案件を作り、変換と手直しを保存して再読み込�
   })
 })
 
-test("列の対応を考えている途中で閉じても、開き直すと変換の元が残っていて考え直す", async ({ page }) => {
+test("列の対応を考えている途中で閉じても、開き直すと変換の元が残っていて考え直し、そのまま変換する", async ({ page }) => {
   const { customer } = await openNewCase(page)
   // AI の計画の返事を止め、考えている途中のまま保存させる
   await page.route((url) => callsServerFn(url.href, ["planWithAi"]), () => {})
   await page.getByTestId("file-input").setInputFiles(FIXTURE)
-  await expect(page.getByTestId("plan-source")).toContainText("考えています")
+  await expect(page.getByTestId("case-report")).toHaveAttribute("data-phase", "planning")
+  await expect(page.getByTestId("report-progress")).toContainText("考えています")
   await waitSaved(page)
   await page.unrouteAll({ behavior: "ignoreErrors" })
 
@@ -155,9 +158,9 @@ test("列の対応を考えている途中で閉じても、開き直すと変�
   await reload(page)
   await replanned
   await expect(page.getByTestId("current-source")).toBeVisible()
-  await expect(page.getByTestId("plan-source")).not.toContainText("考えています", { timeout: 120_000 })
-  await page.getByTestId("convert-button").click()
+  // 「変換する」のボタンは無い。考え終えると自動で変換する
   await expect(page.getByTestId("preview-table")).toBeVisible({ timeout: 180_000 })
+  await expect(page.getByTestId("case-report")).toHaveAttribute("data-phase", "done")
   await deleteCustomer(page, customer)
 })
 

@@ -193,4 +193,12 @@ describe("個人名を含みうる項目（注文者・工事名）には匿名�
     expect(r.changed).toEqual(["注文者", "工事名"])
     expect(reviewPlanTransforms(KOJI_KEIREKI, fallback).changed).toEqual([])
   })
+
+  test("保存した計画の注文者・工事名の定数（匿名化を通らない）は、新しい計画と同じ決まりで外す。ほかの項目の定数は残す", () => {
+    const saved = { ...fallback, fields: { ...fallback.fields, client: { kind: "constant" as const, value: "山田太郎", reason: "全部同じ" }, jv: { kind: "constant" as const, value: "0", reason: "JV なし" } } }
+    const r = reviewPlanTransforms(KOJI_KEIREKI, saved)
+    expect(r.plan.fields.client).toEqual({ kind: "missing" })
+    expect(r.plan.fields.jv).toEqual(saved.fields.jv)
+    expect(r.changed).toEqual(["注文者"])
+  })
 })

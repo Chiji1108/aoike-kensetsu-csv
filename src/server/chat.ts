@@ -9,6 +9,8 @@ import { ENDED_TEXT, type ChatHistory, type ChatMessage, type ChatMetadata } fro
 import { approvedChatProposals, carryoverPrompt, cleanCarryoverCodes, codesFromUi, knownWords, namesForCarryover, type Carryover } from "@/lib/chat/carryover"
 import { tryParseJson } from "@/lib/json"
 import { savedAiCacheSchema, savedWorkSchema } from "@/lib/cases/state"
+import { mappingPlanSchema } from "@/lib/convert/plan-schema"
+import { sheetShapeSchema } from "@/lib/convert/plan-patch"
 import { newProposal, proposalKey, proposalPrefix, proposalRecordSchema, type ProposalRecord } from "@/lib/chat/proposals"
 import { newTurnState, startTurn, systemPrompt, type ContainerFile, type TurnStep } from "@/lib/chat/turn"
 import { tokensOfAiSdk, usdOf } from "@/lib/cost"
@@ -46,6 +48,8 @@ const requestSchema = z.object({
   table: caseTableWireSchema,
   context: z.string().max(50_000),
   sourceFileId: z.string().max(64).nullable(),
+  /** 今の列の対応と計画の元のシートの大きさ（チャットの set_plan の確かめ。変換の元の表が無い案件は null） */
+  plan: z.object({ plan: mappingPlanSchema, shape: sheetShapeSchema }).nullable().default(null),
   carryover: z.boolean().optional(),
   /** 去年の元の Excel の配置技術者の列の値（画面が去年の Excel から読む。去年のコードの個人名を消すのに使う） */
   // 値の長さでは断らない（長い値は名前にしないだけ。lib/chat/carryover.ts の collectNames）
@@ -212,6 +216,7 @@ async function runTurn(request: Request, caseId: string): Promise<Response> {
       memorized: async (keys) => new Set((await loc.memorized(db, kase.customerId, keys)).keys()),
       guard,
     },
+    body.plan,
   )
   /** 履歴・作ったファイル・費用を書き終えたら resolve する。印がまだ自分のもの（画面の会話を書いて下ろしてよい）なら true */
   const recorded = Promise.withResolvers<boolean>()
@@ -281,6 +286,8 @@ async function runTurn(request: Request, caseId: string): Promise<Response> {
         writer.write({ type: "data-carryover", data: { fiscalYear: carryover.fiscalYear, codes: carryText.included, ...(carryover.skipped ? { skipped: carryover.skipped } : {}) } })
       // 一括調査を始めるボタン（検索は職員が押してから。件数と費用の目安を添える）
       if (state.locationOffer) writer.write({ type: "data-location-offer", data: state.locationOffer })
+      // 画面の決まった処理を始めるボタン（書き出す前の確認・問い合わせの Excel・編集用の Excel）。止めた・失敗した回は出さない
+      if (!failure) for (const action of state.actions) writer.write({ type: "data-action", data: { action } })
       // 置いた変更案は、後始末のほかの失敗があっても画面に出す（開き直したときと同じに見せる）
       if (proposal && shown) {
         writer.write({ type: "data-proposal", data: { id: proposal.id } })
@@ -321,7 +328,7 @@ async function carryoverOf(db: store.Db, prev: Case, from: Omit<Parameters<typeo
   if (!work.success || !aiCache.success) return { fiscalYear: prev.fiscalYear, codes: [], skipped: "去年の案件の作業を読めなかったので、コードは添えません" }
   const { ui } = (await loadChat(bucket(), prev.id)).doc
   const names = namesForCarryover({ ...from, previous: { work: work.data, aiCache: aiCache.data } })
-  return { fiscalYear: prev.fiscalYear, codes: cleanCarryoverCodes(codesFromUi(ui, approvedChatProposals(work.data.proposals)), names, words) }
+  return { fiscalYear: prev.fiscalYear, codes: cleanCarryoverCodes(codesFromUi(ui, approvedChatProposals(work.data.proposals, work.data.undo)), names, words) }
 }
 
 /**

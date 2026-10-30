@@ -1,7 +1,6 @@
 import { spawnSync } from "node:child_process"
-import { readFileSync } from "node:fs"
 import { expect, test, type Page } from "@playwright/test"
-import { attachAndConvert, callsServerFn, deleteCustomer, open, openNewCase, reload } from "./helpers"
+import { attachAndConvert, callsServerFn, deleteCustomer, downloadCsv, open, openNewCase, openTab, reload, showAllRows } from "./helpers"
 
 /**
  * 工事場所の調査: 住所のほとんど無い合成の Excel で、調べる → 進み具合 → 変更案 → 承認 → 表と CSV。
@@ -28,12 +27,6 @@ function seedMemory(customer: string, items: { workName: string; client: string;
   if (r.status !== 0) throw new Error(`覚えた結果を入れられませんでした: ${r.stderr}`)
 }
 
-async function downloadCsv(page: Page) {
-  const downloading = page.waitForEvent("download")
-  await page.getByTestId("download-button").click()
-  if (await page.getByRole("alertdialog").isVisible()) await page.getByRole("button", { name: "このままダウンロード" }).click()
-  return new TextDecoder("shift_jis").decode(readFileSync((await (await downloading).path())!))
-}
 
 /**
  * 変換して全件を載せる（同じ現場の2行が両方 CSV に載るように）。列の対応は見出しからの推定にする（計画の AI を断る）。
@@ -43,7 +36,8 @@ async function convertAll(page: Page) {
   await page.route((url) => callsServerFn(url.href, ["planWithAi"]), (route) => route.fulfill({ status: 500, body: "計画の AI を使わない" }))
   await attachAndConvert(page, FIXTURE)
   await page.unrouteAll({ behavior: "ignoreErrors" })
-  await page.getByTestId("selection-all").check()
+  await page.getByTestId("selection-all").click()
+  await openTab(page, "location")
   await expect(page.getByTestId("location-count")).toContainText("件", { timeout: 30_000 })
 }
 
@@ -88,6 +82,7 @@ test("覚えた結果で調べる → 進み具合 → 変更案 → 承認 → 
   await saved(page)
   await reload(page)
   await expect(page.getByTestId("preview-table")).toBeVisible({ timeout: 120_000 })
+  await openTab(page, "location")
   const count = page.getByTestId("location-count")
   await expect(count).toContainText("前の年度に承認した結果 2 件")
   await expect(count).toContainText("個人名などで調べない 1 件")
@@ -102,6 +97,7 @@ test("覚えた結果で調べる → 進み具合 → 変更案 → 承認 → 
   await expect(card).toContainText("問い合わせ 1")
   await approveAll(page, { links: true })
 
+  await showAllRows(page)
   const table = page.getByTestId("preview-table")
   await expect(table).toContainText("墨田区")
   await expect(table).toContainText("横浜市中区")
@@ -117,6 +113,7 @@ test("覚えた結果で調べる → 進み具合 → 変更案 → 承認 → 
   await open(page, caseUrl)
   await expect(page.getByTestId("preview-table")).toBeVisible({ timeout: 120_000 })
   await expect(page.getByTestId("location-panel").getByTestId("proposal")).toHaveCount(0)
+  await showAllRows(page)
   await expect(page.getByTestId("preview-table")).toContainText("墨田区")
 })
 
@@ -130,6 +127,7 @@ test("本物の検索で調べて承認すると、翌年度の案件では覚�
   expect(first).toContain("件中")
   await approveAll(page, { links: false })
   await saved(page)
+  await showAllRows(page)
   await expect(page.getByTestId("preview-table")).toContainText("東京都")
 
   // 同じ顧客の翌年度

@@ -6,12 +6,15 @@ import { baseRows, deriveTable, type CaseTable, type TableView } from "../cases/
 import { MAX_ITEMS_PER_REQUEST, parseAiResponse, type AiBatchRequest } from "../convert/ai-tasks"
 import { editText, staffEdit, type CellEdit } from "../convert/convert"
 import { withNames, type PersonLetters } from "../convert/persons"
-import { getTransform, type TransformId } from "../convert/transforms"
+import { getTransform, transformsFor, type TransformId } from "../convert/transforms"
+import type { MappingPlan } from "../convert/plan"
+import { applyPlanPatch, beforeOf, describePlanPatch, patchFromInput, planPatchInputSchema, type PlanPatchInput, type SheetShape } from "../convert/plan-patch"
 import { CODE_SETS } from "../spec/code-sets"
 import type { Basis, SelectionMode, TaxMode } from "../convert/koji-selection"
 import { basisSchema, fieldIdSchema, selectionSchema, taxSchema } from "../schemas"
 import { KOJI_ANONYMIZE, KOJI_KEIREKI, type KojiFieldId } from "../spec/koji-keireki"
 import { applyChanges, type ChatChange } from "./proposals"
+import { CHAT_ACTIONS, type ChatAction } from "./messages"
 import { outcomeChanges } from "../location/changes"
 import { askReason, estimateUsd, MAX_SITES_PER_RUN, runSitesOf, siteOfRow, SOURCE_LABELS, type Outcome, type Site } from "../location/sites"
 
@@ -63,6 +66,8 @@ ${fileLines || "（なし）"}
 - 個人名は表では「〔Ａ〕」「〔未掲載１〕」の形の記号で出る。値に個人名を入れるときはこの形のまま書く（例:「〔Ａ〕邸新築工事」）。個人名をそのまま書かない。
 - 注文者・工事名に書いた値は、事務所の変換と同じ匿名化で確かめる（個人名は記号にする）。確かめられない値は受け取られない。
 - 7割の設定（税込/税抜・基準額・載せる工事の選び方＝7割ルールか全件か）は set_selection を直接呼ぶ。
+- 列の対応（どの列からどの項目を作るか・見出しの行・データの開始・飛ばす行・金額の単位）を変えるときは set_plan を直接呼ぶ（例:「金額は税込の列で」「工事名は B 列と C 列をつなげて」）。全行に同じ直しをセルの変更で当てるより、列の対応で直せるものは set_plan にする。承認すると変換し直す（この指示の get_table の表は変わらない）。使うシートは変えられないので、変えたいときは職員に画面のファイルの欄で選び直してもらう。職員にどの列を使っているか聞かれたら「この案件」の列の対応で答える。
+- 職員が CSV・取り込み用の Excel を出したい、問い合わせの Excel・編集用の Excel が欲しいと言ったら offer_action でボタンを出す（書き出す前の確認は画面が出す。あなたはファイルを作らない）。
 - 直したら await check_table({}) で決まった検査（エラー・警告・字数の上限・個人名らしい値・7割）を確かめ、直せるものは直す。
 - 指示があいまいで、どちらにも取れるときや、決める前に職員の答えが要るときは、ask_staff で聞き返す（答えるまで変更案は反映されない）。
 - 職員が「顧客ルールに追加して」「全体ルールに追加して」と言ったら propose_rule で追記の案を出す（保存は職員の承認後）。
@@ -124,12 +129,17 @@ export type TurnState = {
   locationSpent: { usd: number; searches: number }
   lookups: number
   locationOffer: LocationOffer | null
+  /** 今の列の対応と計画の元のシートの大きさ（set_plan の確かめ。変換の元の表が無い案件は null）。set_plan のたびに重ねた計画にする */
+  plan: { plan: MappingPlan<KojiFieldId>; shape: SheetShape } | null
+  /** 返事に付けるボタン（offer_action） */
+  actions: ChatAction[]
 }
+
 
 /** 値の判断の AI（server/claude.ts の batchWithClaude と同じ形。usd はその呼び出しの費用） */
 export type AnonymizeCaller = (req: AiBatchRequest) => Promise<({ ok: true; json: unknown } | { ok: false; message: string }) & { usd: number }>
 
-export function newTurnState(table: CaseTable, anonymize?: AnonymizeCaller, location?: LocationCaller): TurnState {
+export function newTurnState(table: CaseTable, anonymize?: AnonymizeCaller, location?: LocationCaller, plan: TurnState["plan"] = null): TurnState {
   return {
     start: table,
     current: table,
@@ -144,7 +154,14 @@ export function newTurnState(table: CaseTable, anonymize?: AnonymizeCaller, loca
     locationSpent: { usd: 0, searches: 0 },
     lookups: 0,
     locationOffer: null,
+    plan,
+    actions: [],
   }
+}
+
+/** set_plan に書ける変換（項目ごと） */
+function planToolDoc() {
+  return KOJI_KEIREKI.fields.map((f) => `${f.id}: ${transformsFor(f.valueType).map((t) => t.id).join(", ")}`).join("\n")
 }
 
 type CellChange = { key: string; field: KojiFieldId; edit: CellEdit }
@@ -444,6 +461,37 @@ export function chatTools(state: TurnState) {
           source: SOURCE_LABELS[found.source],
           rows: site.rowKeys.length,
         })
+      }),
+    }),
+    set_plan: tool({
+      description:
+        "列の対応（計画）を変える案を出す。変える項目だけを書く（差分）。fields: {項目: {kind:'column', column:'J', transform} | {kind:'columns', columns:['B','C'], transform} | {kind:'flagColumns', columns:[{column:'F', code:'8'}]} | {kind:'constant', value, reason} | {kind:'missing'}}。" +
+        "列は Excel の列記号、行（headerRow・dataStart・dataEnd・skipRows）は Excel の行番号。excludeHidden は隠れた行を出さないか。skipRows・excludeColumns は送ると今のものと入れ替える。reason に職員向けの理由。ai.freeform のときだけ instruction に指示文。" +
+        "個人名の項目（注文者・工事名・配置技術者）は匿名化する変換しか使えず、注文者・工事名に定数は書けない。項目ごとに使える変換:\n" +
+        planToolDoc() +
+        "\nJSON 文字列 {ok, changes} を返す（合わない項目があれば ok:false と problems で、何も変えない）。承認すると変換し直す。",
+      inputSchema: planPatchInputSchema,
+      execute: counted<PlanPatchInput>((input) => {
+        if (!state.plan) return json({ ok: false, error: "この案件には列の対応がありません（変換の元の表が無い）" })
+        const patch = patchFromInput(input)
+        const applied = applyPlanPatch(KOJI_KEIREKI, state.plan.plan, patch, state.plan.shape)
+        if (!applied.ok) return json({ ok: false, problems: applied.problems })
+        const before = beforeOf(state.plan.plan, patch)
+        const changes = describePlanPatch(patch, before)
+        state.pending.push({ kind: "plan", patch, before })
+        state.plan = { ...state.plan, plan: applied.plan }
+        state.log.push({ tool: "set_plan", summary: changes.join(" / ") })
+        return json({ ok: true, changes, note: "承認すると変換し直します。この指示の表（get_table）は変わりません。" })
+      }),
+    }),
+    offer_action: tool({
+      description:
+        "返事にボタンを付ける。action: export（CSV・取り込み用の Excel を書き出す前の確認を開く）| inquiry_excel（顧客への問い合わせの Excel を落とす）| edit_excel（編集用の Excel を落とす）。ファイルは職員がボタンを押して画面が作る。",
+      inputSchema: z.strictObject({ action: z.enum(CHAT_ACTIONS) }),
+      execute: counted<{ action: ChatAction }>(({ action }) => {
+        if (!state.actions.includes(action)) state.actions.push(action)
+        state.log.push({ tool: "offer_action", summary: action })
+        return "職員にボタンを見せました。"
       }),
     }),
     propose_rule: tool({
