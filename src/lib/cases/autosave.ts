@@ -54,9 +54,15 @@ export function createAutosave(options: AutosaveOptions) {
     clearTimeout(timer)
     timer = setTimeout(flush, ms)
   }
+  /** settle を待っている呼び出し（保存し終えたら true、保存できなかったら false で返す） */
+  let waiters: ((saved: boolean) => void)[] = []
   const report = (status: SaveStatus) => {
     problem = status.kind === "saved" || status.kind === "pending" ? null : status
     onStatus(status)
+    if (status.kind === "pending" || !waiters.length) return
+    const done = waiters
+    waiters = []
+    for (const w of done) w(status.kind === "saved")
   }
 
   async function flush() {
@@ -109,5 +115,16 @@ export function createAutosave(options: AutosaveOptions) {
     flush: () => void flush(),
     /** 保存できていない変更があるか */
     unsaved: () => !stopped && (latest !== null || sending),
+    /**
+     * 待たずに送り、今の変更まで保存し終えるのを待つ。保存し終えたら true、送れない・止まっている（別の画面・削除・大きすぎる）なら false
+     * （サーバーが保存した作業を読む処理の前に使う。例: 振り返り）
+     */
+    settle(): Promise<boolean> {
+      if (stopped) return Promise.resolve(false)
+      if (latest === null && !sending) return Promise.resolve(problem === null)
+      const waiting = new Promise<boolean>((resolve) => waiters.push(resolve))
+      void flush()
+      return waiting
+    },
   }
 }

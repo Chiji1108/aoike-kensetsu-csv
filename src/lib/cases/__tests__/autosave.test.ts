@@ -131,4 +131,17 @@ describe("案件の作業の自動保存", () => {
     ])
     expect(autosave.unsaved()).toBe(false)
   })
+
+  test("settle は今の変更まで保存し終えるのを待つ（待つ間を置かずに送る）。送れなければ false", async () => {
+    const s = server([new Error("つながらない")])
+    const loaded = newWork("file-1")
+    const { autosave } = setup(s, loaded)
+    expect(await autosave.settle()).toBe(true)
+    autosave.change(edited(loaded, "横浜市"))
+    expect(await autosave.settle()).toBe(false)
+    autosave.change(edited(loaded, "横浜市中区"))
+    expect(await autosave.settle()).toBe(true)
+    expect(s.requests.at(-1)!.work.edits).toEqual([[editKey("工事経歴!3", "place"), { value: "横浜市中区", by: "staff" }]])
+    expect(autosave.unsaved()).toBe(false)
+  })
 })
