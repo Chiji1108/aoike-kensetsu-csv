@@ -158,14 +158,19 @@ const columnOf = (field: KojiFieldId) => SHEET_COLUMNS.find((c) => c.fields.incl
 /** 問い合わせられる項目: CSV の必須か書類に要る項目のうち、記入用Excelに列があるもの */
 const ASKABLE = new Set(KOJI_KEIREKI.fields.filter((f) => (f.required || f.filing) && columnOf(f.id)).map((f) => f.id))
 
+/** そのセルを顧客に聞く理由（聞けない項目・聞かなくてよいセルは undefined）。問い合わせを集めるのと表の絞り込みで同じ決まり */
+export function askReasonOf(field: string, cell: CellResult): InquiryReason | undefined {
+  if (!ASKABLE.has(field as KojiFieldId)) return undefined
+  return (Object.keys(REASONS) as InquiryReason[]).find((k) => REASONS[k].applies(cell))
+}
+
 /** CSV に載せる行（rows）と案件の設定から、顧客に聞くことを集める */
 export function collectInquiries(rows: readonly KojiRow[], settings: InquirySettings): Inquiry[] {
   const cases = (Object.keys(CASE_TOPICS) as CaseTopic[]).filter((t) => CASE_TOPICS[t].applies(settings)).map((topic): Inquiry => ({ kind: "case", topic }))
   const cells = rows.flatMap((r) =>
     KOJI_KEIREKI.fields.flatMap((f): Inquiry[] => {
-      if (!ASKABLE.has(f.id)) return []
       const cell = r.cells[f.id]
-      const reason = (Object.keys(REASONS) as InquiryReason[]).find((k) => REASONS[k].applies(cell))
+      const reason = askReasonOf(f.id, cell)
       if (!reason) return []
       return [{ kind: "cell", rowKey: r.key, field: f.id, reason, current: storedOf(cell) }]
     }),

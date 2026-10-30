@@ -29,7 +29,7 @@ import { INCLUSION_LABELS, type Inclusion } from "@/lib/convert/koji-selection"
 import type { KojiFieldId } from "@/lib/spec/koji-keireki"
 import type { CsvSpec } from "@/lib/spec/types"
 import { cn } from "@/lib/utils"
-import { ROW_FILTERS, STATUS, cellClass, rowFilters, type RowFilter } from "./status"
+import { FILTER_ORDER, ROW_FILTERS, STATUS, cellClass, rowFilters, type RowFilter } from "./status"
 
 type Row = RowResult<KojiFieldId>
 
@@ -64,7 +64,13 @@ const WIDTH: Record<KojiFieldId | "include" | "origin", number> = {
   supervisingEngineer: 104,
 }
 
-const FILTER_ORDER: RowFilter[] = ["all", "error", "review", "changed"]
+/** 絞り込みの印の色（確かめる行の件数を目立たせる） */
+const FILTER_TONE: Partial<Record<RowFilter, string>> = {
+  check: "text-violet-700 dark:text-violet-300",
+  ask: "text-amber-700 dark:text-amber-300",
+  guessed: "text-violet-700 dark:text-violet-300",
+  error: "text-red-700 dark:text-red-300",
+}
 
 /** 手直し中のセル。下書きは行の外に持つ（仮想スクロールで行が消えても残る） */
 type Editing = { row: string; field: KojiFieldId; session: EditSession; draft: string }
@@ -79,6 +85,8 @@ export function PreviewTable({
   openEditor,
   onEdit,
   onToggle,
+  filter,
+  onFilterChange,
 }: {
   spec: CsvSpec<KojiFieldId>
   rows: Row[]
@@ -89,9 +97,12 @@ export function PreviewTable({
   openEditor: (cell: CellResult) => EditSession
   onEdit: (rowKey: string, field: KojiFieldId, edit: CellEdit) => void
   onToggle: (rowKey: string, included: boolean) => void
+  /** 絞り込み（案件の画面が持つ。チャットの報告の件数を押しても変わる） */
+  filter: RowFilter
+  onFilterChange: (f: RowFilter) => void
 }) {
   const [editing, setEditing] = useState<Editing | null>(null)
-  const [filter, setFilter] = useState<RowFilter>("all")
+  const setFilter = onFilterChange
   const [query, setQuery] = useState("")
   const [sorting, setSorting] = useState<SortingState>([])
   const [columnVisibility, setColumnVisibility] = useState<ColumnVisibilityState>({})
@@ -228,7 +239,7 @@ export function PreviewTable({
         className={cn("border-b border-l p-0 align-top whitespace-normal", cellClass(cell))}
         data-field={field}
         data-status={cell.status}
-        data-changed={ROW_FILTERS.changed.matches(cell) ? "1" : undefined}
+        data-changed={ROW_FILTERS.changed.matches(cell, field) ? "1" : undefined}
       >
         {isEditing ? (
           <CellEditor value={editing.draft} onChange={(draft) => setEditing({ ...editing, draft })} onDone={finishEdit} />
@@ -269,7 +280,7 @@ export function PreviewTable({
               }}
             >
               {ROW_FILTERS[f].label}
-              <span className="num text-muted-foreground" data-count="csv">
+              <span className={cn("num", counts[f].csv > 0 && FILTER_TONE[f] ? cn("font-semibold", FILTER_TONE[f]) : "text-muted-foreground")} data-count="csv">
                 {counts[f].csv}
               </span>
               {counts[f].all !== counts[f].csv && (

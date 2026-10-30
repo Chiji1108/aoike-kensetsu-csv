@@ -1,7 +1,9 @@
 import type { TableView } from "../cases/view"
 import { INCLUSION_LABELS, SELECTION_LABELS, TAX_LABELS } from "../convert/koji-selection"
 import { personKey, withNames, type PersonLetters } from "../convert/persons"
-import { KOJI_KEIREKI } from "../spec/koji-keireki"
+import { KOJI_KEIREKI, type KojiFieldId } from "../spec/koji-keireki"
+import type { MappingPlan } from "../convert/plan"
+import { describePlanPatch } from "../convert/plan-patch"
 import { SOURCE_LABELS } from "../location/sites"
 import type { ChatChange } from "./proposals"
 
@@ -18,7 +20,8 @@ function shownValue(stored: string, letters: PersonLetters) {
 /** 変更案の1項目を画面に出す形。where はどこを、from・to は今と承認したあと。values なら from・to はセルの値（文字の差分を色分けする） */
 export type ChangeLine = { where: string; what: string; from: string; to: string; values?: true; links?: string[] }
 
-export function describeChange(c: ChatChange, view: TableView, byKey: ReadonlyMap<string, TableView["shown"][number]>): ChangeLine {
+/** plan は今の計画（列の対応の変更案を「今 → 案」で出す） */
+export function describeChange(c: ChatChange, view: TableView, byKey: ReadonlyMap<string, TableView["shown"][number]>, plan?: MappingPlan<KojiFieldId> | null): ChangeLine {
   const rowName = (key: string) => {
     const r = byKey.get(key)
     return r ? `${r.sheet}!${r.row + 1}行` : `${key}（今の表に無い行）`
@@ -46,6 +49,8 @@ export function describeChange(c: ChatChange, view: TableView, byKey: ReadonlyMa
     }
     case "rule":
       return { where: c.scope === "global" ? "全体ルール" : "顧客ルール", what: "追記", from: "", to: c.text }
+    case "plan":
+      return { where: "列の対応", what: "変換し直す", from: "", to: [...describePlanPatch(c.patch, plan ?? undefined), `理由: ${c.patch.reason}`].join(" / ") }
     case "location": {
       const first = byKey.get(c.rowKeys[0]!)
       const now = first ? [first.cells.prefecture.value, first.cells.place.value].filter(Boolean).join(" ") : ""

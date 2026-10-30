@@ -45,7 +45,26 @@ describe("表の絞り込み", () => {
 test("変換の流れで、推定で補って要確認になったセルは変更あり、元のままのセルは変更なし", () => {
   const cells = finalizeAll([kojiRow({ chiefEngineer: "0", workName: "倉庫改修工事" }, 1)], { replacements: {}, edits: new Map() }).rows[0]!.cells
   expect(cells.supervisingEngineer.status).toBe("warning")
-  expect(ROW_FILTERS.changed.matches(cells.supervisingEngineer)).toBe(true)
-  expect(ROW_FILTERS.changed.matches(cells.chiefEngineer)).toBe(false)
-  expect(ROW_FILTERS.changed.matches(cells.workName)).toBe(false)
+  expect(ROW_FILTERS.changed.matches(cells.supervisingEngineer, "supervisingEngineer")).toBe(true)
+  expect(ROW_FILTERS.changed.matches(cells.chiefEngineer, "chiefEngineer")).toBe(false)
+  expect(ROW_FILTERS.changed.matches(cells.workName, "workName")).toBe(false)
+})
+
+describe("確かめる行を先に", () => {
+  const k = (cells: Record<string, string>, key: number) => kojiRow(cells, key)
+  const view = finalizeAll([k({ workName: "倉庫改修工事", client: "株式会社テスト" }, 1), k({ workName: "倉庫改修工事", client: "株式会社テスト", prefecture: "", place: "" }, 2)], { replacements: {}, edits: new Map() }).rows
+
+  test("問い合わせが要る行は、書類に要るのにデータに無いセルか推定に自信がないセルがある行（問い合わせを集めるのと同じ決まり）", () => {
+    const f = view.map((r) => rowFilters(r))
+    expect(f[1]!.ask).toBe(true)
+    expect(f[1]!.check).toBe(true)
+  })
+  test("AI の推定は、AI が自信がないと答えた値と AI が補った値", () => {
+    expect(ROW_FILTERS.guessed.matches({ ...ok, guessed: true }, "a")).toBe(true)
+    expect(ROW_FILTERS.guessed.matches({ ...ok, status: "ai", message: "補った" }, "a")).toBe(true)
+    expect(ROW_FILTERS.guessed.matches({ ...ok, status: "ai" }, "a")).toBe(false)
+  })
+  test("確かめる行は、エラー・要確認・AI の推定・問い合わせのどれかがある行", () => {
+    expect(shown("check")).toEqual(["error", "warning", "aiFilled", "guessedFill", "ruleThenWarning", "staffError"])
+  })
 })
