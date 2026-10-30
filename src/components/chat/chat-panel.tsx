@@ -58,7 +58,7 @@ const TOOL_LABELS: Record<string, string> = {
   set_plan: "列の対応の変更案",
   offer_action: "ボタンを出す",
   ask_staff: "聞き返し",
-  propose_rule: "ルールの追記案",
+  propose_rule: "ルールの項目の案",
   find_location: "工事場所を調べる",
 }
 

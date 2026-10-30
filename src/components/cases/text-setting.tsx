@@ -7,8 +7,8 @@ import { Textarea } from "@/components/ui/textarea"
 import { errorMessage } from "@/lib/errors"
 
 /**
- * 文章で持つ設定（全体ルール・顧客ルール・元データの形式のメモ）。保存ボタンで保存する。
- * 保存した文章がほかで変わったら（チャットの追記案の承認など）、直している途中でなければ入れ直す
+ * 文章で持つ設定（元データの形式のメモ）。保存ボタンで保存する。
+ * 保存した文章がほかで変わったら（読み直したとき）、直している途中でなければ入れ直す
  */
 export function TextSetting({
   id,

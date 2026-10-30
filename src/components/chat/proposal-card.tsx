@@ -115,7 +115,7 @@ export function ProposalCard({
   )
 }
 
-const EXTERNAL_LABELS = { rule: "ルールの追記", location: "顧客の覚えた工事場所" } as const
+const EXTERNAL_LABELS = { rule: "ルールの項目", location: "顧客の覚えた工事場所" } as const
 
 /** 承認を取り消すボタンと、取り消しても戻らないもの */
 function UndoLine({ id, actions, busy }: { id: string; actions: ProposalActions; busy: boolean }) {
@@ -145,7 +145,7 @@ function countKinds(changes: readonly ChatChange[]) {
     n.include && `載せる・外す ${n.include}`,
     n.add && `工事を足す ${n.add}`,
     n.settings && "7割の設定",
-    n.rule && `ルールの追記 ${n.rule}`,
+    n.rule && `ルールの項目 ${n.rule}`,
     n.location && `工事場所 ${n.location}現場`,
     n.plan && "列の対応",
   ]
