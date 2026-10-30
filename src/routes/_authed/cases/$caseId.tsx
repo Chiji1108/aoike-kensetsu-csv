@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react"
 import { Link, createFileRoute, notFound, useRouter } from "@tanstack/react-router"
-import { Ellipsis, FileSpreadsheet, FileText, FileUp, Loader2, PanelRightClose, Trash2, TriangleAlert, X } from "lucide-react"
+import { Ellipsis, FileSpreadsheet, FileText, FileUp, Loader2, MessageSquare, PanelRightClose, Paperclip, Trash2, TriangleAlert, X } from "lucide-react"
 import { toast } from "sonner"
 import { AppShell } from "@/components/app-shell"
 import { CaseReport, type ReportProps, type ReportQuestion, type UploadNote } from "@/components/cases/case-report"
@@ -29,7 +29,6 @@ import {
 } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import { NativeSelect } from "@/components/ui/native-select"
-import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Segmented } from "@/components/segmented"
@@ -37,7 +36,7 @@ import { MAX_ADDED_ROWS } from "@/lib/cases/added"
 import { fetchCaseFile, uploadCaseFile } from "@/lib/cases/files-client"
 import { fromSaved, MAX_REJECTED_EXCEL, newWork, type CaseWork, type SavedPlan } from "@/lib/cases/state"
 import { setTax, withPlanTax } from "@/lib/cases/tax"
-import { CASE_STATUSES, CASE_STATUS_LABELS, contentTypeOf, FILE_KIND_LABELS, fileUrl, isSheetFile, onlyNonSheetSources, type CaseFile, type CaseStatus, type FileKind } from "@/lib/cases/types"
+import { ATTACH_ACCEPT, CASE_STATUSES, CASE_STATUS_LABELS, contentTypeOf, FILE_KIND_LABELS, fileUrl, isSheetFile, onlyNonSheetSources, type CaseFile, type CaseStatus, type FileKind } from "@/lib/cases/types"
 import { canUndo, pushUndo, undo, undoEntry, type UndoEntry } from "@/lib/cases/undo"
 import { uploadKind, warnsUnlinked } from "@/lib/cases/upload-kind"
 import { baseRows, editRows, orderAndFinalize, selectRows } from "@/lib/cases/view"
@@ -974,11 +973,11 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
   }
 
   /**
-   * チャットから作業のタブを開く。押したとき（click）は開き、道具の結果が届いたとき（auto）は、広い画面では開き、
-   * 狭い画面ではタブだけ切り替える（返事の途中でチャットを覆わない。「表を開く」で開くとそのタブ）
+   * チャットから作業のタブを開く。押したとき（click）は開く。道具の結果が届いたとき（auto）は、広い画面で職員が閉じていなければ開き、
+   * 職員が閉じた・狭い画面ではタブだけ切り替える（勝手に開き直さない。返事の途中でチャットを覆わない。「表を開く」で開くとそのタブ）
    */
   function openTab(t: WorkTab, how: "auto" | "click") {
-    if (how === "click" || wide) showTab(t)
+    if (how === "click" || (wide && workChoice !== false)) showTab(t)
     else setTab(t)
   }
 
@@ -1161,31 +1160,47 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
     </Suspense>
   ) : null
 
-  /** 画面のどこにドラッグしたファイルも、📎と同じくアップロードする（作業の画面・重ねて開いた作業の画面からも届く） */
+  /**
+   * 画面のどこにドラッグしたファイルも、📎と同じくアップロードする（重ねて開いた作業の画面も同じ要素の中）。
+   * 印は、画面の外へ出た（relatedTarget が画面の中でない）・離した・ドラッグをやめた（窓の外を含む）ときに必ず消す
+   */
   const [dragging, setDragging] = useState(false)
-  const dragDepth = useRef(0)
   const hasFiles = (e: React.DragEvent) => [...e.dataTransfer.types].includes("Files")
+  useEffect(() => {
+    if (!dragging) return
+    const stop = () => setDragging(false)
+    const leaveWindow = (e: DragEvent) => {
+      if (!e.relatedTarget) stop()
+    }
+    window.addEventListener("drop", stop)
+    window.addEventListener("dragend", stop)
+    window.addEventListener("dragleave", leaveWindow)
+    return () => {
+      window.removeEventListener("drop", stop)
+      window.removeEventListener("dragend", stop)
+      window.removeEventListener("dragleave", leaveWindow)
+    }
+  }, [dragging])
   const dropFiles = {
     onDragEnter: (e: React.DragEvent) => {
-      if (!hasFiles(e)) return
-      dragDepth.current++
-      setDragging(true)
+      if (hasFiles(e)) setDragging(true)
     },
     onDragLeave: (e: React.DragEvent) => {
-      if (!hasFiles(e)) return
-      dragDepth.current = Math.max(0, dragDepth.current - 1)
-      if (!dragDepth.current) setDragging(false)
+      if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragging(false)
     },
     onDragOver: (e: React.DragEvent) => {
       if (hasFiles(e)) e.preventDefault()
     },
     onDrop: (e: React.DragEvent) => {
       e.preventDefault()
-      dragDepth.current = 0
       setDragging(false)
       if (e.dataTransfer.files.length) void attach([...e.dataTransfer.files])
     },
   }
+
+  /** チャットに職員の答えを待つもの（承認待ちの変更案・聞き返し）。狭い画面で作業の画面を重ねて開いている間、閉じるボタンの横に出す */
+  const chatPending =
+    work.proposals.filter((p) => p.state === "open" && (p.origin.kind === "chat" || p.origin.kind === "excel")).length + questions.filter((q) => q.answered === null).length
 
   const tabBadge = (t: WorkTab) => (t === "inquiry" ? inquiries.length : t === "location" ? locationProposals.filter((p) => p.state === "open").length : 0)
 
@@ -1199,6 +1214,12 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
             <SheetChooser sheets={source.sheets} primary={grid} plan={plan} onPrimary={(name) => void startPlanning(source, name)} onChange={changePlan} />
           )}
           <div className="ml-auto flex items-center gap-1">
+            {!wide && chatPending > 0 && (
+              <Button size="sm" variant="outline" onClick={() => setWorkChoice(false)} title="チャットに答えを待つものがあります（閉じてチャットへ）" data-testid="work-chat-pending">
+                <MessageSquare /> チャット
+                <span className="num rounded-full bg-violet-600 px-1.5 text-xs text-white">{chatPending}</span>
+              </Button>
+            )}
             <Button size="sm" onClick={() => setExportOpen(true)} disabled={reconverting} data-testid="export-button">
               {errorCells ? <TriangleAlert className="text-amber-200" /> : <FileSpreadsheet />}
               書き出す（{output.length}件）
@@ -1295,11 +1316,22 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
     ) : null
   /** 作業の画面をチャットの横に並べるか（狭い画面では重ねて開く） */
   const workInline = wide && workShown && !!workPanel
+  /** 狭い画面で作業の画面を重ねて開いているか（開いている間はうしろのチャットと見出しを触れなくする） */
+  const workOverlay = !wide && workShown && !!workPanel
+  /** 重ねて開いたときは作業の画面へ、閉じたら開く前の場所へフォーカスを戻す */
+  const workFrame = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!workOverlay) return
+    const before = document.activeElement as HTMLElement | null
+    workFrame.current?.focus()
+    return () => before?.focus()
+  }, [workOverlay])
+  const noChatInput = useRef<HTMLInputElement>(null)
 
   return (
     <AppShell fill>
       <div className="relative flex min-h-0 flex-1 flex-col" {...dropFiles}>
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b px-4 py-2 sm:px-6">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b px-4 py-2 sm:px-6" inert={workOverlay}>
           <div className="min-w-0">
             <nav className="flex gap-1 text-xs text-muted-foreground">
               <Link to="/" className="hover:underline">
@@ -1320,20 +1352,52 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
         </div>
 
         <div className="flex min-h-0 flex-1">
-          <div className={cn("min-h-0 min-w-0", workInline ? "w-[400px] shrink-0 border-r 2xl:w-[440px]" : "mx-auto w-full max-w-3xl xl:border-x")} data-testid="chat-column">
-            {chatPanel ?? <div className="h-full overflow-auto p-4">{report}</div>}
+          <div className={cn("min-h-0 min-w-0", workInline ? "w-[400px] shrink-0 border-r 2xl:w-[440px]" : "mx-auto w-full max-w-3xl xl:border-x")} inert={workOverlay} data-testid="chat-column">
+            {chatPanel ?? (
+              // チャットが使えない（APIキーが無い）ときは、報告と📎と同じアップロードの入口をチャットの代わりに出す
+              <div className="grid h-full content-start gap-3 overflow-auto p-4">
+                {report}
+                <Button size="sm" className="w-fit" onClick={() => noChatInput.current?.click()} data-testid="chat-attach">
+                  <Paperclip /> アップロード
+                </Button>
+                <input
+                  ref={noChatInput}
+                  type="file"
+                  multiple
+                  accept={ATTACH_ACCEPT}
+                  className="sr-only"
+                  data-testid="chat-file-input"
+                  onChange={(e) => {
+                    if (e.target.files?.length) void attach([...e.target.files])
+                    e.target.value = ""
+                  }}
+                />
+              </div>
+            )}
           </div>
-          {workInline && <div className="min-h-0 min-w-0 flex-1">{workPanel}</div>}
-        </div>
-
-        {!wide && workPanel && (
-          <Sheet open={workShown} onOpenChange={(open) => setWorkChoice(open)}>
-            <SheetContent side="right" showCloseButton={false} className="gap-0 p-0 data-[side=right]:w-full data-[side=right]:sm:max-w-none">
-              <SheetTitle className="sr-only">作業の画面</SheetTitle>
+          {/*
+            作業の画面は表がある間ずっと置いたまま、閉じても隠すだけにする（表の検索・並べ替え・表示する列・工事場所の調査・置換の欄を消さない）。
+            広い画面ではチャットの右、狭い画面では画面の上に重ねる。幅が変わっても同じ要素のまま
+          */}
+          {workPanel && (
+            <div
+              ref={workFrame}
+              hidden={!workShown}
+              tabIndex={-1}
+              className={cn("min-h-0 min-w-0 outline-none", wide ? "flex-1" : "fixed inset-0 z-50 bg-background shadow-xl")}
+              {...(wide ? {} : { role: "dialog", "aria-modal": true, "aria-label": "作業の画面" })}
+              onKeyDown={(e) => {
+                // 重ねて開いたときの Escape で閉じる。中の欄が済ませた Escape（セルの手直しをやめるなど。preventDefault の印）と、
+                // 画面の外に開いたメニューの Escape は見送る
+                if (wide || e.key !== "Escape" || e.defaultPrevented || !e.currentTarget.contains(e.target as Node)) return
+                setWorkChoice(false)
+              }}
+              data-testid="work-frame"
+            >
               {workPanel}
-            </SheetContent>
-          </Sheet>
-        )}
+            </div>
+          )}
+        </div>
 
         {dragging && (
           <div className="pointer-events-none absolute inset-2 z-40 flex items-center justify-center rounded-2xl border-2 border-dashed border-violet-400 bg-violet-50/70 text-sm font-medium text-violet-800 dark:bg-violet-950/60 dark:text-violet-200" data-testid="drop-overlay">

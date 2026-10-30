@@ -472,7 +472,11 @@ function CellEditor({ value, onChange, onDone }: { value: string; onChange: (v: 
       onBlur={() => finish(true)}
       onKeyDown={(e) => {
         if (e.key === "Enter") finish(true)
-        if (e.key === "Escape") finish(false)
+        // Escape はこの欄の手直しをやめるだけ。済んだ印（preventDefault）を付け、重ねて開いた作業の画面は閉じない（作業の画面は印のある Escape を見送る）
+        if (e.key === "Escape") {
+          e.preventDefault()
+          finish(false)
+        }
       }}
     />
   )

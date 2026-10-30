@@ -18,7 +18,6 @@ export const TOOL_TABS: Readonly<Record<string, WorkTab>> = {
   set_plan: "table",
   set_selection: "selection",
   ask_customer: "inquiry",
-  get_inquiries: "inquiry",
   record_answers: "inquiry",
   propose_inquiry: "inquiry",
   find_location: "location",

@@ -380,8 +380,7 @@ export function ChatPanel(props: ChatPanelProps) {
           void send()
         }}
       >
-        {/* 送るボタンが押せないだけで入力欄全体を薄くしない（📎はいつも押せる） */}
-        <InputGroup className="has-disabled:bg-transparent has-disabled:opacity-100 dark:has-disabled:bg-input/30">
+        <InputGroup>
           <InputGroupTextarea
             ref={inputRef}
             value={input}
