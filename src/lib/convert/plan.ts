@@ -2,6 +2,8 @@ import { z } from "zod"
 import { CODE_SETS } from "../spec/code-sets"
 import type { CsvSpec } from "../spec/types"
 import type { ValueType } from "../spec/types"
+import type { PlanExcerpt } from "./prompt"
+import { copiedFrom, rowIsBlank, sameHeader } from "./sources"
 import { TRANSFORM_IDS, getTransform, preferredTransform, transformFits, type TransformId } from "./transforms"
 
 /**
@@ -76,7 +78,11 @@ const fieldPlanWire = z.discriminatedUnion("kind", [
 
 export function mappingPlanWireSchema<F extends string>(spec: CsvSpec<F>) {
   const fields: Record<string, typeof fieldPlanWire> = Object.fromEntries(spec.fields.map((f) => [f.id, fieldPlanWire]))
+  // シートを先に決めさせる（見出し行・列番号はそのシートのもの）。シートは抜粋で振った番号で返させる（名前の書き間違いで計画が壊れないように）。
+  // 番号は enum にしない（スキーマを毎回同じにしてキャッシュを効かせる。番号は acceptAiPlan で確かめる）
   return z.object({
+    sheets: z.array(z.number().int()),
+    sheetReason: z.string(),
     headerRow: z.number().int(),
     dataStart: z.number().int(),
     skipRows: z.array(z.number().int()),
@@ -89,18 +95,32 @@ export function mappingPlanWireSchema<F extends string>(spec: CsvSpec<F>) {
 }
 
 /**
- * AI の計画を検証して取り込む。行・列の範囲外、項目の型に合わない変換は
- * ルールで推定した計画（fallback）の値に戻し、その旨を notes に残す。
+ * AI の計画を検証して取り込む。
+ * - シートは抜粋で振った番号で受け取る。計画の元のシート（sheets の先頭）が送ったシートに無い・空・職員の指定と違うときは、列の番号の意味が分からないので計画全体を使わない（ok: false）。
+ * - 2枚目以降のシートは、無い・空・重複・見出しが計画の元と違うものを外す。
+ * - 行・列の範囲外、項目の型に合わない変換は、選んだシートについて見出しから推定した計画（fallbackFor）の値に戻す。
+ * 直したことは notes に残す。
  */
 export function acceptAiPlan<F extends string>(
   spec: CsvSpec<F>,
-  grid: SheetGrid,
+  workbook: readonly SheetGrid[],
+  excerpt: Pick<PlanExcerpt, "sheets" | "requiredSheet">,
   json: unknown,
-  fallback: MappingPlan<F>,
+  fallbackFor: (grid: SheetGrid) => MappingPlan<F>,
 ): { ok: true; plan: MappingPlan<F> } | { ok: false; message: string } {
   const parsed = mappingPlanWireSchema(spec).safeParse(json)
   if (!parsed.success) return { ok: false, message: "AI の計画の形式が正しくありません" }
   const wire = parsed.data
+  // AI が見たシート（抜粋に入れたシート）だけを使える
+  const sent = (i: number) => (excerpt.sheets.some((s) => s.index === i) ? workbook[i] : undefined)
+  const [primaryIndex, ...extraIndexes] = wire.sheets
+  if (primaryIndex === undefined) return { ok: false, message: "AI の計画に使うシートがありません" }
+  const grid = sent(primaryIndex)
+  if (!grid) return { ok: false, message: `AI が選んだシート（番号 ${primaryIndex}）は送ったシートにありません` }
+  if (grid.rows.every(rowIsBlank)) return { ok: false, message: `AI が選んだシート「${grid.name}」は空です` }
+  const required = excerpt.requiredSheet === undefined ? undefined : workbook[excerpt.requiredSheet]
+  if (required && grid !== required) return { ok: false, message: `AI が指定のシート「${required.name}」でなく「${grid.name}」を選びました` }
+  const fallback = fallbackFor(grid)
   const nRows = grid.rows.length
   const nCols = columnCount(grid)
   const problems: string[] = []
@@ -112,6 +132,28 @@ export function acceptAiPlan<F extends string>(
   if (!rowsOk) problems.push("AI の見出し行・データの開始行がシートと合わないため、ルールの推定を使いました")
   const headerRow = rowsOk ? wire.headerRow : fallback.headerRow
   const dataRows = rowsOk ? { start: wire.dataStart, end } : fallback.dataRows
+
+  const sheets = [grid.name]
+  // 写しのシートを足すと同じ工事が二重に出る（CSV の誤り）ので、AI が足しても決まった処理で外す
+  const copyReason = (s: SheetGrid) => {
+    const copy = copiedFrom(s, sheets.map((n) => workbook.find((x) => x.name === n)!), headerRow)
+    return copy ? `データの行の${Math.floor(copy.ratio * 100)}%が「${copy.sheet}」にもある写しの` : undefined
+  }
+  for (const i of extraIndexes) {
+    const s = sent(i)
+    const name = s?.name ?? `番号 ${i}`
+    const reason = !s
+      ? "送ったシートに無い"
+      : sheets.includes(name)
+        ? undefined
+        : s.rows.every(rowIsBlank)
+          ? "空の"
+          : !sameHeader(s, grid, headerRow)
+            ? `見出しが「${grid.name}」と違う`
+            : copyReason(s)
+    if (reason) problems.push(`AI が足したシート「${name}」は${reason}ため外しました`)
+    else if (!sheets.includes(name)) sheets.push(name)
+  }
 
   const wireFields: Record<string, z.infer<typeof fieldPlanWire>> = wire.fields
   const fields = {} as Record<F, FieldPlan>
@@ -131,10 +173,11 @@ export function acceptAiPlan<F extends string>(
     }
   }
 
+  const sheetNote = workbook.length > 1 ? [`使うシート「${sheets.join("」「")}」: ${wire.sheetReason.trim() || "（AI の理由なし）"}`] : []
   return {
     ok: true,
     plan: {
-      sheets: fallback.sheets,
+      sheets,
       headerRow,
       dataRows,
       // 合計・小計の行はルールでも見つける（AI は抜粋しか見ないので、途中の小計を見落とす）
@@ -145,7 +188,7 @@ export function acceptAiPlan<F extends string>(
       amountUnit: wire.amountUnit,
       fields,
       unusedColumns: wire.unusedColumns.filter((c) => c.column >= 0 && c.column < nCols),
-      notes: [...wire.notes, ...problems],
+      notes: [...sheetNote, ...wire.notes, ...problems],
     },
   }
 }

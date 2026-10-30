@@ -3,7 +3,7 @@ import Anthropic from "@anthropic-ai/sdk"
 import { createServerFn } from "@tanstack/react-start"
 import { z } from "zod"
 import { AI_TASK_IDS, MAX_ITEMS_PER_REQUEST } from "@/lib/convert/ai-tasks"
-import { MAX_PREVIOUS_CONTEXT } from "@/lib/convert/prompt"
+import { MAX_PREVIOUS_CONTEXT, planExcerptShape } from "@/lib/convert/prompt"
 import { getDb } from "@/db"
 import { addCaseCost } from "./case-store"
 import { batchWithClaude, planWithClaude, type AiFailure } from "./claude"
@@ -20,7 +20,6 @@ function client() {
   return env.ANTHROPIC_API_KEY ? new Anthropic({ apiKey: env.ANTHROPIC_API_KEY }) : undefined
 }
 
-const cell = z.string().max(200)
 const caseId = z.string().min(1).max(64)
 
 /** 費用を案件の合計に足して返す。足せなくても AI の結果は返す（結果を捨てて同じ費用をもう一度かけさせない。失敗はログに残す） */
@@ -29,17 +28,13 @@ async function charged<T extends { usd: number }>(id: string, res: T) {
   return res
 }
 
-/** 列の計画。送るのはシートの先頭・末尾の数十行と、列ごとの値の例だけ。費用は案件の合計に足す */
+/** 列の計画。送るのはシートごとの先頭・末尾の数十行と、列ごとの値の例だけ（上限は planExcerpt と同じ）。費用は案件の合計に足す */
 export const planWithAi = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator(
     z.object({
       caseId,
-      sheetName: z.string().max(100),
-      rowCount: z.number().int().min(0),
-      hiddenCount: z.number().int().min(0),
-      rows: z.array(z.object({ index: z.number().int().min(0), cells: z.array(cell).max(100) })).max(60),
-      columns: z.array(z.object({ index: z.number().int().min(0), filled: z.number().int().min(0), examples: z.array(z.string().max(40)).max(6) })).max(100),
+      ...planExcerptShape,
       previous: z.string().max(MAX_PREVIOUS_CONTEXT + 100).optional(),
     }),
   )

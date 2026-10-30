@@ -27,7 +27,7 @@ import { compareFormats, describeFormatDiff, similarity } from "../src/lib/conve
 import { DEFAULT_GLOBAL_RULES } from "../src/lib/chat/rules"
 import { checkReport, newTurnState, startTurn, systemPrompt } from "../src/lib/chat/turn"
 import type { RowResult } from "../src/lib/convert/convert"
-import { heuristicPlan } from "../src/lib/convert/heuristic-plan"
+import { heuristicPlan, planSheets, sheetByNames } from "../src/lib/convert/heuristic-plan"
 import { runConversion } from "../src/lib/convert/pipeline"
 import { fileAddressLookup } from "../src/lib/convert/address-file"
 import { acceptAiPlan, type MappingPlan } from "../src/lib/convert/plan"
@@ -54,6 +54,7 @@ const BUDGET_USD = 5
 type CaseDef = {
   /** ROOT からの相対パスか絶対パス */
   xlsx: string
+  /** 職員が計画の元に指定するシート（画面の「計画の元にするシート」）。無ければ計画の AI が選ぶ */
   sheet?: string
   /** 職員が作った完成 CSV（CP932） */
   staffCsv: string
@@ -85,7 +86,9 @@ let conversionUsd = 0
 const spend = (kind: string, usd: number) => recordCost(OUT, { case: caseId, variant, kind, usd })
 const anthropic = new Anthropic({ apiKey })
 const sheets = readWorkbook(def.xlsx, new Uint8Array(readFileSync(path(def.xlsx))))
-const grid = def.sheet ? sheets.find((s) => s.name === def.sheet)! : sheets[0]!
+if (def.sheet && !sheets.some((s) => s.name === def.sheet)) throw new Error(`シート「${def.sheet}」が無い`)
+/** 計画の元のシート（計画の AI が選んだもの） */
+const gridOf = (plan: MappingPlan<KojiFieldId>) => sheets.find((s) => s.name === plan.sheets[0])!
 const staff = new TextDecoder("shift_jis")
   .decode(readFileSync(path(def.staffCsv)))
   .split(/\r?\n/)
@@ -97,14 +100,19 @@ type Baseline = { rows: RowResult<KojiFieldId>[]; plan: MappingPlan<KojiFieldId>
 /** 画面と同じ: AI の列の計画 → 変換（AI の値の判断つき）。設定は新しい案件の初期値 */
 async function baseline(): Promise<Baseline> {
   const t0 = Date.now()
-  const fallback = heuristicPlan(KOJI_KEIREKI, KOJI_PLAN_HINTS, grid, sheets)
+  const fallbackFor = (g: (typeof sheets)[number]) => heuristicPlan(KOJI_KEIREKI, KOJI_PLAN_HINTS, g)
   // 翌年分の案件（editFrom）は、画面と同じく去年の列の対応と去年の Excel との違いを計画の AI に添える
-  const res = await planWithClaude(anthropic, { ...planExcerpt(grid), ...(def!.editFrom ? { previous: previousPlanOf(fallback.headerRow) } : {}) })
+  const targets = planSheets(KOJI_KEIREKI, KOJI_PLAN_HINTS, sheets, def!.sheet)
+  const excerpt = planExcerpt(sheets.length, targets.sheets, targets.required)
+  const res = await planWithClaude(anthropic, { ...excerpt, ...(def!.editFrom ? { previous: previousPlanOf() } : {}) })
   conversionUsd += res.usd
   spend("plan", res.usd)
   if (!res.ok) throw new Error(res.message)
-  const accepted = acceptAiPlan(KOJI_KEIREKI, grid, res.json, fallback)
-  const plan = accepted.ok ? accepted.plan : fallback
+  const accepted = acceptAiPlan(KOJI_KEIREKI, sheets, excerpt, res.json, fallbackFor)
+  // 画面と同じく、AI の計画を使えなければ見出しから選んだシートの推定にする
+  if (!accepted.ok) console.log(`AI の計画を使わない: ${accepted.message}`)
+  const plan = accepted.ok ? accepted.plan : fallbackFor(sheetByNames(KOJI_KEIREKI, KOJI_PLAN_HINTS, sheets, def!.sheet)!)
+  console.log(`計画のシート: ${plan.sheets.join("、")}（${plan.notes[0] ?? ""}）`)
   const rows = await runConversion({
     lookup: fileAddressLookup,
     spec: KOJI_KEIREKI,
@@ -135,14 +143,20 @@ function lastYear() {
   return lastYearCache
 }
 
-/** 去年の Excel との違い（今年の見出しの行は headerRow） */
-function previousDiff(headerRow: number) {
+/** 去年の Excel との違い（今年は sheet の見出しの行 headerRow と比べる） */
+function previousDiff(sheet: string, headerRow: number) {
   const { fiscalYear, last, prevSheets } = lastYear()
-  return { fiscalYear, last, prevSheets, lines: describeFormatDiff(compareFormats({ sheets: prevSheets, sheet: last.plan.sheets[0]!, headerRow: last.plan.headerRow }, { sheets, sheet: grid.name, headerRow })) }
+  return { fiscalYear, last, prevSheets, lines: describeFormatDiff(compareFormats({ sheets: prevSheets, sheet: last.plan.sheets[0]!, headerRow: last.plan.headerRow }, { sheets, sheet, headerRow })) }
 }
 
-function previousPlanOf(headerRow: number) {
-  const { fiscalYear, last, prevSheets, lines } = previousDiff(headerRow)
+/**
+ * 計画の AI に添える去年の文脈。画面と同じく、計画の前なので今年は 職員の指定したシート → 去年と同じ名前のシート → 見出しから選んだシート と比べ、
+ * 見出しの行は見出しからの推定
+ */
+function previousPlanOf() {
+  const lastSheet = lastYear().last.plan.sheets[0]!
+  const g = sheetByNames(KOJI_KEIREKI, KOJI_PLAN_HINTS, sheets, def!.sheet, lastSheet)!
+  const { fiscalYear, last, prevSheets, lines } = previousDiff(g.name, heuristicPlan(KOJI_KEIREKI, KOJI_PLAN_HINTS, g).headerRow)
   return previousPlanContext(KOJI_KEIREKI, { fiscalYear, grid: prevSheets.find((s) => s.name === last.plan.sheets[0])!, plan: last.plan, diff: lines })
 }
 
@@ -241,9 +255,9 @@ try {
         const last = JSON.parse(readFileSync(join(OUT, `${lastYearId}-baseline.json`), "utf8")) as Baseline
         // 去年の表の個人名（印の人・配置技術者）をコードから消す（画面は去年の手直しと AI の結果から集める。照合は去年の変換の結果から）
         const names = namesForCarryover({ current: { rows: last.rows, edits: [] } })
-        const diff = previousDiff(base.plan.headerRow)
+        const diff = previousDiff(base.plan.sheets[0]!, base.plan.headerRow)
         const header = (g: ReturnType<typeof readWorkbook>[number] | undefined, row: number) => g?.rows[row] ?? []
-        const headers = [...header(diff.prevSheets.find((s) => s.name === last.plan.sheets[0]), last.plan.headerRow), ...header(grid, base.plan.headerRow)]
+        const headers = [...header(diff.prevSheets.find((s) => s.name === last.plan.sheets[0]), last.plan.headerRow), ...header(gridOf(base.plan), base.plan.headerRow)]
         // 知っている語は画面と同じ: 今年の表（ここでは今年の変換の結果）・ルール・去年と今年の見出し
         const words = knownWords({ rows: base.rows, edits: [] }, [DEFAULT_GLOBAL_RULES, customerRules], headers)
         const codes = cleanCarryoverCodes(codesFromModel(edit.messages), names, words)
@@ -272,7 +286,7 @@ try {
         const up = await anthropic.files.upload({ file: await toFile(readFileSync(path(p)), name, { type: mediaType }) })
         uploads.push({ id: up.id, name, original, mediaType, isSource: i === 0 })
       }
-      const system = systemPrompt({ global: DEFAULT_GLOBAL_RULES, customerName: def.customerName, customer: customerRules }, caseContext(sheets, grid, base.plan, previousFormat), uploads)
+      const system = systemPrompt({ global: DEFAULT_GLOBAL_RULES, customerName: def.customerName, customer: customerRules }, caseContext(sheets, gridOf(base.plan), base.plan, previousFormat), uploads)
       for (const [i, text] of turns.entries()) {
         if (total > BUDGET_USD) {
           status = "stopped"

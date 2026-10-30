@@ -1,6 +1,7 @@
 import type { CsvSpec } from "../spec/types"
 import { columnCount, planColumns, type FieldPlan, type FlagColumn, type MappingPlan, type SheetGrid } from "./plan"
-import { defaultSheetSelection, isSkippableRow, lastNonBlankRow, rowIsBlank } from "./sources"
+import { MAX_EXCERPT_SHEETS, type PlanSheet } from "./prompt"
+import { isSkippableRow, lastNonBlankRow, rowIsBlank, sameHeader } from "./sources"
 import { matchKey } from "./text"
 import { isFlagOn, type TransformId } from "./transforms"
 
@@ -59,7 +60,7 @@ export function headerMatch<F extends string>(spec: CsvSpec<F>, hints: PlanHints
 }
 
 /**
- * 変換の元にするシート。見出しが項目にあてはまる数が多いシートを選び、同じなら空でない行の多いシート。
+ * AI が使えないときの、変換の元にするシート（ふだんは計画の AI がシートを選ぶ）。見出しが項目にあてはまる数が多いシートを選び、同じなら空でない行の多いシート。
  * 行の数だけで選ぶと、顧客一覧のような工事でない大きなシートを選んでしまう。空のシートしか無ければ undefined
  */
 export function primarySheet<F extends string>(spec: CsvSpec<F>, hints: PlanHints<F>, sheets: readonly SheetGrid[]): SheetGrid | undefined {
@@ -73,13 +74,58 @@ export function primarySheet<F extends string>(spec: CsvSpec<F>, hints: PlanHint
   return best?.sheet
 }
 
-/** 見出しの語だけで列の対応を推定する（APIキーが無いとき、AI の計画の初期値） */
-export function heuristicPlan<F extends string>(
-  spec: CsvSpec<F>,
-  hints: PlanHints<F>,
-  grid: SheetGrid,
-  workbook: readonly SheetGrid[] = [grid],
-): MappingPlan<F> {
+/** 工事の一覧の候補として詳しく送るシートの数（見出しが工事の項目にあてはまる数の多い順） */
+const DETAIL_SHEETS = 3
+
+/**
+ * 計画の AI に送るシートと詳しさ（prompt.ts の planExcerpt に渡す）。どのシートを使うかは AI が決め、ここは送る量を決めるだけ。
+ * - 職員の指定があれば、そのシートと見出しが同じシートだけを、詳しく送る（指定のシートは必ず先頭）。
+ * - 無ければ全部のシート（MAX_EXCERPT_SHEETS 枚まで）。見出しのあてはまりの多いシートを DETAIL_SHEETS 枚まで詳しく、ほかは要約だけ
+ *   （関係ないシートが多くても、工事の一覧の見出しが抜粋から消えないように）。
+ * 見出しの行は見出しからの推定（要約の行・シートの重なりの比べ方に使う）
+ */
+export function planSheets<F extends string>(spec: CsvSpec<F>, hints: PlanHints<F>, workbook: readonly SheetGrid[], requiredSheet?: string): { sheets: PlanSheet[]; required?: number } {
+  const all = workbook.map((grid, index) => {
+    const m = headerMatch(spec, hints, grid)
+    return { index, grid, headerRow: m.headerRow, fields: m.fields, rows: grid.rows.filter((r) => !rowIsBlank(r)).length }
+  })
+  const required = all.find((s) => s.grid.name === requiredSheet)
+  if (required) {
+    const same = all.filter((s) => s !== required && s.rows > 0 && sameHeader(s.grid, required.grid, required.headerRow))
+    const sheets = [required, ...same].slice(0, MAX_EXCERPT_SHEETS).map(({ index, grid }) => ({ index, grid, headerRow: required.headerRow, detail: true }))
+    return { sheets, required: required.index }
+  }
+  const detail = new Set(
+    all
+      .filter((s) => s.rows > 0)
+      .sort((a, b) => b.fields - a.fields || b.rows - a.rows)
+      .slice(0, DETAIL_SHEETS)
+      .map((s) => s.index),
+  )
+  const others = all.filter((s) => !detail.has(s.index)).slice(0, Math.max(0, MAX_EXCERPT_SHEETS - detail.size))
+  const sheets = all
+    .filter((s) => detail.has(s.index) || others.includes(s))
+    .map(({ index, grid, headerRow }) => ({ index, grid, headerRow, detail: detail.has(index) }))
+  return { sheets }
+}
+
+/**
+ * 名前の順に最初にあるシート。どれも無ければ見出しから選んだシート（primarySheet）。
+ * AI が使えないときの計画の元（職員の指定）と、去年と比べる今年のシート（指定 → 去年の計画のシート）を、画面と照合で同じに選ぶ
+ */
+export function sheetByNames<F extends string>(spec: CsvSpec<F>, hints: PlanHints<F>, sheets: readonly SheetGrid[], ...names: (string | null | undefined)[]) {
+  for (const name of names) {
+    const s = name == null ? undefined : sheets.find((g) => g.name === name)
+    if (s) return s
+  }
+  return primarySheet(spec, hints, sheets)
+}
+
+/**
+ * 見出しの語だけで、grid の列の対応を推定する（APIキーが無いとき・AI の計画が使えないとき、AI の計画の項目ごとの予備）。
+ * 使うシートは grid だけ（見出しが同じシートを足すかは、計画の AI か職員が決める）
+ */
+export function heuristicPlan<F extends string>(spec: CsvSpec<F>, hints: PlanHints<F>, grid: SheetGrid): MappingPlan<F> {
   const nCols = columnCount(grid)
   const { headerRow } = headerMatch(spec, hints, grid)
   const headers = Array.from({ length: nCols }, (_, c) => grid.rows[headerRow]?.[c] ?? "")
@@ -178,7 +224,7 @@ export function heuristicPlan<F extends string>(
   const excludeColumns = headers.flatMap((h, c) => (!used.includes(c) && hintScore(h, hints.excludeHeaders) > 0 ? [c] : []))
 
   return {
-    sheets: defaultSheetSelection(workbook, grid, headerRow),
+    sheets: [grid.name],
     headerRow,
     dataRows: { start, end },
     skipRows,
