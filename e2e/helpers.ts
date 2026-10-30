@@ -76,7 +76,7 @@ export async function openCaseDelete(page: Page) {
 }
 
 /** 表の下の欄を開く */
-export async function openTab(page: Page, tab: "selection" | "inquiry" | "excel" | "location" | "replace") {
+export async function openTab(page: Page, tab: "selection" | "inquiry" | "location" | "replace") {
   await page.getByTestId(`tab-${tab}`).click()
 }
 
