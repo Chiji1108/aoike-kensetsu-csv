@@ -13,7 +13,7 @@ import { personToken } from "../../convert/persons"
 import type { AiCaller } from "../../convert/pipeline"
 import { readWorkbook } from "../../convert/workbook"
 import { KOJI_KEIREKI, type KojiFieldId } from "../../spec/koji-keireki"
-import { matchRows, readFinalSheet } from "../final-import"
+import { changeSignature, matchRows, readFinalSheet, recount, withoutKnown } from "../final-import"
 import { CHECK_SHEET_NAME, finalSheet } from "../final-sheet"
 import { finalXlsx } from "../final-xlsx"
 
@@ -274,14 +274,67 @@ describe("最後の Excel の上げ直し（取り違え・二重・重さ）", 
     expect(r.report).toMatchObject({ conflicts: [], ambiguous: [], added: 0, excluded: 0 })
   })
 
-  test("案件の照合用の鍵が無い（この案件で書き出していない）なら読まない", async () => {
+  test("照合用の鍵の印が違う Excel は読まない", async () => {
     const sheets = await roundTrip(table, () => {})
-    expect("error" in (await readFinalSheet(sheets, deriveTable(table), { ...id, excelKey: null }, ai))).toBe(true)
+    expect(await readFinalSheet(sheets, deriveTable(table), { ...id, excelKey: "2".repeat(64) }, ai)).toEqual({ error: "この Excel の記録と合いません。書き出し直してから直してください" })
+  })
+
+  test("足した行・直したセルの記号は、Excel に書いた記号の人に戻す。戻せない記号は読めない値。落としたときの人でない記号の形の文字はそのまま", async () => {
+    const t: CaseTable = { ...table, rows: [...rows.slice(0, 2), kojiRow({ ...base, client: "Ｋ建設", workName: "Ｋ建設倉庫改修", amount: "1000" }, 3)] }
+    const sheets = await roundTrip(t, (ws, rowOf) => {
+      ws.getCell(rowOf("s!3"), col("workName")).value = "Ｋ建設倉庫改築"
+      ws.addRow([8, "Ａ", 1, 0, "Ａ邸新築工事", "東京都", "港区", "試験　太郎", 1200, 0, "202405", "202406", 1, 0])
+      ws.addRow([8, "Ｚ", 1, 0, "Ｚ邸新築工事", "東京都", "港区", "試験　太郎", 1300, 0, "202405", "202406", 1, 0])
+    })
+    const r = await read(sheets, t)
+    expect(cellsOf(r.changes)).toEqual([["s!3", "workName", "Ｋ建設倉庫改築"]])
+    const add = r.changes.find((c): c is Extract<ChatChange, { kind: "add" }> => c.kind === "add")!
+    expect(add.cells.client?.value).toBe(yamada)
+    expect(add.cells.workName?.value).toBe(`${yamada}邸新築工事`)
+    expect(r.report.added).toBe(1)
+    expect(r.report.invalid.map((x) => [x.line, x.field])).toEqual([
+      [5, "client"],
+      [5, "workName"],
+    ])
+    expect(r.report.invalid[0]!.message).toContain("Ｚ")
+  })
+
+  test("N列より右に値のある行を知らせる（取り込まない）", async () => {
+    const sheets = await roundTrip(table, (ws, rowOf) => {
+      ws.getCell(rowOf("s!2"), 15).value = "メモ"
+    })
+    const r = await read(sheets, table)
+    expect(r.changes).toEqual([])
+    expect(r.report.extraColumns).toEqual([2])
+  })
+
+  test("前に出した・却下した項目は除き、足す行を除いたらその行を載せる項目も除く", async () => {
+    const sheets = await roundTrip(table, (ws, rowOf) => {
+      ws.getCell(rowOf("s!2"), col("amount")).value = 3500
+      ws.getCell(rowOf("s!3"), col("amount")).value = 1500
+      ws.addRow([8, "株式会社あたらし", 1, 0, "あたらし工事", "東京都", "港区", "試験　太郎", 1200, 0, "202405", "202406", 1, 0])
+    })
+    const r = await read(sheets, table)
+    const rejected = r.changes.filter((c) => (c.kind === "cell" && c.rowKey === "s!2") || c.kind === "add")
+    const { changes, skipped } = withoutKnown(r.changes, new Set(rejected.map(changeSignature)))
+    expect(cellsOf(changes)).toEqual([["s!3", "amount", "1500"]])
+    expect(changes).toHaveLength(1)
+    expect(skipped).toBe(3)
+    expect(recount(r.report, changes, skipped)).toMatchObject({ cells: 1, added: 0, excluded: 0, skipped: 3 })
   })
 })
 
 describe("行の対応", () => {
   const row = (...v: string[]) => [...v, ...Array(14 - v.length).fill("x")]
+  test("同じ値の多すぎる手がかりで候補を探せなかった行も、残った落とした行と近ければ黙って差し替えず決めきれない行にする", () => {
+    // 候補を探す列（注文者・工事名など）はどの行も同じ値。ほかの7列が行ごとに違う
+    const sent = Array.from({ length: 600 }, (_, i) => ["k", "x", "a", "b", "x", "c", "x", "x", "x", "e", "x", "x", "f", "g"].map((v) => (v === "x" ? v : `${v}${i}`)))
+    const up = [sent[0]!.map((v, c) => (c === 0 ? "直した" : v))]
+    const m = matchRows(up, sent)
+    expect(m.pairs).toEqual([])
+    expect(m.ambiguous).toEqual([0])
+    expect(m.candidates.get(0)).toEqual([0])
+  })
   test("同じ中身 → 近い行の順。違う列が7つ以上の行は新しい行、4〜6列の行は決めきれない", () => {
     const sent = [row("a", "1"), row("b", "2"), row("c", "3")]
     const up = [row("c", "3"), row("a", "9"), row(..."qqqqqqq"), row(..."bqqqq")]

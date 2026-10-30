@@ -12,7 +12,7 @@ import { KOJI_KEIREKI, type KojiFieldId } from "../spec/koji-keireki"
  *
  * 直して上げ直すと表に戻せるよう、照合用の隠しシートを足す（列は足さない。「CSV で保存」は開いているシートだけを書き、隠しシートは
  * 開いているシートにならないので CSV に入らない）。隠しシートには、落とした時点の識別（案件・変換の元）・行ごとの key と落としたときの14列の値・
- * 記号（Ａ・Ｂ…）がどの人だったかの照合用の値を持つ。個人名は書かない（記号の人は、案件の作業に置いた鍵の HMAC で見分ける。鍵は Excel に
+ * 記号（Ａ・Ｂ…）がどの人だったかの照合用の値を持つ。個人名は書かない（記号の人は、サーバーが案件ごとに決める鍵の HMAC で見分ける。鍵は Excel に
  * 書かないので、Excel だけからは名前の辞書で当てられない）
  */
 
@@ -20,7 +20,7 @@ export const FINAL_SHEET_NAME = "工事経歴"
 /** 照合用の隠しシート。名前と1行目の印で、この画面で落とした最後の Excel だと見分ける */
 export const CHECK_SHEET_NAME = "照合用（最後の Excel）"
 export const CHECK_MARK = "aoike-final-check"
-export const CHECK_VERSION = "1"
+export const CHECK_VERSION = 1
 
 /** 数値で書く項目（A・C・D・I・J・M・N） */
 export const NUMERIC_FIELDS: ReadonlySet<KojiFieldId> = new Set(["gyoshu", "motoukeShitauke", "jv", "amount", "specialAmount", "chiefEngineer", "supervisingEngineer"])
@@ -35,6 +35,8 @@ export const checkMetaSchema = z.object({
   caseId: z.string().min(1).max(64),
   sourceFileId: z.string().max(64).nullable(),
   exportedAt: z.string().max(40),
+  /** 案件の照合用の鍵の印（keyMark）。鍵が違えば記号の人を見つけられないので読まない */
+  keyMark: z.string().regex(/^[0-9a-f]{16}$/),
 })
 export type CheckMeta = z.infer<typeof checkMetaSchema>
 
@@ -61,17 +63,21 @@ export function finalSheetRows(rows: readonly RowResult<KojiFieldId>[]): FinalCe
   )
 }
 
-/** 最後の Excel の照合用の鍵（案件ごとに1つ。案件の作業 excelKey に置く） */
-export const newExcelKey = () => [...crypto.getRandomValues(new Uint8Array(32))].map((b) => b.toString(16).padStart(2, "0")).join("")
-export const excelKeySchema = z.string().regex(/^[0-9a-f]{64}$/)
+/** バイト列を16進の文字列にする */
+export const toHex = (bytes: Uint8Array) => [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("")
 
-/** 記号の人のハッシュ（案件の鍵で、空白を除いた氏名の HMAC-SHA-256 の先頭12バイト）。上げ直したとき、記号が付け直されていても同じ人を見つける */
-export async function personHash(key: string, name: string) {
+/** 案件の照合用の鍵（16進。サーバーが案件の id から決める。server/excel-key.ts）での HMAC-SHA-256 の先頭 n バイト */
+async function hmac(key: string, text: string, n: number) {
   const raw = Uint8Array.from(key.match(/../g)!.map((h) => parseInt(h, 16)))
   const k = await crypto.subtle.importKey("raw", raw, { name: "HMAC", hash: "SHA-256" }, false, ["sign"])
-  const mac = await crypto.subtle.sign("HMAC", k, new TextEncoder().encode(personKey(name)))
-  return [...new Uint8Array(mac).slice(0, 12)].map((b) => b.toString(16).padStart(2, "0")).join("")
+  return toHex(new Uint8Array(await crypto.subtle.sign("HMAC", k, new TextEncoder().encode(text))).slice(0, n))
 }
+
+/** 記号の人のハッシュ（空白を除いた氏名の HMAC の先頭12バイト）。上げ直したとき、記号が付け直されていても同じ人を見つける */
+export const personHash = (key: string, name: string) => hmac(key, `person\n${personKey(name)}`, 12)
+
+/** 鍵の印（案件の id の HMAC の先頭8バイト）。上げ直したとき、同じ鍵で書いた Excel かを確かめる */
+export const keyMark = (key: string, caseId: string) => hmac(key, `case\n${caseId}`, 8)
 
 /** 落とした値の「〔Ａ〕」の形（記号の人が無い値はそのまま） */
 const markedOf = (cell: RowResult<KojiFieldId>["cells"][KojiFieldId], letters: PersonLetters) => (cell.stored ? showPersons(cell.stored, letters, true) : cell.value)
@@ -86,7 +92,7 @@ export async function finalSheet(
   // CSV に出てくる記号だけ（CSV の記号は Ａ から欠けなく付く。未掲載の人は CSV に出ない）
   const used = new Set(rows.flatMap((r) => Object.values(r.marked).flatMap((v) => [...v.matchAll(MARK_RE)].map((m) => m[1]!))))
   const persons = await Promise.all([...used].map(async (letter) => ({ letter, hash: await personHash(id.excelKey, view.letters.personOf.get(letter)!) })))
-  return { rows: finalSheetRows(view.output), check: { meta: { caseId: id.caseId, sourceFileId: id.sourceFileId, exportedAt: now.toISOString() }, persons, rows } }
+  return { rows: finalSheetRows(view.output), check: { meta: { caseId: id.caseId, sourceFileId: id.sourceFileId, exportedAt: now.toISOString(), keyMark: await keyMark(id.excelKey, id.caseId) }, persons, rows } }
 }
 
 /** 「〔Ａ〕」の形の記号（CSV の記号。未掲載の人は最後の Excel に出ない） */
@@ -95,7 +101,7 @@ export const MARK_RE = /〔([Ａ-Ｚ][０-９]*)〕/g
 /** 照合用の隠しシートのセル（1行目は印、2行目は識別、そのあと人・行）。全セル文字列 */
 export function checkSheetRows(check: FinalCheck): string[][] {
   return [
-    [CHECK_MARK, CHECK_VERSION],
+    [CHECK_MARK, String(CHECK_VERSION)],
     ["meta", JSON.stringify(check.meta)],
     ...check.persons.map((p) => ["person", p.letter, p.hash]),
     ...check.rows.map((r) => ["row", r.key, ...KOJI_KEIREKI.fields.map((f) => r.marked[f.id])]),
@@ -107,7 +113,10 @@ const personRowSchema = z.object({ letter: z.string().regex(/^[Ａ-Ｚ][０-９]
 /** 照合用の隠しシートを読む。この画面で落とした最後の Excel でなければ null、壊れていれば error */
 export function readCheckSheet(rows: readonly (readonly string[])[]): FinalCheck | { error: string } | null {
   if ((rows[0]?.[0] ?? "").trim() !== CHECK_MARK) return null
-  if ((rows[0]?.[1] ?? "").trim() !== CHECK_VERSION) return { error: "照合用のシートの形が新しすぎて読めません。画面を読み込み直してください" }
+  const version = Number((rows[0]?.[1] ?? "").trim())
+  if (!Number.isInteger(version)) return { error: "照合用のシートが書き換えられていて読めません" }
+  if (version > CHECK_VERSION) return { error: "この画面より新しい形の Excel です。画面を読み込み直してから上げてください" }
+  if (version < CHECK_VERSION) return { error: "前の形の Excel なので表に戻せません。書き出し直してから直してください" }
   let meta: CheckMeta | undefined
   const persons: FinalCheck["persons"] = []
   const out: CheckRow[] = []

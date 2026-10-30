@@ -9,7 +9,7 @@ import { finalSheet } from "../../excel/final-sheet"
 import { finalXlsx } from "../../excel/final-xlsx"
 import { collectInquiries, inquirySheet, type CellInquiry } from "../../inquiry/inquiry"
 import { inquiryXlsx } from "../../inquiry/inquiry-xlsx"
-import { uploadKind } from "../upload-kind"
+import { uploadKind, warnsUnlinked } from "../upload-kind"
 
 const base = { gyoshu: "8", motoukeShitauke: "1", jv: "0", prefecture: "", place: "", engineer: "試験　太郎", specialAmount: "0", startYm: "202404", endYm: "202409", chiefEngineer: "1", supervisingEngineer: "0" }
 const table: CaseTable = {
@@ -47,5 +47,14 @@ describe("上げたファイルの種類", () => {
     wb.addWorksheet("工事経歴（編集用）").addRows([["業種", "照合用"], ["8", "{}"]])
     wb.addWorksheet("照合用").state = "veryHidden"
     expect(uploadKind(readWorkbook("編集用.xlsx", new Uint8Array(await wb.xlsx.writeBuffer())))).toBe("unlinked")
+  })
+
+  test("建設業.NET の形の表（官公庁の元請 0 の行も）は、変換の元が無ければそのまま変換の元にし、あれば表に戻せないと伝えて聞く", () => {
+    const sheet = (motouke: string) => [{ name: "Sheet1", rows: [["8", "株式会社テスト", motouke, "0", "テスト工事"]], hidden: [false] }]
+    for (const m of ["0", "1", "2"]) expect(uploadKind(sheet(m))).toBe("unlinked")
+    expect(uploadKind(sheet("3"))).toBe("sheet")
+    expect(warnsUnlinked("unlinked", false)).toBe(false)
+    expect(warnsUnlinked("unlinked", true)).toBe(true)
+    expect(warnsUnlinked("sheet", true)).toBe(false)
   })
 })

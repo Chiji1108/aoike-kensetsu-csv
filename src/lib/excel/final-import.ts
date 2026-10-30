@@ -11,7 +11,7 @@ import { normalizePersonName, type Rounding, type TransformId } from "../convert
 import { groupBy } from "../group-by"
 import { leadingPrefecture, type Prefecture } from "../spec/prefectures"
 import { KOJI_KEIREKI, type KojiFieldId } from "../spec/koji-keireki"
-import { CHECK_SHEET_NAME, FINAL_SHEET_NAME, MARK_RE, NUMERIC_FIELDS, personHash, readCheckSheet, type FinalCheck } from "./final-sheet"
+import { CHECK_SHEET_NAME, FINAL_SHEET_NAME, keyMark, MARK_RE, NUMERIC_FIELDS, personHash, readCheckSheet, toHex, type FinalCheck } from "./final-sheet"
 
 /**
  * 直した最後の Excel を上げ直したときの取り込み。照合用の隠しシートの落としたときの値と、データのシートの今の値を比べ、
@@ -66,8 +66,10 @@ export type FinalReport = {
   alreadyAdded: number
   /** 落としたあとに表のその値が変わっていた（職員の手直しを上書きしないので、変更案にしない）。値は CSV の値（記号） */
   conflicts: { line: number; field: F; sent: string; now: string; uploaded: string }[]
-  /** 同じ中身の開いている変更案がもうある（承認する前に同じ Excel をもう一度上げた）ので、変更案を置かなかった */
-  duplicate?: true
+  /** 開いている・却下した直した Excel の変更案と同じなので除いた項目の数（画面が withoutKnown で数える） */
+  skipped?: number
+  /** N列より右に値のある行。取り込まない（「CSV で保存」すると CSV にも出る） */
+  extraColumns: number[]
   /** 読めない値（業種・年月など）。変更案にしない */
   invalid: { line: number; field: F; value: string; message: string }[]
   /** 個人名かもしれないのに匿名化を確かめられなかった値。変更案にしない */
@@ -89,10 +91,40 @@ export function finalCheckOf(sheets: readonly SheetGrid[]): FinalCheck | { error
   return sheet ? (readCheckSheet(sheet.rows) ?? { error: "照合用のシートが書き換えられていて読めません" }) : null
 }
 
-type Cell = { line: number; rowKey: string; field: F; value: string; /** 落としたときにこのセルにいた記号（記号はその人として読む） */ letters: ReadonlySet<string> }
+type Cell = { line: number; rowKey: string; field: F; value: string; /** 落としたときにこのセルにあった、人ではない記号の形の文字（「Ｋ建設」の Ｋ） */ literal: ReadonlySet<string> }
 
 const unmark = (marked: string) => marked.replace(MARK_RE, "$1")
-const lettersIn = (marked: string) => new Set([...marked.matchAll(MARK_RE)].map((m) => m[1]!))
+const ALNUM = "Ａ-Ｚａ-ｚA-Za-z０-９0-9"
+/** 記号の形の文字（前後が英数字でない Ａ・Ｂ２…） */
+const LETTER_RE = new RegExp(`(?<![${ALNUM}])([Ａ-Ｚ][０-９]*)(?![${ALNUM}])`, "g")
+/** 落としたときの値のうち、人の記号ではない記号の形の文字 */
+const literalIn = (marked: string) => {
+  const persons = new Set([...marked.matchAll(MARK_RE)].map((m) => m[1]!))
+  return new Set([...marked.replace(MARK_RE, "").matchAll(LETTER_RE)].map((m) => m[1]!).filter((l) => !persons.has(l)))
+}
+/** 値を比べる形（人の印の中の氏名は空白を除いて比べる） */
+const comparableValue = (v: string) => withNames(v, (name) => `\u0000${personKey(name)}\u0000`)
+
+/** 変更案の項目の印（同じ Excel を上げ直したときに、前に出した・却下した項目と同じかを見る） */
+export function changeSignature(c: ChatChange): string {
+  if (c.kind === "cell") return JSON.stringify(["cell", c.rowKey, c.field, comparableValue(c.edit.value)])
+  if (c.kind === "include") return JSON.stringify(["include", c.rowKey, c.include])
+  if (c.kind === "add") return JSON.stringify(["add", c.rowKey])
+  return JSON.stringify([c.kind, c])
+}
+
+/** known の項目を除く。足す行を除いたら、その行を載せる項目も除く */
+export function withoutKnown(changes: readonly ChatChange[], known: ReadonlySet<string>) {
+  const droppedAdds = new Set(changes.flatMap((c) => (c.kind === "add" && known.has(changeSignature(c)) ? [c.rowKey] : [])))
+  const kept = changes.filter((c) => !known.has(changeSignature(c)) && !(c.kind === "include" && c.include && droppedAdds.has(c.rowKey)))
+  return { changes: kept, skipped: changes.length - kept.length }
+}
+
+/** 除いたあとの件数で報告を数え直す */
+export function recount(report: FinalReport, changes: readonly ChatChange[], skipped: number): FinalReport {
+  const n = (k: ChatChange["kind"], f: (c: ChatChange) => boolean = () => true) => changes.filter((c) => c.kind === k && f(c)).length
+  return { ...report, cells: n("cell"), added: n("add"), excluded: n("include", (c) => c.kind === "include" && !c.include), ...(skipped ? { skipped } : {}) }
+}
 
 /**
  * 上げ直した最後の Excel を、今の表（view）との差分の変更案にする。id は今の案件と変換の元（別の案件・元を変えたあとの Excel は読まない）
@@ -100,7 +132,7 @@ const lettersIn = (marked: string) => new Set([...marked.matchAll(MARK_RE)].map(
 export async function readFinalSheet(
   sheets: readonly SheetGrid[],
   view: TableView,
-  id: { caseId: string; sourceFileId: string | null; excelKey: string | null },
+  id: { caseId: string; sourceFileId: string | null; excelKey: string },
   ai: FinalAi,
 ): Promise<{ changes: ChatChange[]; report: FinalReport } | { error: string }> {
   const check = finalCheckOf(sheets)
@@ -108,9 +140,10 @@ export async function readFinalSheet(
   if ("error" in check) return check
   if (check.meta.caseId !== id.caseId) return { error: "別の案件で落とした Excel です" }
   if (check.meta.sourceFileId !== id.sourceFileId) return { error: "落としたあとに変換の元のファイルが変わったので、この Excel は表に戻せません。書き出し直してから直してください" }
-  if (!id.excelKey) return { error: "この案件で書き出した Excel の記録がありません。書き出し直してから直してください" }
+  if (check.meta.keyMark !== (await keyMark(id.excelKey, id.caseId))) return { error: "この Excel の記録と合いません。書き出し直してから直してください" }
   const data = sheets.find((s) => s.name === FINAL_SHEET_NAME) ?? sheets.find((s) => s.name !== CHECK_SHEET_NAME)
   if (!data) return { error: "データのシートがありません" }
+  const extraColumns = data.rows.flatMap((r, i) => (r.slice(FIELDS.length).some(Boolean) ? [i + 1] : []))
   const uploaded = data.rows.flatMap((r, i) => {
     const values = FIELDS.map((_, c) => (r[c] ?? "").trim())
     return values.some(Boolean) ? [{ line: i + 1, values }] : []
@@ -119,8 +152,9 @@ export async function readFinalSheet(
 
   // 記号の人: 落としたときの記号 → 今の表の人（照合用のハッシュで見つける。記号が付け直されていても同じ人）
   const nameByHash = new Map<string, string>()
-  await Promise.all([...view.letters.personOf.values()].map(async (name) => nameByHash.set(await personHash(id.excelKey!, name), name)))
+  await Promise.all([...view.letters.personOf.values()].map(async (name) => nameByHash.set(await personHash(id.excelKey, name), name)))
   const nameOfLetter = new Map(check.persons.flatMap((p) => (nameByHash.has(p.hash) ? [[p.letter, nameByHash.get(p.hash)!] as const] : [])))
+  const sentLetters = new Set(check.persons.map((p) => p.letter))
   const letterOfPerson = new Map([...nameOfLetter].map(([letter, name]) => [personKey(name), letter]))
   /** 今の表のセルを、落としたときの記号の「〔Ａ〕」の形にする。落としたときにいなかった人がいれば undefined */
   const asSent = (cell: CellResult) => {
@@ -141,7 +175,7 @@ export async function readFinalSheet(
     sent.map((s) => comparable(s.csv)),
   )
   if (sent.length && !match.pairs.length && !match.candidates.size) return { error: "落としたときの工事が1つも見つかりません。書き出した Excel のデータのシートを上げてください" }
-  const report: FinalReport = { cells: 0, added: 0, excluded: 0, alreadyAdded: 0, conflicts: [], invalid: [], refused: [], ambiguous: [], keptRows: 0, unknownRows: 0 }
+  const report: FinalReport = { cells: 0, added: 0, excluded: 0, alreadyAdded: 0, conflicts: [], invalid: [], refused: [], ambiguous: [], keptRows: 0, unknownRows: 0, extraColumns }
   const now = new Map(view.shown.map((r) => [r.key, r]))
 
   const cellChanges: Cell[] = []
@@ -160,7 +194,7 @@ export async function readFinalSheet(
     const was = comparable(s.csv)
     FIELDS.forEach((f, c) => {
       if (up[c] === was[c]) return
-      const cell: Cell = { line: u.line, rowKey: s.key, field: f.id, value: u.values[c]!, letters: lettersIn(s.marked[f.id]) }
+      const cell: Cell = { line: u.line, rowKey: s.key, field: f.id, value: u.values[c]!, literal: literalIn(s.marked[f.id]) }
       const cur = asSent(current.cells[f.id])
       // 前に上げて承認した値（同じ Excel を2回上げた）
       if (cur !== undefined && unmark(cur) === u.values[c]) return
@@ -185,7 +219,7 @@ export async function readFinalSheet(
       const n = (seen.get(hash) ?? 0) + 1
       seen.set(hash, n)
       const rowKey = `add-${hash}-${n}`
-      const cells = FIELDS.flatMap((f, c): Cell[] => (u.values[c] ? [{ line: u.line, rowKey, field: f.id, value: u.values[c]!, letters: new Set() }] : []))
+      const cells = FIELDS.flatMap((f, c): Cell[] => (u.values[c] ? [{ line: u.line, rowKey, field: f.id, value: u.values[c]!, literal: new Set() }] : []))
       return { line: u.line, rowKey, cells }
     })
     .filter((r) => {
@@ -193,20 +227,29 @@ export async function readFinalSheet(
       report.alreadyAdded++
       return false
     })
-  // 上限は AI（匿名化）を呼ぶ前に確かめる
+  // 上限は AI（匿名化）を呼ぶ前に確かめる（場所名の住所からそろえる都道府県名も、出るかもしれない分を数える）
   const addedNow = view.shown.filter((r) => r.key.startsWith("add-")).length
   if (addedNow + newRows.length > MAX_ADDED_ROWS) return { error: `足す行が ${newRows.length} 行あります。案件に足せる行は ${MAX_ADDED_ROWS} 行までです（今 ${addedNow} 行）` }
-  const planned = cellChanges.length + excludes.length + newRows.length * 2
+  const places = new Set(cellChanges.filter((c) => c.field === "place").map((c) => c.rowKey)).size
+  const planned = cellChanges.length + places + excludes.length + newRows.length * 2
   if (planned > MAX_EXCEL_CHANGES) return { error: `変更が ${planned} 件あります。1回に取り込めるのは ${MAX_EXCEL_CHANGES} 件までです（分けて上げ直してください）` }
 
-  const read = await readValues([...cellChanges, ...suspects.map((x) => x.cell), ...newRows.flatMap((r) => r.cells)], ai, nameOfLetter)
-  const currentValue = (c: Cell) => {
+  const read = await readValues([...cellChanges, ...newRows.flatMap((r) => r.cells)], ai, nameOfLetter, sentLetters)
+  /** 今の表の値と同じか（人の印の氏名は空白を除いて比べる） */
+  const isCurrent = (c: Cell, value: string) => {
     const cell = now.get(c.rowKey)!.cells[c.field]
-    return cell.stored ?? cell.value
+    return comparableValue(value) === comparableValue(cell.stored ?? cell.value)
   }
+  // 落としたあとに表が変わっていたセルは、決まった処理で読んで今の値と同じなら何もしない（AI には通さない。注文者・工事名は食い違いのまま）
+  const checked = await readValues(
+    suspects.filter((x) => !READ_AS[x.cell.field].startsWith("ai.")).map((x) => x.cell),
+    { ...ai, callAi: undefined },
+    nameOfLetter,
+    sentLetters,
+  )
   for (const { cell: c, sent: was } of suspects) {
-    const r = read.get(c)!
-    if (r.ok && r.edit.value === currentValue(c)) continue
+    const r = checked.get(c)
+    if (r?.ok && isCurrent(c, r.edit.value)) continue
     report.conflicts.push({ line: c.line, field: c.field, sent: was, now: now.get(c.rowKey)!.cells[c.field].value, uploaded: c.value })
   }
   // 場所名に書いた住所の都道府県で、都道府県名をそろえる（都道府県名も書き換えていて違えば、どちらも取り込まない）
@@ -231,7 +274,7 @@ export async function readFinalSheet(
         report.conflicts.push({ line: place.line, field: "prefecture", sent: s.marked.prefecture, now: current.cells.prefecture.value, uploaded: r.prefecture })
       return
     }
-    const synthetic: Cell = { line: place.line, rowKey, field: "prefecture", value: r.prefecture, letters: new Set() }
+    const synthetic: Cell = { line: place.line, rowKey, field: "prefecture", value: r.prefecture, literal: new Set() }
     read.set(synthetic, { ok: true, edit: { value: r.prefecture, by: "excel" } })
     add(synthetic)
   }
@@ -245,7 +288,7 @@ export async function readFinalSheet(
       ;(r.refused ? report.refused : report.invalid).push({ line: c.line, field: c.field, value: c.value, message: r.message })
       continue
     }
-    if (r.edit.value === currentValue(c)) continue
+    if (isCurrent(c, r.edit.value)) continue
     changes.push({ kind: "cell", rowKey: c.rowKey, field: c.field, edit: r.edit })
     report.cells++
   }
@@ -317,12 +360,17 @@ export function matchRows(uploaded: readonly (readonly string[])[], sent: readon
   const score = (u: readonly string[], s: readonly string[]) => u.reduce((n, v, c) => n + (v === s[c] ? 1 : 0), 0)
   // 今の行ごとの候補（MATCH_FIELDS 列以上が同じ落とした行と、同じ列の数）
   const cand = new Map<number, Map<number, number>>()
+  /** 同じ値の多すぎる手がかりを使わなかった今の行（候補を見落としたかもしれない） */
+  const partial = new Set<number>()
   for (const ui of restU) {
     const u = uploaded[ui]!
     const near = new Map<number, number>()
     for (const { c, m } of index) {
       const list = m.get(u[c]!) ?? []
-      if (list.length > INDEX_LIMIT) continue
+      if (list.length > INDEX_LIMIT) {
+        partial.add(ui)
+        continue
+      }
       for (const si of list) if (!near.has(si)) near.set(si, score(u, sent[si]!))
     }
     for (const [si, n] of near) if (n < CANDIDATE_FIELDS) near.delete(si)
@@ -360,7 +408,15 @@ export function matchRows(uploaded: readonly (readonly string[])[], sent: readon
     const ss = [...cand.get(ui)!.keys()].filter((si) => restS.has(si))
     if (ss.length) candidates.set(ui, ss)
   }
-  const matchedU = new Set(pairs.map(([u]) => u))
+  // 手がかりを使わなかった行は、残った（載せないになる）落とした行と全部比べ、近い行があれば黙って差し替えず決めきれない行にする
+  // （残った落とした行は消した行だけのことが多く、少ない）
+  const matched = new Set(pairs.map(([u]) => u))
+  for (const ui of partial) {
+    if (matched.has(ui) || candidates.has(ui)) continue
+    const ss = [...restS].filter((si) => score(uploaded[ui]!, sent[si]!) >= CANDIDATE_FIELDS)
+    if (ss.length) candidates.set(ui, ss)
+  }
+  const matchedU = matched
   return {
     pairs,
     ambiguous: [...candidates.keys()],
@@ -373,26 +429,21 @@ export function matchRows(uploaded: readonly (readonly string[])[], sent: readon
 /** prefecture は、場所名に住所を書いたときの、住所に書いてあった都道府県 */
 type Read = { ok: true; edit: CellEdit; prefecture?: Prefecture } | { ok: false; message: string; refused?: true }
 
-const ALNUM = "Ａ-Ｚａ-ｚA-Za-z０-９0-9"
-const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-
 /**
  * 値の記号（Ａ・Ｂ…）を、その人の氏名にした値（匿名化に通す元の値。変換のときと同じく、匿名化の AI が氏名を同じ人の印にする）。
- * 落としたときにこのセルにいた記号は、前後が英数字でない所をその人とする。値がまるごと1つの記号なら、ほかのセルの記号でもその人
- * （注文者を「Ｂ」にした）。今の表にいない人の記号は読めない
+ * 前後が英数字でない記号の形の文字は、落としたときにこの Excel に書いた記号の人（照合用のハッシュ）として読む。落としたときにこのセルに
+ * あった人ではない文字（literal）はそのまま。人に戻せない記号は黙って文字にせず読めない
  */
-function withLetterNames(text: string, letters: ReadonlySet<string>, nameOfLetter: ReadonlyMap<string, string>): { ok: true; value: string } | { ok: false; message: string } {
-  const whole = text.trim()
-  const used = /^[Ａ-Ｚ][０-９]*$/.test(whole) && nameOfLetter.has(whole) ? [whole] : [...letters]
-  if (!used.length) return { ok: true, value: text }
-  const re = new RegExp(`(?<![${ALNUM}])(${used.sort((a, b) => b.length - a.length).map(escape).join("|")})(?![${ALNUM}])`, "g")
-  const missing = [...new Set([...text.matchAll(re)].map((m) => m[1]!).filter((l) => !nameOfLetter.has(l)))]
-  if (missing.length) return { ok: false, message: `記号「${missing.join("・")}」の人が今の表にいません` }
-  return { ok: true, value: text.replace(re, (l) => nameOfLetter.get(l)!) }
+function withLetterNames(text: string, literal: ReadonlySet<string>, nameOfLetter: ReadonlyMap<string, string>, sentLetters: ReadonlySet<string>): { ok: true; value: string } | { ok: false; message: string } {
+  const found = [...text.matchAll(LETTER_RE)].map((m) => m[1]!).filter((l) => !literal.has(l))
+  const missing = [...new Set(found.filter((l) => !nameOfLetter.has(l)))]
+  if (missing.length)
+    return { ok: false, message: `記号「${missing.join("・")}」${missing.some((l) => sentLetters.has(l)) ? "の人が今の表にいません" : "に当たる人がこの Excel にいません"}` }
+  return { ok: true, value: text.replace(LETTER_RE, (l) => (literal.has(l) ? l : nameOfLetter.get(l)!)) }
 }
 
 /** 値を項目ごとの決まった処理に通す。空にした値は空のまま（職員が消した） */
-async function readValues(cells: readonly Cell[], ai: FinalAi, nameOfLetter: ReadonlyMap<string, string>): Promise<Map<Cell, Read>> {
+async function readValues(cells: readonly Cell[], ai: FinalAi, nameOfLetter: ReadonlyMap<string, string>, sentLetters: ReadonlySet<string>): Promise<Map<Cell, Read>> {
   const ctx = { rounding: ai.rounding, addresses: NO_ADDRESSES }
   const out = new Map<Cell, Read>()
   const places = cells.filter((c) => READ_AS[c.field] === "address" && c.value)
@@ -416,7 +467,7 @@ async function readValues(cells: readonly Cell[], ai: FinalAi, nameOfLetter: Rea
       else out.set(c, { ok: true, edit: { value: collapseSpaces(c.value), by: "excel" } })
       continue
     }
-    const named = how.startsWith("ai.") ? withLetterNames(c.value, c.letters, nameOfLetter) : { ok: true as const, value: c.value }
+    const named = how.startsWith("ai.") ? withLetterNames(c.value, c.literal, nameOfLetter, sentLetters) : { ok: true as const, value: c.value }
     if (!named.ok) {
       out.set(c, { ok: false, message: named.message })
       continue
@@ -453,5 +504,5 @@ async function readValues(cells: readonly Cell[], ai: FinalAi, nameOfLetter: Rea
 /** 足した工事の行の key に使う、行の中身のハッシュ（SHA-256 の先頭16バイト） */
 async function contentKey(content: readonly string[]) {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(content)))
-  return [...new Uint8Array(digest).slice(0, 16)].map((b) => b.toString(16).padStart(2, "0")).join("")
+  return toHex(new Uint8Array(digest).slice(0, 16))
 }

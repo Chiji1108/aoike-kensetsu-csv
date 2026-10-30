@@ -24,12 +24,18 @@ export function uploadKind(sheets: readonly SheetGrid[] | null): UploadKind {
 }
 
 /**
- * 建設業.NET に取り込む形（見出しの行なし・A〜N の14列）の表か。1行目が業種のコード・元請下請・JV の数字で、N列より右に値が無い。
+ * 建設業.NET に取り込む形（見出しの行なし・A〜N の14列）の表か。1行目が業種のコード・元請下請（0 は官公庁の元請）・JV の数字で、N列より右に値が無い。
  * 職員が自分で作った最後の Excel や、照合用のシートを消した Excel
  */
 function looksLikeFinal(sheet: SheetGrid) {
   const rows = sheet.rows.filter((r) => r.some(Boolean))
   if (!rows.length || rows.some((r) => r.slice(14).some(Boolean))) return false
   const [gyoshu, , motouke, jv] = rows[0]!
-  return /^\d{1,2}$/.test(gyoshu ?? "") && /^[12]$/.test(motouke ?? "") && /^[01]$/.test(jv ?? "")
+  return /^\d{1,2}$/.test(gyoshu ?? "") && /^[012]$/.test(motouke ?? "") && /^[01]$/.test(jv ?? "")
 }
+
+/**
+ * 表に戻せない Excel だと伝えて、変換の元にするかを聞くか。直した Excel と取り違えうるのは変換の元があるときだけ
+ * （まだ無ければ、顧客が送った建設業.NET の形の表として、そのまま変換の元にする）
+ */
+export const warnsUnlinked = (kind: UploadKind, hasSource: boolean) => kind === "unlinked" && hasSource

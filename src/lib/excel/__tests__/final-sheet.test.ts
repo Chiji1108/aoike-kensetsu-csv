@@ -6,7 +6,7 @@ import { kojiRow } from "../../convert/__tests__/helpers"
 import { toCsvText } from "../../convert/csv"
 import { personToken } from "../../convert/persons"
 import { KOJI_KEIREKI } from "../../spec/koji-keireki"
-import { CHECK_MARK, CHECK_SHEET_NAME, FINAL_SHEET_NAME, finalSheet } from "../final-sheet"
+import { CHECK_MARK, CHECK_SHEET_NAME, FINAL_SHEET_NAME, finalSheet, readCheckSheet } from "../final-sheet"
 import { finalXlsx } from "../final-xlsx"
 
 const yamada = personToken("山田太郎")
@@ -83,7 +83,14 @@ describe("最後の Excel", () => {
     expect(rows.find((r) => r[1] === "s!1")).toContain("〔Ａ〕邸新築工事")
     expect(rows.filter((r) => r[0] === "person").map((r) => r[1])).toEqual(["Ａ"])
     expect(JSON.stringify(rows)).not.toContain("山田")
+    expect(JSON.parse(rows[1]![1]!)).toMatchObject({ caseId: "case-1", keyMark: expect.stringMatching(/^[0-9a-f]{16}$/) })
     // 記号の人のハッシュの鍵は Excel に書かない
     expect(JSON.stringify(rows)).not.toContain("1".repeat(64))
+  })
+
+  test("照合用のシートの形の版が違えば、古い・新しいで分けて断る", () => {
+    expect(readCheckSheet([[CHECK_MARK, "2"]])).toEqual({ error: expect.stringContaining("新しい形") })
+    expect(readCheckSheet([[CHECK_MARK, "0"]])).toEqual({ error: expect.stringContaining("前の形") })
+    expect(readCheckSheet([["ほかの表"]])).toBeNull()
   })
 })
