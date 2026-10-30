@@ -215,8 +215,8 @@ test("聞き返しに答えるまで承認できない。「いいえ」で全�
   expect(await downloadCsv(page)).toBeTruthy()
 })
 
-/** ルールの追記はサーバーが変更案の記録（R2）から足すので、本物の指示で確かめる（E2E_LIVE_AI=1 のときだけ） */
-test("本物の AI: 顧客ルールへの追記案を承認すると顧客ルールに保存する。同じ項目をもう一度承認しても二度足さない", async ({ page }) => {
+/** ルールの項目はサーバーが変更案の記録（R2）から足すので、本物の指示でも確かめる（E2E_LIVE_AI=1 のときだけ。偽の記録で確かめるのは rules.spec.ts） */
+test("本物の AI: 顧客ルールの項目の案を承認すると顧客ルールに項目として保存する。同じ項目をもう一度承認しても二度足さない", async ({ page }) => {
   test.skip(process.env.E2E_LIVE_AI !== "1", "E2E_LIVE_AI=1 のときだけ")
   const { customer, caseUrl } = await convertFixture(page, FIXTURE)
   created.push(customer)
@@ -240,7 +240,7 @@ test("本物の AI: 顧客ルールへの追記案を承認すると顧客ルー
   await page.getByTestId("proposal").last().getByTestId("proposal-apply-all").click()
   await expect(page.getByTestId("proposal-closed").last()).toContainText("反映")
   await page.getByRole("link", { name: customer }).click()
-  await expect.poll(async () => (await page.getByTestId("customer-rules-text").inputValue()).split(rule).length - 1).toBe(1)
+  await expect.poll(async () => (await page.getByTestId("customer-rules").getByTestId("rule-item-text").allTextContents()).filter((t) => t.includes(rule)).length).toBe(1)
 })
 
 const PDF_LINES = [
