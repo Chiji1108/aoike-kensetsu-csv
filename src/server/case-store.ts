@@ -3,7 +3,7 @@ import type { BatchItem, BatchResponse } from "drizzle-orm/batch"
 import { alias, type BaseSQLiteDatabase } from "drizzle-orm/sqlite-core"
 import { csvCaseAiCaches, csvCaseFiles, csvCases, csvCaseStates, csvCustomers, csvRuleAppends, csvRuleItems, csvSettings } from "@/db/cases-schema"
 import type * as schema from "@/db/schema"
-import { charCount, MAX_RULE_ITEMS, MAX_RULES_TOTAL, rulesText, type Rule7Tax, type RuleItem, type RuleScope, type RuleSource, type RuleTarget } from "@/lib/chat/rules"
+import { charCount, MAX_RULE_ITEMS, MAX_RULES_TOTAL, ruleSourceSchema, rulesText, type ProposedRuleSource, type Rule7Tax, type RuleItem, type RuleScope, type RuleSource, type RuleTarget } from "@/lib/chat/rules"
 import { deleteMemoryOfCustomer, deleteRunsOfCase } from "./location-store"
 import { casePrefix, r2KeyOf, type Case, type CaseFile, type CaseStatus, type Customer, type CustomerSummary, type DeletionCounts, type FileKind } from "@/lib/cases/types"
 
@@ -82,6 +82,20 @@ export type { RuleTarget }
 const inList = (target: RuleTarget) =>
   target.scope === "global" ? and(eq(csvRuleItems.scope, "global"), isNull(csvRuleItems.customerId)) : and(eq(csvRuleItems.scope, "customer"), eq(csvRuleItems.customerId, target.customerId))
 
+/** 知らない由来の項目がある（新しいコードで足した由来を前のコードで読んだ・D1 を手で直した）。黙って別の由来にせず、どの項目かを知らせて止める */
+export class UnknownRuleSourceError extends Error {
+  constructor(id: string, source: string) {
+    super(`ルールの項目（${id}）の由来「${source}」を読めません。新しい版に戻すか、項目の由来を直してください`)
+  }
+}
+
+/** D1 の由来を確かめる（text の列なので型の値と限らない） */
+function sourceOf(item: { id: string; source: string }): RuleSource {
+  const parsed = ruleSourceSchema.safeParse(item.source)
+  if (!parsed.success) throw new UnknownRuleSourceError(item.id, item.source)
+  return parsed.data
+}
+
 /** 一覧の項目（並びの順。由来の案件の年度と顧客名つき。案件が消えていれば由来は無し） */
 export async function listRuleItems(db: Db, target: RuleTarget): Promise<RuleItem[]> {
   const originCustomer = alias(csvCustomers, "origin_customer")
@@ -95,7 +109,7 @@ export async function listRuleItems(db: Db, target: RuleTarget): Promise<RuleIte
   return rows.map(({ item, fiscalYear, customerName }) => ({
     id: item.id,
     text: item.text,
-    source: item.source,
+    source: sourceOf(item),
     version: item.version,
     origin: item.caseId && fiscalYear !== null && customerName !== null ? { caseId: item.caseId, fiscalYear, customerName } : null,
   }))
@@ -219,7 +233,11 @@ export async function moveRuleItem(db: Db, target: RuleTarget, id: string, direc
  * 同じ項目を二度承認しても（保存前に開き直しても、同時に押しても）二度足さない。上限を超えるなら足さずに RulesTooLongError。
  * 足したら "added"、もう足してあれば "already"
  */
-export async function appendRuleOnce(db: Db, target: RuleTarget, add: { caseId: string; proposalId: string; item: number; text: string }): Promise<"added" | "already"> {
+export async function appendRuleOnce(
+  db: Db,
+  target: RuleTarget,
+  add: { caseId: string; proposalId: string; item: number; text: string; source: ProposedRuleSource },
+): Promise<"added" | "already"> {
   const text = add.text
   const token = crypto.randomUUID()
   const mark = db
@@ -243,7 +261,7 @@ export async function appendRuleOnce(db: Db, target: RuleTarget, add: { caseId: 
       .from(csvRuleAppends)
       .where(and(eq(csvRuleAppends.proposalId, add.proposalId), eq(csvRuleAppends.item, add.item), eq(csvRuleAppends.token, token))),
   )
-  const [, added] = await db.batch([mark, newItemRow(db, target, { id: crypto.randomUUID(), text, source: "chat", caseId: add.caseId }, marked)])
+  const [, added] = await db.batch([mark, newItemRow(db, target, { id: crypto.randomUUID(), text, source: add.source, caseId: add.caseId }, marked)])
   if (added.length) return "added"
   const [already] = await db
     .select({ one: sql`1` })

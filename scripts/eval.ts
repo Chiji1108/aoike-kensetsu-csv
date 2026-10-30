@@ -7,6 +7,8 @@
  *            | plan（列の対応を直す指示: 案件定義の planInstructions を順に。set_plan の変更案は画面と同じく今の計画に重ねて変換し直し、ほかの変更案はその上に重ねる）
  *            | answers（顧客の回答: 案件定義の answerSheet があれば記入用Excelを作って「備考」の列に答えを書き、画面と同じく決まった欄を先に読んでから
  *              「AI で読む」と同じ指示を送る。answerInstructions があればメールの本文として順に送る。聞いていたセルの答えを answerTruth と比べる）
+ *            | review（案件を終えるときの振り返り: 指示のうち顧客ルールに足させる指示を除いて送り、新しい会話で振り返りの指示を送って毎年の決まりの案を出させ、
+ *              その決まりだけを顧客ルールにして、去年のコード無しで rules と同じ1回。rules と比べる）
  *            | location（工事場所の調査: 変換の結果から調べる現場を集め、画面の一括調査と同じ手順で調べ、変更案を全部承認して都道府県・場所名を比べる。
  *              覚えた結果は EVAL_OUT の location-memory.sqlite に残るので、2回目は覚えた結果を使う）
  *   案件定義の files に、変換の元のほかに AI に渡すファイル（技術者の一覧・PDF など）を書ける（チャットの指示のときコンテナに置く。画面で案件に付けたファイルと同じ）
@@ -24,17 +26,19 @@ import { join } from "node:path"
 import { newWork } from "../src/lib/cases/state"
 import { deriveTable, type CaseTable } from "../src/lib/cases/view"
 import { caseContext } from "../src/lib/chat/context"
-import { applyChanges } from "../src/lib/chat/proposals"
+import { applyChanges, type ChatChange } from "../src/lib/chat/proposals"
+import { QUIET_TOOLS, REVIEW_PROMPT, type ReviewTurn } from "../src/lib/chat/review"
+import { describeSettings } from "../src/lib/chat/describe"
 import { carryoverPrompt, cleanCarryoverCodes, codesFromModel, knownWords, namesForCarryover } from "../src/lib/chat/carryover"
 import { compareFormats, describeFormatDiff, similarity } from "../src/lib/convert/format-diff"
 import { DEFAULT_GLOBAL_RULE_ITEMS, rulesText, ruleTextSchema } from "../src/lib/chat/rules"
-import { checkReport, newTurnState, startTurn, systemPrompt } from "../src/lib/chat/turn"
+import { checkReport, newTurnState, startTurn, systemPrompt, type ReviewDeps, type TurnState } from "../src/lib/chat/turn"
 import type { RowResult } from "../src/lib/convert/convert"
 import { heuristicPlan, planSheets, sheetByNames } from "../src/lib/convert/heuristic-plan"
 import { runConversion } from "../src/lib/convert/pipeline"
 import { fileAddressLookup } from "../src/lib/convert/address-file"
 import { acceptAiPlan, type MappingPlan } from "../src/lib/convert/plan"
-import { applyPlanPatch, describePlanPatch, sheetShapeOf } from "../src/lib/convert/plan-patch"
+import { applyPlanPatch, describePlanPatch, sheetShapeOf, type PlanPatch } from "../src/lib/convert/plan-patch"
 import { planExcerpt, previousPlanContext } from "../src/lib/convert/prompt"
 import { collectSourceRows } from "../src/lib/convert/sources"
 import { readWorkbook } from "../src/lib/convert/workbook"
@@ -51,9 +55,11 @@ const [caseId = "", variant = "baseline"] = process.argv.slice(2)
 const OUT = process.env.EVAL_OUT
 const CASES_FILE = process.env.EVAL_CASES
 if (!OUT || !CASES_FILE) throw new Error("EVAL_CASES（案件定義の JSON）と EVAL_OUT（結果のフォルダ）を指定（顧客データを含むのでリポジトリの外）")
-if (!["baseline", "edit", "rules", "nextyear", "location", "plan", "answers"].includes(variant)) throw new Error("variant: baseline | edit | rules | nextyear | location | plan | answers")
+if (!["baseline", "edit", "rules", "nextyear", "location", "plan", "answers", "review"].includes(variant)) throw new Error("variant: baseline | edit | rules | nextyear | location | plan | answers | review")
 mkdirSync(OUT, { recursive: true })
 const BUDGET_USD = 5
+/** 顧客ルールだけで直す1回の指示（rules・nextyear・review の翌年分） */
+const RULES_TURN = "顧客ルールどおりに表を直して"
 /** 全体ルールは初期値の項目（新しい事務所と同じ）。7割の計算は事務所の初期値（税抜） */
 const GLOBAL_RULES = rulesText(DEFAULT_GLOBAL_RULE_ITEMS.map((text) => ({ text })))
 
@@ -256,6 +262,7 @@ try {
 
   if (variant === "location") await locationEval()
   else if (variant === "answers") await answersEval()
+  else if (variant === "review") await reviewEval()
   else if (variant !== "baseline") {
     /** 顧客ルールの項目（画面の箇条書き）。案件定義の customerRules は1行1項目 */
     let customerItems = def.customerRules.split("\n").map((t) => t.trim()).filter(Boolean)
@@ -284,125 +291,205 @@ try {
         console.log(`去年のコード ${codes.length} 件（${carryText.length} 字）。去年との違い:\n  ${previousFormat.lines.join("\n  ")}`)
       }
     }
-    const turns = variant === "rules" || variant === "nextyear" ? ["顧客ルールどおりに表を直して"] : variant === "plan" ? (def.planInstructions ?? []) : def.instructions
+    const turns = variant === "rules" || variant === "nextyear" ? [RULES_TURN] : variant === "plan" ? (def.planInstructions ?? []) : def.instructions
     if (!turns.length) throw new Error(`${variant} の指示が案件定義に無い`)
-    /** 今の列の対応（set_plan を承認すると変わる。画面と同じく、変えたら変換し直す） */
-    let plan = base.plan
-    const conversionCache = new Map()
-    // 画面と同じく、案件のファイルを file-<n>.<拡張子> の名前でコンテナに置く（変換の元が1つ目）。上げたら、落ちても必ず消す
-    const uploads: { id: string; name: string; original: string; mediaType: string; isSource: boolean }[] = []
-    let table = tableOf(base.rows)
-    const messages: ModelMessage[] = []
-    let containerId: string | undefined
-    let total = 0
-    const log: unknown[] = []
-    const generated = new Set<string>()
     const t00 = Date.now()
-    let status: RunSummary["status"] = "done"
-    let reason: string | undefined
-    try {
-      for (const [i, p] of [def.xlsx, ...(def.files ?? [])].entries()) {
-        const original = p.split("/").at(-1)!
-        const name = containerName(i, original)
-        const mediaType = contentTypeOf(original)
-        const up = await anthropic.files.upload({ file: await toFile(readFileSync(path(p)), name, { type: mediaType }) })
-        uploads.push({ id: up.id, name, original, mediaType, isSource: i === 0 })
-      }
-      for (const [i, text] of turns.entries()) {
-        // 画面は指示のたびに今の列の対応で文脈を作る
-        const system = systemPrompt({ global: GLOBAL_RULES, customerName: def.customerName, customer: rulesText(customerItems.map((text) => ({ text }))), rule7Tax: "excluded" }, caseContext(sheets, gridOf(plan), plan, previousFormat), uploads)
-        if (total > BUDGET_USD) {
-          status = "stopped"
-          reason = `費用が $${total.toFixed(2)} で上限 $${BUDGET_USD} を超え、${turns.length - i} 回の指示を送っていない`
-          console.log(`STOP: ${reason}`)
-          break
-        }
-        messages.push({
-          role: "user",
-          content: [
-            ...(containerId
-              ? []
-              : uploads.map((u) => ({ type: "file" as const, mediaType: u.mediaType, data: { type: "reference" as const, reference: { anthropic: u.id } }, providerOptions: { anthropic: { containerUpload: true } } }))),
-            ...(i === 0 && carryText ? [{ type: "text" as const, text: carryText }] : []),
-            { type: "text", text },
-          ],
-        })
-        const t0 = Date.now()
-        const state = newTurnState(
-          table,
-          async (req) => {
-            const r = await batchWithClaude(anthropic, req)
-            spend("anonymize", r.usd)
-            return r
-          },
-          undefined,
-          { plan, shape: sheetShapeOf(gridOf(plan)) },
-          { lookup: fileAddressLookup, rounding: "floor" },
-        )
-        const result = startTurn({ apiKey, system, messages, state, containerId })
-        let reply = ""
-        const calls: string[] = []
-        for await (const part of result.fullStream) {
-          if (part.type === "text-delta") reply += part.text
-          else if (part.type === "finish-step") spend("chat", usdOf(tokensOfAiSdk(part.usage)))
-          else if (part.type === "tool-call") calls.push(part.toolName === "code_execution" ? "code" : part.toolName)
-          else if (part.type === "tool-result" && part.toolName === "code_execution") for (const [, id] of JSON.stringify(part.output).matchAll(/"file_?[iI]d"\s*:\s*"(file_[A-Za-z0-9_-]+)"/g)) generated.add(id!)
-          else if (part.type === "error") throw new Error(`stream error: ${String((part.error as { responseBody?: string }).responseBody ?? part.error)}`.slice(0, 600))
-        }
-        const [responseMessages, usage, steps] = await Promise.all([result.responseMessages, result.totalUsage, result.steps])
-        containerId = (steps.at(-1)?.providerMetadata?.anthropic as { container?: { id?: string } } | undefined)?.container?.id ?? containerId
-        messages.push(...responseMessages)
-        const usd = usdOf(tokensOfAiSdk(usage)) + state.anonymizeUsd
-        total += usd
-        // 列の対応の変更案は、画面の承認と同じく今の計画に重ねて変換し直す（確かめは同じ applyPlanPatch）。手直しはその上に重なる
-        const planChanges = state.pending.flatMap((c) => (c.kind === "plan" ? [c.patch] : []))
-        for (const patch of planChanges) {
-          const applied = applyPlanPatch(KOJI_KEIREKI, plan, patch, sheetShapeOf(gridOf(plan)), sheets)
-          if (applied.ok) plan = applied.plan
-          else console.log("  set_plan を重ねられない:", applied.problems.join(" / "))
-        }
-        if (planChanges.length) {
-          const rows = await runConversion({
-            lookup: fileAddressLookup,
-            spec: KOJI_KEIREKI,
-            sources: collectSourceRows(sheets, plan).rows,
-            plan,
-            ctx: { rounding: "floor" },
-            cache: conversionCache,
-            callAi: async (req) => {
-              const r = await batchWithClaude(anthropic, req)
-              spend("conversion", r.usd)
-              total += r.usd
-              return r.ok ? { ok: true, json: r.json } : { ok: false, message: r.message }
-            },
-          })
-          table = { ...table, rows }
-          console.log(`  set_plan を承認して変換し直した: ${planChanges.flatMap((p) => describePlanPatch(p)).join(" / ")}`)
-        }
-        table = applyChanges(table, deriveTable(table).edited, state.pending)
-        const rules = state.pending.flatMap((c) => (c.kind === "rule" && c.scope === "customer" ? [c.text] : []))
-        const score = compare(csvRows(table))
-        log.push({ turn: i + 1, plan: planChanges, text, ms: Date.now() - t0, steps: steps.length, calls, toolCalls: state.toolCalls, usage, usd, pending: state.pending.length, question: state.question, rules, tools: state.log, reply, report: checkReport(deriveTable(table), state.letters), score })
-        console.log(`\n# turn ${i + 1}「${text}」 ${Math.round((Date.now() - t0) / 1000)}s steps ${steps.length} tools ${state.toolCalls} [${calls.join(",")}] $${usd.toFixed(3)}`)
-        if (state.question) console.log("  question:", state.question)
-        console.log("  reply:", reply.replace(/\n+/g, " ").slice(0, 400))
-        printScore("  score", score)
-      }
-    } catch (e) {
-      status = "failed"
-      reason = String(e).slice(0, 200)
-      throw e
-    } finally {
-      for (const id of [...uploads.map((u) => u.id), ...generated]) await anthropic.files.delete(id).catch((e) => console.log("delete failed", id, String(e).slice(0, 120)))
-      const final = compare(csvRows(table))
-      writeFileSync(join(OUT, `${caseId}-${variant}.json`), JSON.stringify({ status, reason, total, ms: Date.now() - t00, turns: log.length, log, final: csvRows(table), score: final, messages }, null, 1))
-      writeSummary(variant, { status, ...(reason ? { reason } : {}), score: final, turns: log.length, ms: Date.now() - t00, conversionUsd: base.usd, usd: total })
-      console.log(`\nSUMMARY ${caseId} ${variant} (${status}): turns ${log.length} time ${Math.round((Date.now() - t00) / 1000)}s chat $${total.toFixed(3)} cellRate ${(final.cellRate * 100).toFixed(1)}%`)
-    }
-    if (status === "stopped") process.exitCode = 1
+    const run = await chatPhase({ turns, table: tableOf(base.rows), plan: base.plan, customerItems, carryText, previousFormat })
+    const final = compare(csvRows(run.table))
+    writeFileSync(join(OUT, `${caseId}-${variant}.json`), JSON.stringify({ status: run.status, reason: run.reason, total: run.total, ms: Date.now() - t00, turns: run.log.length, log: run.log, final: csvRows(run.table), score: final, messages: run.messages }, null, 1))
+    writeSummary(variant, { status: run.status, ...(run.reason ? { reason: run.reason } : {}), score: final, turns: run.log.length, ms: Date.now() - t00, conversionUsd: base.usd, usd: run.total })
+    console.log(`\nSUMMARY ${caseId} ${variant} (${run.status}): turns ${run.log.length} time ${Math.round((Date.now() - t00) / 1000)}s chat $${run.total.toFixed(3)} cellRate ${(final.cellRate * 100).toFixed(1)}%`)
+    if (run.error) throw run.error
+    if (run.status === "stopped") process.exitCode = 1
   }
 } catch (e) {
   failed(e)
+}
+
+/** 1回の指示の記録（scripts/eval-report.ts は読まない。結果の JSON に残す） */
+type TurnLogEntry = {
+  turn: number
+  text: string
+  plan: PlanPatch[]
+  rules: string[]
+  question: string | null
+  pending: ChatChange[]
+  tools: TurnState["log"]
+  oneOff: string[]
+  [k: string]: unknown
+}
+
+/**
+ * チャットの指示を順に送る（1つの会話）。画面と同じく、案件のファイルを file-<n>.<拡張子> の名前でコンテナに置き（変換の元が1つ目）、
+ * AI の変更案はすべて承認したものとして表に重ねる（set_plan は今の計画に重ねて変換し直す）。上げたファイルは落ちても必ず消す。
+ * 費用が BUDGET_USD を超えたら次の指示を送らずに止める（status: stopped）。review はチャットの振り返りの道具に渡すもの
+ */
+async function chatPhase(p: {
+  turns: string[]
+  table: CaseTable
+  plan: MappingPlan<KojiFieldId>
+  customerItems: string[]
+  carryText?: string | null
+  previousFormat?: { fiscalYear: number; lines: string[] }
+  review?: ReviewDeps
+}) {
+  /** 今の列の対応（set_plan を承認すると変わる。画面と同じく、変えたら変換し直す） */
+  let plan = p.plan
+  const conversionCache = new Map()
+  const uploads: { id: string; name: string; original: string; mediaType: string; isSource: boolean }[] = []
+  let table = p.table
+  const messages: ModelMessage[] = []
+  let containerId: string | undefined
+  let total = 0
+  const log: TurnLogEntry[] = []
+  const generated = new Set<string>()
+  let status: RunSummary["status"] = "done"
+  let reason: string | undefined
+  let error: unknown = null
+  try {
+    for (const [i, path_] of [def!.xlsx, ...(def!.files ?? [])].entries()) {
+      const original = path_.split("/").at(-1)!
+      const name = containerName(i, original)
+      const mediaType = contentTypeOf(original)
+      const up = await anthropic.files.upload({ file: await toFile(readFileSync(path(path_)), name, { type: mediaType }) })
+      uploads.push({ id: up.id, name, original, mediaType, isSource: i === 0 })
+    }
+    for (const [i, text] of p.turns.entries()) {
+      // 画面は指示のたびに今の列の対応で文脈を作る
+      const system = systemPrompt({ global: GLOBAL_RULES, customerName: def!.customerName, customer: rulesText(p.customerItems.map((text) => ({ text }))), rule7Tax: "excluded" }, caseContext(sheets, gridOf(plan), plan, p.previousFormat), uploads)
+      if (total > BUDGET_USD) {
+        status = "stopped"
+        reason = `費用が $${total.toFixed(2)} で上限 $${BUDGET_USD} を超え、${p.turns.length - i} 回の指示を送っていない`
+        console.log(`STOP: ${reason}`)
+        break
+      }
+      messages.push({
+        role: "user",
+        content: [
+          ...(containerId
+            ? []
+            : uploads.map((u) => ({ type: "file" as const, mediaType: u.mediaType, data: { type: "reference" as const, reference: { anthropic: u.id } }, providerOptions: { anthropic: { containerUpload: true } } }))),
+          ...(i === 0 && p.carryText ? [{ type: "text" as const, text: p.carryText }] : []),
+          { type: "text", text },
+        ],
+      })
+      const t0 = Date.now()
+      const state = newTurnState(
+        table,
+        async (req) => {
+          const r = await batchWithClaude(anthropic, req)
+          spend("anonymize", r.usd)
+          return r
+        },
+        undefined,
+        { plan, shape: sheetShapeOf(gridOf(plan)) },
+        { lookup: fileAddressLookup, rounding: "floor" },
+        p.review ?? null,
+      )
+      const result = startTurn({ apiKey: apiKey!, system, messages, state, containerId })
+      let reply = ""
+      const calls: string[] = []
+      for await (const part of result.fullStream) {
+        if (part.type === "text-delta") reply += part.text
+        else if (part.type === "finish-step") spend("chat", usdOf(tokensOfAiSdk(part.usage)))
+        else if (part.type === "tool-call") calls.push(part.toolName === "code_execution" ? "code" : part.toolName)
+        else if (part.type === "tool-result" && part.toolName === "code_execution") for (const [, id] of JSON.stringify(part.output).matchAll(/"file_?[iI]d"\s*:\s*"(file_[A-Za-z0-9_-]+)"/g)) generated.add(id!)
+        else if (part.type === "error") throw new Error(`stream error: ${String((part.error as { responseBody?: string }).responseBody ?? part.error)}`.slice(0, 600))
+      }
+      const [responseMessages, usage, steps] = await Promise.all([result.responseMessages, result.totalUsage, result.steps])
+      containerId = (steps.at(-1)?.providerMetadata?.anthropic as { container?: { id?: string } } | undefined)?.container?.id ?? containerId
+      messages.push(...responseMessages)
+      const usd = usdOf(tokensOfAiSdk(usage)) + state.anonymizeUsd
+      total += usd
+      // 列の対応の変更案は、画面の承認と同じく今の計画に重ねて変換し直す（確かめは同じ applyPlanPatch）。手直しはその上に重なる
+      const planChanges = state.pending.flatMap((c) => (c.kind === "plan" ? [c.patch] : []))
+      for (const patch of planChanges) {
+        const applied = applyPlanPatch(KOJI_KEIREKI, plan, patch, sheetShapeOf(gridOf(plan)), sheets)
+        if (applied.ok) plan = applied.plan
+        else console.log("  set_plan を重ねられない:", applied.problems.join(" / "))
+      }
+      if (planChanges.length) {
+        const rows = await runConversion({
+          lookup: fileAddressLookup,
+          spec: KOJI_KEIREKI,
+          sources: collectSourceRows(sheets, plan).rows,
+          plan,
+          ctx: { rounding: "floor" },
+          cache: conversionCache,
+          callAi: async (req) => {
+            const r = await batchWithClaude(anthropic, req)
+            spend("conversion", r.usd)
+            total += r.usd
+            return r.ok ? { ok: true, json: r.json } : { ok: false, message: r.message }
+          },
+        })
+        table = { ...table, rows }
+        console.log(`  set_plan を承認して変換し直した: ${planChanges.flatMap((p) => describePlanPatch(p)).join(" / ")}`)
+      }
+      table = applyChanges(table, deriveTable(table).edited, state.pending)
+      const rules = state.pending.flatMap((c) => (c.kind === "rule" && c.scope === "customer" ? [c.text] : []))
+      const score = compare(csvRows(table))
+      log.push({ turn: i + 1, plan: planChanges, text, ms: Date.now() - t0, steps: steps.length, calls, toolCalls: state.toolCalls, usage, usd, pending: state.pending, question: state.question, rules, oneOff: state.oneOff, tools: state.log, reply, report: checkReport(deriveTable(table), state.letters), score })
+      console.log(`\n# turn ${i + 1}「${text}」 ${Math.round((Date.now() - t0) / 1000)}s steps ${steps.length} tools ${state.toolCalls} [${calls.join(",")}] $${usd.toFixed(3)}`)
+      if (state.question) console.log("  question:", state.question)
+      console.log("  reply:", reply.replace(/\n+/g, " ").slice(0, 400))
+      printScore("  score", score)
+    }
+  } catch (e) {
+    // 落ちても、それまでの記録・費用を呼ぶ側が書けるように返す（呼ぶ側が書いてから error を投げる）
+    status = "failed"
+    reason = String(e).slice(0, 200)
+    error = e
+  } finally {
+    for (const id of [...uploads.map((u) => u.id), ...generated]) await anthropic.files.delete(id).catch((e) => console.log("delete failed", id, String(e).slice(0, 120)))
+  }
+  return { table, plan, log, messages, total, status, reason, error }
+}
+
+/**
+ * 案件を終えるときの振り返りの照合（翌年分）。今年: 案件定義の指示のうち顧客ルールに足させる指示（「…顧客ルールに追加して」）を除いて順に送る
+ * → 新しい会話で画面の振り返りと同じ指示を送り、今年の指示の記録から作った材料（get_review）で毎年の決まりの案を出させる（全部承認したものとする）
+ * → 翌年分: その決まりだけを顧客ルールにして、去年のコード無しで変換の結果から「顧客ルールどおりに表を直して」の1回。
+ * 比べる相手は rules（職員が頼んだ顧客ルールへの追記で同じ1回）
+ */
+async function reviewEval() {
+  const t00 = Date.now()
+  const thisYear = def!.instructions.filter((t) => !/ルールに追加/.test(t))
+  if (!thisYear.length) throw new Error("review には案件定義の instructions（顧客ルールに追加させる指示のほか）が要る")
+  /** 段階ごとの記録（落ちた・止めた段階があれば、そこまでを書いて投げる） */
+  const phases: Record<string, Awaited<ReturnType<typeof chatPhase>>> = {}
+  const finish = (name: string, run: Awaited<ReturnType<typeof chatPhase>>) => {
+    phases[name] = run
+    if (run.status === "done") return run
+    const total = Object.values(phases).reduce((n, r) => n + r.total, 0)
+    writeFileSync(join(OUT!, `${caseId}-review.json`), JSON.stringify({ status: run.status, reason: run.reason, failedAt: name, total, logs: Object.fromEntries(Object.entries(phases).map(([k, r]) => [k, r.log])) }, null, 1))
+    writeSummary("review", { status: run.status, reason: `${name}: ${run.reason}`, score: compare(csvRows(run.table)), turns: 0, ms: Date.now() - t00, conversionUsd: base.usd, usd: total })
+    throw run.error ?? new Error(`${name} が終わらなかった: ${run.reason}`)
+  }
+  const year = finish("year", await chatPhase({ turns: thisYear, table: tableOf(base.rows), plan: base.plan, customerItems: [] }))
+  // 照合では変更案をすべて承認したので、指示ごとに変更案の項目を全部承認した記録にする（聞き返しは「はい」）
+  const turns: ReviewTurn[] = year.log.map((l) => ({
+    instruction: l.text,
+    proposal: l.pending.length || l.question ? { applied: l.pending.length, undone: 0, undoneUnknown: false, count: l.pending.length, open: false } : null,
+    question: l.question ? { text: l.question, answer: "yes" } : null,
+    plan: l.plan.flatMap((p) => describePlanPatch(p)),
+    selection: l.pending.flatMap((c) => (c.kind === "settings" ? describeSettings(c) : [])),
+    tools: [...new Set(l.tools.map((t) => t.tool).filter((t) => !QUIET_TOOLS.has(t)))],
+  }))
+  const review = finish("review", await chatPhase({ turns: [REVIEW_PROMPT], table: year.table, plan: year.plan, customerItems: [], review: { turns: async () => turns, names: async () => [], taken: async () => ({ rules: [], pending: [] }), rounding: "floor" } }))
+  const reviewed = review.log.flatMap((l) => l.pending.flatMap((c) => (c.kind === "rule" && c.scope === "customer" ? [ruleTextSchema.parse(c.text)] : [])))
+  const oneOff = review.log.flatMap((l) => l.oneOff)
+  console.log(`\n振り返りの毎年の決まり ${reviewed.length} 項目:\n  ${reviewed.join("\n  ")}\n今年だけ ${oneOff.length} 件:\n  ${oneOff.join("\n  ")}`)
+  if (!reviewed.length) throw new Error("振り返りで毎年の決まりが出なかった")
+  const next = finish("next", await chatPhase({ turns: [RULES_TURN], table: tableOf(base.rows), plan: base.plan, customerItems: reviewed }))
+  const total = year.total + review.total + next.total
+  const final = compare(csvRows(next.table))
+  writeFileSync(
+    join(OUT!, `${caseId}-review.json`),
+    JSON.stringify({ status: next.status, total, ms: Date.now() - t00, usd: { year: year.total, review: review.total, next: next.total }, yearScore: compare(csvRows(year.table)), rules: reviewed, oneOff, reviewLog: review.log, nextLog: next.log, score: final }, null, 1),
+  )
+  writeSummary("review", { status: next.status, ...(next.reason ? { reason: next.reason } : {}), score: final, turns: year.log.length + review.log.length + next.log.length, ms: Date.now() - t00, conversionUsd: base.usd, usd: total })
+  console.log(`\nSUMMARY ${caseId} review: 今年 $${year.total.toFixed(3)} 振り返り $${review.total.toFixed(3)} 翌年分 $${next.total.toFixed(3)} cellRate ${(final.cellRate * 100).toFixed(1)}%`)
 }
 
 /**

@@ -21,7 +21,7 @@ describe("変更案を表に重ねる", () => {
       { kind: "ask", rowKey: "s!1", field: "place", reason: "現場の市区町村が元データと違う" },
       { kind: "include", rowKey: "s!2", include: false },
       { kind: "settings", tax: "included", basis: { "8": { total: 9000 } } },
-      { kind: "rule", scope: "customer", text: "注文者の株式会社は㈱にする" },
+      { kind: "rule", scope: "customer", text: "注文者の株式会社は㈱にする", source: "chat" },
     ]
     const next = applyChanges(table, deriveTable(table).edited, changes)
     const view = deriveTable(next)

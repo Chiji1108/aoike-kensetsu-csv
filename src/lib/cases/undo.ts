@@ -31,6 +31,8 @@ export type UndoEntry = {
   id: string
   /** どの変更案の承認か（変更案の一覧から取り消せる） */
   proposalId: string
+  /** 承認した変更案の項目の番号（振り返りで、取り消した項目を数える。この項目より前の記録には無い） */
+  items?: number[]
   label: string
   at: number
   /** [手直しの鍵, 前, 後]（null は無かった） */
@@ -56,7 +58,11 @@ export const MAX_UNDO_BYTES = 200_000
 const same = (a: unknown, b: unknown) => a === b || JSON.stringify(a) === JSON.stringify(b)
 
 /** 承認の前後の作業から、取り消しの記録を作る。何も変わっていなければ（外への書き込みも無ければ）null */
-export function undoEntry(before: Undoable, after: Undoable, meta: { id: string; proposalId: string; label: string; at: number; external?: UndoEntry["external"] }): UndoEntry | null {
+export function undoEntry(
+  before: Undoable,
+  after: Undoable,
+  meta: { id: string; proposalId: string; items?: number[]; label: string; at: number; external?: UndoEntry["external"] },
+): UndoEntry | null {
   const edits: UndoEntry["edits"] = []
   for (const [k, v] of after.edits) if (before.edits.get(k) !== v) edits.push([k, before.edits.get(k) ?? null, v])
   for (const [k, v] of before.edits) if (!after.edits.has(k)) edits.push([k, v, null])
@@ -88,7 +94,7 @@ const sizeOf = (e: UndoEntry) => new TextEncoder().encode(JSON.stringify(e)).byt
  */
 export function pushUndo(list: readonly UndoEntry[], entry: UndoEntry): UndoEntry[] {
   const kept: UndoEntry =
-    sizeOf(entry) > MAX_UNDO_BYTES ? { id: entry.id, proposalId: entry.proposalId, label: entry.label, at: entry.at, edits: [], manual: [], added: [], external: entry.external, tooLarge: true } : entry
+    sizeOf(entry) > MAX_UNDO_BYTES ? { id: entry.id, proposalId: entry.proposalId, ...(entry.items ? { items: entry.items } : {}), label: entry.label, at: entry.at, edits: [], manual: [], added: [], external: entry.external, tooLarge: true } : entry
   const next = [...list, kept]
   let bytes = next.reduce((n, e) => n + sizeOf(e), 0)
   while (next.length > MAX_UNDO_ENTRIES || (bytes > MAX_UNDO_BYTES && next.length > 1)) bytes -= sizeOf(next.shift()!)
@@ -170,6 +176,7 @@ const pair = <T extends z.ZodType>(s: T) => z.tuple([s, s])
 export const undoEntrySchema: z.ZodType<UndoEntry> = z.object({
   id: z.string(),
   proposalId: z.string(),
+  items: z.array(z.number().int().min(0)).optional(),
   label: z.string(),
   at: z.number(),
   edits: z.array(z.tuple([z.string(), cellEditSchema.nullable(), cellEditSchema.nullable()])),

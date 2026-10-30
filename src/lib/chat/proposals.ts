@@ -6,7 +6,7 @@ import { basisSchema, cellEditSchema, fieldIdSchema, legacySelection, selectionS
 import type { KojiFieldId } from "../spec/koji-keireki"
 import { foundSchema, siteRefSchema, SOURCE_LABELS, type Found } from "../location/sites"
 import { planPatchSchema, type PlanPatch } from "../convert/plan-patch"
-import { ruleScopeSchema, type RuleScope } from "./rules"
+import { proposedRuleSourceSchema, ruleScopeSchema, type ProposedRuleSource, type RuleScope } from "./rules"
 
 /**
  * 変更案。AI（チャット）や返ってきた Excel が出した変更は、すぐには表に入れず、職員が項目ごとかまとめて承認したものだけを
@@ -27,8 +27,8 @@ export type ChatChange =
    */
   | { kind: "add"; rowKey: string; by: AddedRow["by"]; cells: Partial<Record<KojiFieldId, CellEdit>> }
   | { kind: "settings"; tax?: TaxMode; selection?: SelectionMode; basis?: Basis }
-  /** 全体ルール・顧客ルールへの追記（承認すると保存する） */
-  | { kind: "rule"; scope: RuleScope; text: string }
+  /** 全体ルール・顧客ルールへの追記（承認すると保存する）。source は足した項目の由来（chat: 職員が頼んだ追記、review: 案件を終えるときの振り返り） */
+  | { kind: "rule"; scope: RuleScope; text: string; source: ProposedRuleSource }
   /**
    * 列の対応（計画）の差分（convert/plan-patch.ts）。承認すると、そのときの計画に重ねて変換し直す（表の値は変換し直した値になり、手直しはその上に重なる）。
    * 表の変更ではないので、ここ（applyChanges）では何もしない。before は変更案を作ったときの同じ項目の値（「前 → 後」で見せる。前の変更案には無い）
@@ -200,7 +200,8 @@ export const chatChangeSchema: z.ZodType<ChatChange> = z.discriminatedUnion("kin
       const s = legacySelection(selection, alreadyApplied)
       return { ...c, ...(s ? { selection: s } : {}) }
     }),
-  z.object({ kind: z.literal("rule"), scope: ruleScopeSchema, text: z.string() }),
+  // 前の変更案には由来が無い（チャットの追記だけだった）
+  z.object({ kind: z.literal("rule"), scope: ruleScopeSchema, text: z.string(), source: proposedRuleSourceSchema.default("chat") }),
   z.object({ kind: z.literal("plan"), patch: planPatchSchema, before: planPatchSchema.optional() }),
   foundSchema.extend({
     kind: z.literal("location"),
