@@ -41,44 +41,42 @@ export function ExportDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-5xl" data-testid="export-dialog">
         <DialogHeader>
-          <DialogTitle>書き出す前の確認</DialogTitle>
-          <DialogDescription>
-            CSV に載せる <strong className="num text-foreground" data-testid="export-rows">{output.length}</strong> 件を書き出します。決算書の業種ごとの完成工事高（税抜・千円）を入れると、表の合計と照らします（7割の基準額にも使います）。
-          </DialogDescription>
+          <DialogTitle>
+            書き出す（<span className="num" data-testid="export-rows">{output.length}</span> 件）
+          </DialogTitle>
+          <DialogDescription>決算書の業種ごとの完成工事高（税抜・千円）を入れると、表の合計と照らします。</DialogDescription>
         </DialogHeader>
         {check && (
           <div className="grid gap-3 text-sm">
             <ul className="grid gap-1.5" data-testid="export-checks">
               <CheckLine ok={check.short.length === 0} testId="export-rule7">
                 {check.short.length === 0
-                  ? "7割: すべての業種で基準額の7割を超えています"
-                  : `7割に届いていない業種: ${check.short.map((s) => `${s.label}（${SIDE[s.side]}）`).join("・")}`}
+                  ? "7割を超えています"
+                  : `7割に届いていない: ${check.short.map((s) => `${s.label}（${SIDE[s.side]}）`).join("・")}`}
               </CheckLine>
               <CheckLine ok={check.mismatches.length === 0} testId="export-basis">
                 {check.mismatches.length === 0
                   ? Object.keys(basis).length
-                    ? "入れた決算書の額と表の合計は合っています"
-                    : "決算書の額はまだ入れていません（入れると表の合計と照らします）"
+                    ? "決算書の額と合っています"
+                    : "決算書の額はまだ入れていません"
                   : check.mismatches.map((m) => `${m.label}の${SIDE[m.side]}: 決算書 ${fmt(m.entered)} 千円・表の合計 ${fmt(m.rows)} 千円（差 ${m.diff > 0 ? "+" : ""}${fmt(m.diff)} 千円）`).join(" / ")}
               </CheckLine>
-              {check.mismatches.length > 0 && (
-                <li className="pl-6 text-xs text-muted-foreground">工事の漏れ・税込と税抜の取り違え・業種の分け方の違いが考えられます。直してから書き出すか、このまま書き出すかを決めてください。</li>
-              )}
+              {check.mismatches.length > 0 && <li className="pl-6 text-xs text-muted-foreground">工事の漏れ・税込と税抜の取り違え・業種の分け方の違いが考えられます</li>}
               <CheckLine ok={check.errors === 0} testId="export-errors">
-                {check.errors === 0 ? "エラーはありません" : `エラーが ${check.errors} 件あります（建設業.NET の取込でエラーになるか、誤った内容で取り込まれます）`}
+                {check.errors === 0 ? "エラーなし" : `エラー ${check.errors} 件（取り込めないか、誤って取り込まれます）`}
               </CheckLine>
               <CheckLine ok={check.warnings === 0} warn testId="export-warnings">
-                {check.warnings === 0 ? "要確認のセルはありません" : `要確認のセルが ${check.warnings} 件あります`}
+                {check.warnings === 0 ? "要確認なし" : `要確認 ${check.warnings} 件`}
               </CheckLine>
               <CheckLine ok={check.unencodable.length === 0} testId="export-unencodable">
                 {check.unencodable.length === 0
-                  ? "Shift_JIS で書けない文字はありません"
-                  : `Shift_JIS で書けない文字が ${check.unencodable.length} セルにあります（${[...new Set(check.unencodable.flatMap((u) => u.chars))].join(" ")}）。Excel の「CSV で保存」ではこの文字が黙って「?」になります`}
+                  ? "Shift_JIS で書けない文字なし"
+                  : `Shift_JIS で書けない文字 ${check.unencodable.length} セル（${[...new Set(check.unencodable.flatMap((u) => u.chars))].join(" ")}）。Excel の「CSV で保存」で「?」になります`}
               </CheckLine>
             </ul>
             {check.issues.length > 0 && (
               <details className="rounded-lg border bg-muted/20 px-3 py-2 text-xs" data-testid="export-issues">
-                <summary className="cursor-pointer font-medium">残っているエラー・要確認の内訳</summary>
+                <summary className="cursor-pointer font-medium">内訳</summary>
                 <ul className="mt-1.5 grid gap-0.5">
                   {check.issues.slice(0, 30).map((i) => (
                     <li key={`${i.status}${i.field}${i.message}`} className={i.status === "error" ? "text-red-700" : "text-amber-800"}>
@@ -89,18 +87,17 @@ export function ExportDialog({
               </details>
             )}
             <GyoshuSummaryTable summary={summary} basis={basis} onBasisChange={onBasisChange} />
-            <p className="rounded-lg border bg-muted/30 px-3 py-2 text-xs text-muted-foreground" data-testid="export-note">
-              取り込み用の Excel は、これまでの Excel と同じ形（見出しなし・14列）です。Excel で開いて確かめ、「CSV で保存」で建設業.NET に取り込んでください（取込は追加なので1回だけ。「1行目が項目行」のチェックは外す）。
-              Excel で直したところはこの画面に戻らず、検査・顧客ルール・翌年に入りません。直しが多いときは「Excel で直す」の編集用の Excel で直して上げ直してください。
+            <p className="text-xs text-muted-foreground" data-testid="export-note">
+              Excel で直した分はこの画面に戻りません。直しが多いときは「Excel で直す」から。取込は1回だけ（追加になる）、「1行目が項目行」は外す。
             </p>
           </div>
         )}
-        <DialogFooter className="gap-2 sm:justify-between">
-          <Button variant="ghost" onClick={onCsv} disabled={output.length === 0} data-testid="download-button">
-            <Download /> CSV（控え）
+        <DialogFooter className="gap-2">
+          <Button variant="outline" onClick={onCsv} disabled={output.length === 0} data-testid="download-button">
+            <Download /> CSV
           </Button>
           <Button onClick={onExcel} disabled={output.length === 0} data-testid="export-excel">
-            <FileSpreadsheet /> 取り込み用の Excel を落とす
+            <FileSpreadsheet /> Excel
           </Button>
         </DialogFooter>
       </DialogContent>

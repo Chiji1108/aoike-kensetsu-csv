@@ -28,9 +28,9 @@ import {
 } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
 import { NativeSelect } from "@/components/ui/native-select"
 import { Switch } from "@/components/ui/switch"
+import { Segmented } from "@/components/segmented"
 import { MAX_ADDED_ROWS } from "@/lib/cases/added"
 import { fetchCaseFile, uploadCaseFile } from "@/lib/cases/files-client"
 import { fromSaved, newWork, type CaseWork, type SavedPlan } from "@/lib/cases/state"
@@ -592,8 +592,8 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
   const letters = view?.letters ?? NO_LETTERS
   const output = view?.output ?? null
   /** 待っている間・続けて処理するファイルの間で読む、最新の表と元（古い描画の値で取り込まない） */
-  const live = useRef({ view, shown, source, addresses, plan })
-  live.current = { view, shown, source, addresses, plan }
+  const live = useRef({ view, shown, source, addresses, plan, hasTable })
+  live.current = { view, shown, source, addresses, plan, hasTable }
   const openProposals = work.proposals.filter((p) => p.state === "open" && p.origin.kind === "chat").length
   /** 欄に出す変更案: 開いているものと、承認を取り消せるもの（決め終わっても、取り消すまで欄に残す） */
   const shownInPanel = (p: Proposal) => p.state === "open" || work.undo.some((e) => e.proposalId === p.id && canUndo(e))
@@ -780,7 +780,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
    * 差分は取り込み始めたときの表と比べる。待っている間に変換の元が変わったら捨てる
    */
   async function readEditFile(f: File) {
-    const against = live.current.view
+    const against = live.current.hasTable ? live.current.view : null
     if (!against) return { error: "表がまだありません。変換が済んでから上げてください" }
     const generation = caseGeneration.current
     const { readWorkbook } = await import("@/lib/convert/workbook")
@@ -860,7 +860,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
       toast.error(text)
       note({ name: f.name, text, tone: "error" })
     }
-    const against = live.current.shown
+    const against = live.current.hasTable ? live.current.shown : null
     if (!against) return fail("表がまだありません。変換が済んでから取り込んでください")
     try {
       const read = await readAnswerFile(f, against)
@@ -933,19 +933,20 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
   const sourceSheets = work.plan?.plan.sheets ?? []
   const reportNotes: ReportProps["notes"] = [
     ...(work.plan?.notice ? [{ text: work.plan.notice, tone: "warning" as const }] : []),
-    ...(work.plan?.plan.notes ?? []).map((text) => ({ text })),
+    // 使うシートのメモは報告の最初の行（どのファイルのどのシートか）と重なるので出さない
+    ...(work.plan?.plan.notes ?? []).filter((n) => !n.startsWith("使うシート「")).map((text) => ({ text })),
     ...(sources && sources.duplicates > 0
-      ? [{ text: `選んだシートをまたいで同じ内容の行が ${sources.duplicates} 件あったため、1件にまとめました（業種ごとのシートが全件のシートにフィルタをかけたものなら、全件のシートだけを使ってください）。`, tone: "warning" as const, testId: "duplicate-notice" }]
+      ? [{ text: `シートをまたいで同じ行が ${sources.duplicates} 件あったので、1件にまとめました。`, tone: "warning" as const, testId: "duplicate-notice" }]
       : []),
-    ...(unmarked > 0 ? [{ text: `業種の記号（○）がどの列にも無い ${unmarked} 行は出力しません。`, testId: "unmarked-notice" }] : []),
-    ...(aiNotice ? [{ text: `AI 変換できなかった値があります: ${aiNotice}。黄色のセルを確認し、必要なら直接入力してください。`, tone: "warning" as const, testId: "ai-notice" }] : []),
+    ...(unmarked > 0 ? [{ text: `業種の記号（○）が無い ${unmarked} 行は出しません。`, testId: "unmarked-notice" }] : []),
+    ...(aiNotice ? [{ text: `AI で変換できなかった値があります（${aiNotice}）。黄色のセルを確かめてください。`, tone: "warning" as const, testId: "ai-notice" }] : []),
   ]
   const questions: ReportQuestion[] =
     hasTable && (tax === "unknown" || work.reportAnswers.tax)
       ? [
           {
             id: "tax",
-            text: "元データの金額は税込ですか、税抜ですか？（7割の判定と、軽微な工事の線引きに使います。金額そのものは変えません）",
+            text: "Excel の金額は税込ですか、税抜ですか？",
             options: [
               { value: "included", label: "税込" },
               { value: "excluded", label: "税抜" },
@@ -1071,18 +1072,11 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
         </nav>
         <PageHeader
           title={`${customer.name} ${kase.fiscalYear}年度`}
-          description="顧客の Excel を落とすと、AI が列の対応を考えて変換します。直したいことはチャットで頼み、変更案を承認すると表に入ります。作業は自動で保存します。"
           actions={
             <div className="flex flex-wrap items-center gap-3">
               <SaveIndicator status={saveStatus} />
               <CaseCost usd={costUsd} fx={fx} />
-              <NativeSelect aria-label="案件の状態" value={status} onChange={(e) => void changeStatus(e.target.value as CaseStatus)} data-testid="case-status">
-                {CASE_STATUSES.map((s) => (
-                  <option key={s} value={s}>
-                    {CASE_STATUS_LABELS[s]}
-                  </option>
-                ))}
-              </NativeSelect>
+              <Segmented label="案件の状態" value={status} options={CASE_STATUSES.map((s) => ({ value: s, label: CASE_STATUS_LABELS[s] }))} onChange={(s) => void changeStatus(s)} testId="case-status" />
               <DeleteButton
                 target={{ caseId: kase.id }}
                 title={`${kase.fiscalYear}年度の案件`}
@@ -1148,11 +1142,11 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
             ) : phase.kind === "empty" || phase.kind === "noSheet" ? (
               <>
                 <FileUp className="size-7 text-muted-foreground" />
-                <span className="text-base font-medium">顧客から届いたファイルを落とす</span>
-                <span className="text-xs text-muted-foreground">.xlsx・.xls・.csv・.pdf（複数可）。ファイルは案件に保存し、表は AI が列の対応を考えて自動で変換します</span>
+                <span className="text-base font-medium">顧客の Excel を落とす</span>
+                <span className="text-xs text-muted-foreground">.xlsx・.xls・.csv・.pdf</span>
                 {noSheetSource && (
                   <span className="text-xs text-muted-foreground" data-testid="no-sheet-source">
-                    PDF だけのときは、チャットで「PDF から工事経歴の表を作って」と頼むと AI が表を作ります。
+                    PDF だけなら、チャットで「PDF から表を作って」と頼んでください。
                   </span>
                 )}
               </>
@@ -1175,13 +1169,13 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
             )}
             <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
               <StatusLegend counts={counts} />
-              <label className="flex items-center gap-2 text-xs text-muted-foreground">
+              <label className="flex items-center gap-2 text-xs text-muted-foreground" title="業種ごとに元請→下請、金額の大きい順（CSV もこの順）">
                 <Switch checked={sorted} onCheckedChange={(v) => set("sorted", v)} aria-label="記載順に並べ替え" />
-                業種ごとに元請→下請、金額の大きい順
+                記載順
               </label>
               {output.length === 0 && (
                 <span className="text-sm text-muted-foreground" data-testid="no-rows-note">
-                  CSV に載せる行がありません。左のチェックで行を選んでください
+                  載せる行がありません
                 </span>
               )}
             </div>
@@ -1196,9 +1190,6 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
               filter={tableFilter}
               onFilterChange={setFilter}
             />
-            <p className="text-xs text-muted-foreground">
-              セルをクリックすると直接直せます（Enter で確定、Esc で取り消し）。左のチェックで CSV に載せる行を入れ外しできます。個人名の記号（Ａ・Ｂ…）は直すときに「〔Ａ〕」の形で出ます。その形のまま残すと同じ人として扱います。
-            </p>
 
             <div ref={tabsRef} className="scroll-mt-20 pt-4">
               <div className="flex flex-wrap gap-1 border-b" role="tablist" aria-label="表のほかの作業">
@@ -1276,7 +1267,6 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
                 {view && <LocationPanel search={locationSearch} view={view} proposals={locationProposals} changes={proposalChanges} actions={proposalActions} busy={savingRule} fx={fx} />}
               </div>
               <div className="pt-4" hidden={tab !== "replace"} role="tabpanel" data-testid="replace-details">
-                <p className="mb-3 text-sm text-muted-foreground">値の一括置換（配置技術者の差し替えなど）。</p>
                 <ReplacePanel spec={SPEC} rows={rows!} letters={letters} replacements={replacements} onChange={replace} />
               </div>
             </div>
@@ -1302,7 +1292,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
           <AlertDialogHeader>
             <AlertDialogTitle>変換の元を「{pendingSource?.name}」にしますか</AlertDialogTitle>
             <AlertDialogDescription>
-              ファイルは案件に保存しました。変換の元にすると、今の変換の結果・足した行・手直し・行の入れ外し・取り込んだ回答・承認の取り消しの記録は消えます（端数・税込税抜・基準額の設定は残します）。参考のファイルとして付けるだけなら「付けるだけ」を押してください（チャットの AI は読めます）。
+              今の変換の結果と手直しは消えます（設定は残ります）。参考に付けるだけなら「付けるだけ」。
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -1323,7 +1313,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
   )
 }
 
-/** 7割と金額の設定（載せる工事の選び方・金額で追加・税込税抜・端数）と業種ごとの件数と7割 */
+/** 7割と金額の設定（Excel の金額が税込か・端数・載せる工事・金額で追加）と業種ごとの件数と7割 */
 function SelectionPanel(p: {
   rounding: Rounding
   onRounding: (r: Rounding) => void
@@ -1340,48 +1330,27 @@ function SelectionPanel(p: {
 }) {
   return (
     <div className="grid gap-3">
-      <div className="flex flex-wrap items-end gap-4">
-        <div className="grid gap-1.5">
-          <Label htmlFor="tax">元データの金額</Label>
-          <NativeSelect id="tax" value={p.tax} onChange={(e) => p.onTax(e.target.value as TaxMode)}>
-            {Object.entries(TAX_LABELS).map(([k, v]) => (
-              <option key={k} value={k}>
-                {v}
-              </option>
-            ))}
-          </NativeSelect>
-        </div>
-        <div className="grid gap-1.5">
-          <Label htmlFor="rounding">千円未満の端数</Label>
-          <NativeSelect id="rounding" value={p.rounding} onChange={(e) => p.onRounding(e.target.value as Rounding)}>
-            <option value="floor">切り捨て</option>
-            <option value="round">四捨五入</option>
-          </NativeSelect>
-        </div>
-        {p.roundingTotals && <RoundingNote floor={p.roundingTotals.floor} round={p.roundingTotals.round} current={p.rounding} />}
-      </div>
-      <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
-        <div className="flex flex-wrap items-center gap-2" role="radiogroup" aria-label="載せる工事の選び方" data-testid="selection-mode">
-          載せる工事:
-          {SELECTION_MODES.map((m) => (
-            <label key={m} className="flex items-center gap-1">
-              <input type="radio" name="selection-mode" value={m} checked={p.selection === m} onChange={() => p.onSelection(m)} data-testid={`selection-${m}`} />
-              {SELECTION_LABELS[m]}
-            </label>
-          ))}
-        </div>
-        <label className="flex items-center gap-2">
+      <div className="flex flex-wrap items-end gap-x-6 gap-y-3">
+        <Field label="Excel の金額" hint="7割は税抜で判定します。税込・分からないなら 1.1 で割ります（金額は変えません）">
+          <Segmented label="Excel の金額" value={p.tax} options={(Object.keys(TAX_LABELS) as TaxMode[]).map((v) => ({ value: v, label: TAX_LABELS[v] }))} onChange={p.onTax} testId="tax" />
+        </Field>
+        <Field label="千円未満">
+          <Segmented label="千円未満の端数" value={p.rounding} options={[{ value: "floor", label: "切り捨て" }, { value: "round", label: "四捨五入" }]} onChange={p.onRounding} testId="rounding" />
+        </Field>
+        <Field label="載せる工事" hint="全件: 7割以上なら件数は自由。顧客が絞ったデータもこちら">
+          <Segmented label="載せる工事" value={p.selection} options={SELECTION_MODES.map((m) => ({ value: m, label: SELECTION_LABELS[m] }))} onChange={p.onSelection} testId="selection" />
+        </Field>
+        <label className="flex items-center gap-2 text-sm">
           <input type="checkbox" checked={p.threshold.on} onChange={(e) => p.onThreshold({ ...p.threshold, on: e.target.checked })} data-testid="threshold-on" />
-          金額が
           <Input
-            className="h-8 w-36"
+            className="h-8 w-32"
             inputMode="numeric"
             aria-label="追加で含める金額（円）"
             value={p.threshold.yen}
             onChange={(e) => p.onThreshold({ ...p.threshold, yen: e.target.value })}
             placeholder="例: 3000000"
           />
-          円以上の行もすべて含める
+          円以上も載せる
         </label>
         {p.manualCount > 0 && (
           <Button variant="outline" size="sm" onClick={p.onClearManual}>
@@ -1389,21 +1358,21 @@ function SelectionPanel(p: {
           </Button>
         )}
       </div>
+      {p.roundingTotals && <RoundingNote floor={p.roundingTotals.floor} round={p.roundingTotals.round} current={p.rounding} />}
       {p.children}
-      <p className="text-xs text-muted-foreground">
-        7割ルール: 業種ごとに、元請を金額の大きい順に元請の基準額の7割を超えるまで、続いて残りの元請と下請を合計の基準額の7割を超えるまで載せます。
-        基準額は損益計算書の完成工事高のうち当該業種の額（<strong>税抜</strong>）です。空欄なら行の合計を使います。7割の判定と比率は税抜で出します（行の合計も税抜）。
-        軽微な工事（税込500万円未満、建築一式は1,500万円未満）は10件まで。
-        <span data-testid="selection-note">
-          「全件を載せる」は除外した行と手動で外した行のほかをすべて載せます（7割以上なら件数は自由で、軽微の10件は「それより多くは載せなくてよい」上限なので軽微な工事も全部載せます。顧客がすでに7割で絞ったデータもこちら）。比率で7割を超えたかを確かめてください。
-        </span>
-        元データの金額は「{TAX_LABELS[p.tax]}」として判定します（金額そのものは変換しません）。
-        {p.tax === "unknown" && <strong data-testid="tax-unknown-note">税込・税抜が不明なので、税込とみなして行の金額を1.1で割り、7割を判定しています。</strong>}
+      <p className="text-xs text-muted-foreground" title="業種ごとに、元請を金額の大きい順に元請の基準額の7割を超えるまで、続いて残りを合計の基準額の7割を超えるまで載せます。軽微な工事（税込500万円未満、建築一式は1,500万円未満）は10件まで">
+        基準額は決算書の業種ごとの完成工事高（税抜・千円）。空欄なら行の合計。
+        {p.tax === "unknown" && <strong data-testid="tax-unknown-note"> Excel の金額が分からないので、税込とみなして判定しています。</strong>}
       </p>
-      <p className="rounded-xl border bg-muted/40 px-4 py-3 text-xs text-muted-foreground">
-        建設業.NET の取込は<strong>追加</strong>です（上書きされません）。同じ内容を2回取り込むと工事が重複するので、取り込みは1回だけにしてください。
-        見出し行がないので、取込画面の「1行目が項目行」の<strong>チェックを外して</strong>ください。
-      </p>
+    </div>
+  )
+}
+
+function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+  return (
+    <div className="grid gap-1.5" title={hint}>
+      <span className="text-xs font-medium text-muted-foreground">{label}</span>
+      {children}
     </div>
   )
 }

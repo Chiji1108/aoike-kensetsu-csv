@@ -89,7 +89,14 @@ test("ファイルを落とすと自動で変換して報告で聞き返し、�
     const q = page.locator('[data-testid="report-question"][data-question="tax"]')
     await q.locator('[data-value="included"]').click()
     await expect(q).toHaveAttribute("data-answered", "税込")
-    await expect(page.locator("#tax")).toHaveValue("included")
+    await expect(page.getByTestId("tax-included")).toHaveAttribute("aria-pressed", "true")
+    // 選択肢の少ない欄はセグメントコントロール。キーボードでも選べる
+    await page.getByTestId("tax-included").focus()
+    await page.keyboard.press("ArrowRight")
+    await page.keyboard.press("Enter")
+    await expect(page.getByTestId("tax-excluded")).toHaveAttribute("aria-pressed", "true")
+    await expect(page.getByTestId("tax-included")).toHaveAttribute("aria-pressed", "false")
+    await page.getByTestId("tax-included").click()
   })
 
   await showAllRows(page)
@@ -166,4 +173,17 @@ test("ファイルを落とすと自動で変換して報告で聞き返し、�
     expect(text.split("\r\n").filter(Boolean)).toHaveLength(rows)
     await expect(page.locator('[data-testid="file-list"] [data-kind="final_sheet"]')).toHaveCount(1)
   })
+})
+
+test("表ができる前に編集用の Excel を落としても、黙って捨てずに報告に理由を出す", async ({ page }) => {
+  const { customer } = await openNewCase(page)
+  created.push(customer)
+  const wb = new ExcelJS.Workbook()
+  wb.addWorksheet("工事経歴（編集用）").addRows([["業種", "照合用"], ["8", "{}"]])
+  wb.addWorksheet("照合用").state = "veryHidden"
+  await page.getByTestId("chat-file-input").setInputFiles({ name: "直した.xlsx", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buffer: Buffer.from(await wb.xlsx.writeBuffer()) })
+  const upload = page.getByTestId("report-upload")
+  await expect(upload).toContainText("直した.xlsx")
+  await expect(upload).toContainText("表がまだありません")
+  await expect(upload).toHaveAttribute("data-tone", "error")
 })

@@ -264,7 +264,7 @@ export function ChatPanel(props: ChatPanelProps) {
               {carryover && history === "loaded" && !carried && (
                 <div className="grid gap-2 rounded-lg border bg-violet-50/60 px-3 py-2 text-xs dark:bg-violet-950/30" data-testid="chat-carryover">
                   <span className="text-muted-foreground">
-                    {carryover.fiscalYear}年度の案件があります。顧客ルールと、去年のチャットで承認したコード（参考。そのまま実行はしません）を添えて「{CARRYOVER_TEXT}」を送ります。
+                    {carryover.fiscalYear}年度の案件があります。顧客ルールと去年承認したコードを添えて直します。
                   </span>
                   <Button
                     size="sm"
@@ -290,9 +290,7 @@ export function ChatPanel(props: ChatPanelProps) {
                 </div>
               )}
               {history === "loaded" && messages.length === 0 && props.ready && (
-                <p className="text-xs text-muted-foreground">
-                  例:「金額は税込の列で」「完成年月は引渡日にして」「工事名の空白を取って」「注文者が字数を超えたら㈱にして」「CSV を出して」「今日のやり方を顧客ルールに追加して」。
-                </p>
+                <p className="text-xs text-muted-foreground">例:「金額は税込の列で」「完成年月は引渡日にして」「CSV を出して」</p>
               )}
               {messages.map((m, i) => (
                 <MessageScrollerItem key={m.id} messageId={m.id} scrollAnchor={m.role === "user"}>
@@ -345,13 +343,13 @@ export function ChatPanel(props: ChatPanelProps) {
                 void send()
               }
             }}
-            placeholder={ready ? "指示を入力（⌘+Enter で送信）。ファイルはここに落とせます" : "ファイルを落とすと変換します。変換が済むと指示できます"}
+            placeholder={ready ? "指示（⌘+Enter で送る）" : "ファイルを落とすと変換します"}
             disabled={!ready}
             className="min-h-16 text-sm"
             data-testid="chat-input"
           />
           <InputGroupAddon align="block-end" className="justify-between">
-            <InputGroupButton size="icon-xs" variant="ghost" onClick={() => fileInput.current?.click()} aria-label="ファイルを付ける" title="ファイルを付ける（元データ・顧客の回答・直した Excel・PDF。落としても付けられます）">
+            <InputGroupButton size="icon-xs" variant="ghost" onClick={() => fileInput.current?.click()} aria-label="ファイルを付ける" title="ファイルを付ける">
               <Paperclip />
             </InputGroupButton>
             <input

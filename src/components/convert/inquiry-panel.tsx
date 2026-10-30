@@ -97,10 +97,7 @@ export function InquiryPanel({
   return (
     <section className="mt-10 space-y-4" data-testid="inquiry-panel">
       <div>
-        <h2 className="text-lg font-semibold tracking-tight">顧客に問い合わせる</h2>
-        <p className="mt-0.5 text-sm text-muted-foreground">
-          CSV に載せる行のうち、書類に要るのにデータに無い項目と、推定に自信がない工事場所・配置技術者の姓と名の区切りです。聞かなくてよいものはチェックを外してください。
-        </p>
+        <p className="mt-0.5 text-xs text-muted-foreground">載せる行で、データに無い・推定に自信がない項目です。聞かなくてよいものはチェックを外します。</p>
       </div>
 
       <div className="flex flex-wrap items-center gap-2 text-sm" data-testid="inquiry-counts">

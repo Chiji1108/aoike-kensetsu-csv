@@ -253,7 +253,7 @@ export function PreviewTable({
   return (
     <div className="grid gap-2">
       <div className="flex flex-wrap items-center gap-2">
-        <div className="flex flex-wrap items-center gap-1" role="group" aria-label="表の絞り込み" data-testid="row-filters">
+        <div className="flex flex-wrap items-center gap-1" role="group" aria-label="表の絞り込み" title="件数は CSV に載せる行（かっこ内は載せない行も含む）" data-testid="row-filters">
           {FILTER_ORDER.map((f) => (
             <Button
               key={f}
@@ -278,7 +278,6 @@ export function PreviewTable({
               )}
             </Button>
           ))}
-          <span className="text-xs text-muted-foreground">件数は CSV に載せる行（かっこ内は載せない行も含む）</span>
         </div>
         <div className="relative w-56">
           <Search className="pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-muted-foreground" />
@@ -294,15 +293,13 @@ export function PreviewTable({
             }}
           />
         </div>
-        <span className="text-xs text-muted-foreground">
-          {sorting.length > 0 ? "見出しの並べ替えは表示の順だけで、CSV の順は変わりません。" : "見出しをクリックすると並べ替えます（表示だけ）。"}
-        </span>
+        {sorting.length > 0 && <span className="text-xs text-muted-foreground">並べ替えは表示だけ</span>}
         <span className="num text-xs text-muted-foreground" data-testid="shown-count">
           {shown.length} 行を表示
         </span>
         {outdated && (
           <span className="flex items-center gap-1.5 text-xs text-amber-700" data-testid="outdated">
-            手直しのあと、表示を止めています
+            手直しのあと止めています
             <Button size="sm" variant="outline" onClick={unpin}>
               <RefreshCw />
               更新

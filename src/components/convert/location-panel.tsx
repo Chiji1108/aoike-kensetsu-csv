@@ -215,11 +215,7 @@ export function LocationPanel({
 }) {
   return (
     <div className="grid gap-3 rounded-xl border bg-muted/20 p-3" data-testid="location-panel">
-      <h3 className="text-sm font-semibold">工事場所を調べる</h3>
-      <p className="text-xs text-muted-foreground">
-        CSV に載せる行のうち、都道府県が空か、AI の推定に自信の無い行の現場を、工事名と注文者でまとめて調べます。前の年度に承認した結果 → AI の知識 → Web 検索の順で、検索は裏で進みます（画面を閉じても続きます）。
-        外に送るのは CSV に出す工事名と注文者だけで、個人名のある現場は調べずに顧客への問い合わせに回します。結果は変更案になり、承認すると要確認（黄色）で根拠の URL を添えて入ります。
-      </p>
+      <p className="text-xs text-muted-foreground">都道府県が空か推定に自信の無い現場を、覚えた結果 → AI の知識 → Web 検索の順に調べます（個人名のある現場は調べません）。結果は要確認で入ります。</p>
       <LocationSearchStatus search={search} fx={fx} testId="location" />
       {proposals.map((p) => (
         <ProposalCard key={p.id} proposal={p} changes={changes.get(p.id)} view={view} actions={{ ...actions, canSend: true }} busy={busy} />

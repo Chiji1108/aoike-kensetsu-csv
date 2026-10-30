@@ -61,7 +61,7 @@ export function EditExcelPanel({
   return (
     <div className="grid gap-3 rounded-xl border bg-muted/20 p-3" data-testid="edit-excel">
       <div className="flex flex-wrap items-center gap-2">
-        <h3 className="mr-auto text-sm font-semibold">Excel で直す</h3>
+        <span className="mr-auto" />
         <Button size="sm" variant="outline" disabled={working !== null} onClick={() => void run("download", download)} data-testid="edit-excel-download">
           {working === "download" ? <Loader2 className="animate-spin" /> : <FileDown />} 編集用の Excel を落とす
         </Button>
@@ -81,9 +81,7 @@ export function EditExcelPanel({
           }}
         />
       </div>
-      <p className="text-xs text-muted-foreground">
-        表のすべての行（CSV に載せない行も）を落とします。値を直す・「CSVに載せる」の ○ を付け外しする・行を消す（載せない）・下の空いた行に工事を足すと、上げ直したときに差分が変更案になります。承認したものだけが表に入ります。
-      </p>
+      <p className="text-xs text-muted-foreground">全行を落とします。直して上げると、差分が変更案になります。</p>
       {result && <ImportReport result={result} />}
       {proposals.map((p) => (
         <ProposalCard key={p.id} proposal={p} changes={changes.get(p.id)} view={view} actions={{ ...actions, canSend: true }} busy={busy} />

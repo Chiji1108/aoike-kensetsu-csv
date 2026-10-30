@@ -88,7 +88,7 @@ function Body(p: ReportProps) {
     return (
       <p className="flex items-start gap-2 text-sm" data-testid="report-empty">
         <FileUp className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
-        顧客から届いた Excel をここか表の欄に落としてください。AI が列の対応を考えて変換し、気になる点をまとめてお知らせします。
+        顧客の Excel をここに落としてください。変換して、気になる点をお知らせします。
       </p>
     )
   if (phase.kind === "noAi")
@@ -98,7 +98,7 @@ function Body(p: ReportProps) {
       </p>
     )
   if (phase.kind === "noSheet")
-    return <p className="text-sm">届いたファイルは PDF などで、表として読めません。「PDF から工事経歴の表を作って」のように頼むと、AI が読み取って行を足す案を出します（足した行はすべて要確認になります）。</p>
+    return <p className="text-sm">表として読めるファイルがありません。「PDF から表を作って」と頼んでください。</p>
   if (phase.kind === "reading" || phase.kind === "planning" || phase.kind === "converting")
     return (
       <p className="flex items-center gap-2 text-sm" data-testid="report-progress">
@@ -110,10 +110,10 @@ function Body(p: ReportProps) {
   if (phase.kind === "failed")
     return (
       <div className="grid gap-2 text-sm text-red-800" data-testid="report-failed">
-        <p>変換できませんでした: {phase.message}</p>
+        <p>{phase.retry === "source" ? "ファイルを読めませんでした" : "変換できませんでした"}: {phase.message}</p>
         {p.onRetry && (
           <Button size="sm" variant="outline" className="w-fit" onClick={p.onRetry} data-testid="report-retry">
-            <RotateCcw /> もう一度変換する
+            <RotateCcw /> やり直す
           </Button>
         )}
       </div>
@@ -123,13 +123,12 @@ function Body(p: ReportProps) {
     <div className="grid gap-2.5 text-sm" data-testid="report-done">
       {p.source && (
         <p>
-          {p.source}を{p.planByAi ? "、AI が考えた列の対応で" : "、見出しから推定した列の対応で"}変換しました
+          {p.source}を変換しました{!p.planByAi && "（見出しから推定）"}
           {c && (
             <>
-              （<span className="num font-medium" data-testid="report-rows">{c.rows}</span> 行。CSV に載せるのは <span className="num font-medium">{c.csv}</span> 件）
+              : <span className="num font-medium" data-testid="report-rows">{c.rows}</span> 行、載せる <span className="num font-medium">{c.csv}</span> 件
             </>
           )}
-          。どの列を使ったかは、チャットで聞けば答えます。
         </p>
       )}
       {c && (
@@ -146,7 +145,7 @@ function Body(p: ReportProps) {
               {x.label} <span className="num">{c[x.filter]}</span> 件
             </button>
           ))}
-          {CHIPS.every((x) => !c[x.filter]) && <span className="text-xs text-emerald-700">確かめる行はありません。</span>}
+          {CHIPS.every((x) => !c[x.filter]) && <span className="text-xs text-emerald-700">確かめる行はありません</span>}
         </div>
       )}
       {p.notes.length > 0 && (
@@ -180,7 +179,7 @@ function Body(p: ReportProps) {
           <ItemContent className="gap-2">
             <ItemTitle className="whitespace-pre-wrap">{q.text}</ItemTitle>
             {q.answered !== null ? (
-              <ItemDescription>「{q.answered}」と答えました。</ItemDescription>
+              <ItemDescription>{q.answered}</ItemDescription>
             ) : (
               <div className="flex flex-wrap gap-1.5">
                 {q.options.map((o) => (
@@ -201,16 +200,13 @@ function Body(p: ReportProps) {
         )}
         {p.next.inquiry && (
           <Button size="sm" variant="outline" onClick={p.next.inquiry} data-testid="report-inquiry">
-            <MessageSquareText /> 顧客への問い合わせ
+            <MessageSquareText /> 問い合わせ
           </Button>
         )}
         <Button size="sm" variant="outline" onClick={p.next.export} data-testid="report-export">
-          <FileSpreadsheet /> 書き出す前の確認
+          <FileSpreadsheet /> 書き出す
         </Button>
       </div>
-      <p className="text-xs text-muted-foreground">
-        列の対応を変えたいとき（「金額は税込の列で」「工事名は B 列と C 列をつなげて」）や、値をまとめて直したいときは、下の欄で頼んでください。変更は案として出し、承認したものだけが表に入ります。
-      </p>
     </div>
   )
 }

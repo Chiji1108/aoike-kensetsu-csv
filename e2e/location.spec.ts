@@ -36,7 +36,7 @@ async function convertAll(page: Page) {
   await page.route((url) => callsServerFn(url.href, ["planWithAi"]), (route) => route.fulfill({ status: 500, body: "計画の AI を使わない" }))
   await attachAndConvert(page, FIXTURE)
   await page.unrouteAll({ behavior: "ignoreErrors" })
-  await page.getByTestId("selection-all").check()
+  await page.getByTestId("selection-all").click()
   await openTab(page, "location")
   await expect(page.getByTestId("location-count")).toContainText("件", { timeout: 30_000 })
 }
