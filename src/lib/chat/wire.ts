@@ -45,7 +45,8 @@ export const caseTableWireSchema: z.ZodType<CaseTableWire> = z.object({
   manual: z.array(z.tuple([z.string(), z.boolean()])),
   tax: taxSchema,
   basis: basisSchema,
-  rule7Tax: rule7TaxSchema,
+  /** 7割の計算。無い形（この項目より前の画面が送る表）は税抜（前はいつも税抜） */
+  rule7Tax: rule7TaxSchema.default("excluded"),
   selection: selectionSchema,
   includeAtLeastYen: z.number().optional(),
   sorted: z.boolean(),
