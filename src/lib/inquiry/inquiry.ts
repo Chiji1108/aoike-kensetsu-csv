@@ -258,6 +258,22 @@ export type AnswerReport = {
   invalid: { inquiry: CellInquiry; answer: string; message: string }[]
 }
 
+const emptyReport = (): AnswerReport => ({
+  edits: [],
+  applied: [],
+  unknownKeys: [],
+  unreadable: [],
+  duplicateKeys: [],
+  unanswered: [],
+  confirmed: [],
+  alreadyApplied: [],
+  changed: [],
+  alsoChanged: [],
+  heldBack: [],
+  needsCheck: [],
+  invalid: [],
+})
+
 /** 顧客の回答を変換するときの設定（AI の結果は変換と同じ cache に溜める。前に失敗した記入は送り直す）。callAi が無ければ AI は呼ばない */
 export type AnswerAi = { ctx: Omit<TransformContext, "addresses">; lookup: AddressLookup; cache: AiCache; callAi?: AiCaller; fields: Partial<Record<KojiFieldId, FieldPlan>> }
 
@@ -287,22 +303,7 @@ export async function readAnswers(sheets: readonly SheetGrid[], rows: readonly K
   if (askedCol < 0) return { error: `「${ASKED_HEADER}」の列が見つかりません。この画面でダウンロードした記入用Excelを選んでください` }
 
   const now = new Map(rows.map((r) => [r.key, r]))
-  const report: AnswerReport = {
-    edits: [],
-    applied: [],
-    unknownKeys: [],
-    unreadable: [],
-    duplicateKeys: [],
-    unanswered: [],
-    confirmed: [],
-    alreadyApplied: [],
-    changed: [],
-    alsoChanged: [],
-    heldBack: [],
-    needsCheck: [],
-    invalid: [],
-  }
-
+  const report = emptyReport()
   const answerRows = found.sheet.rows.slice(found.headerRow + 1).flatMap((answers, i) => {
     const rowKey = answers[keyCol]?.trim() ?? ""
     const line = found.headerRow + 2 + i
@@ -333,6 +334,18 @@ export async function readAnswers(sheets: readonly SheetGrid[], rows: readonly K
       return { rowKey, row, column, rowQs, answer, shown: column.show(asSent(row, rowQs)) }
     })
   })
+  await answerColumns(report, read, rows, ai)
+  return report
+}
+
+/** 1つの欄への記入（記入用Excelの欄、または AI が読んだ答え）。rowQs はその欄で聞いた項目、shown は聞いたときに欄に表示していた内容 */
+type ColumnAnswer = { rowKey: string; row: KojiRow; column: SheetColumn; rowQs: CellInquiry[]; answer: string; shown: string }
+
+/**
+ * 欄ごとの記入を項目の値にして report に入れる（記入用Excelと AI が読んだ答えで同じ）。
+ * 変換のある欄（注文者・工事名・配置技術者）の記入は、元データの値と同じくルール → AI の順に変換してから照合する。
+ */
+async function answerColumns(report: AnswerReport, read: readonly ColumnAnswer[], rows: readonly KojiRow[], ai: AnswerAi) {
   // 工事場所の欄（記入と表示した値）は、変換と同じく住所として先に引いておく
   const addresses = await ai.lookup(read.flatMap((c) => (c.column.parse === location && c.answer ? [c.answer, c.shown] : [])))
   const columns = read.map((c) => ({ ...c, unchanged: !!c.answer && untouched(c.column.parse!, c.answer, c.shown, addresses) }))
@@ -368,7 +381,74 @@ export async function readAnswers(sheets: readonly SheetGrid[], rows: readonly K
     })
     applyColumn(report, rowKey, rowQs.map((q) => answered(row, q, parsed.values[q.field] ?? "", answer, parsed.notes?.[q.field])), unasked, answer)
   }
+}
+
+/** AI が顧客の回答から読める項目（記入用Excelに記入の欄がある項目）。工事場所は都道府県・場所名のどちらで送っても1つの欄として読む */
+export const ANSWER_FIELDS = SHEET_COLUMNS.flatMap((c) => (c.parse ? c.fields : [])) as [KojiFieldId, ...KojiFieldId[]]
+
+/**
+ * AI が顧客の回答（メールの本文・別の形のファイル・記入用Excelの決まった欄の外）から読んだ1項目。answer は項目の値として読める形の顧客の答え
+ * （年月は「2024年4月」、工事場所は都道府県から市区町村まで、氏名・会社名は書いたまま）。confirm は「今の値のとおり」という答え
+ */
+export type AiAnswer = { rowKey: string; field: KojiFieldId } & ({ answer: string; confirm?: undefined } | { confirm: true; answer?: undefined })
+
+/**
+ * AI が読んだ顧客の回答を、記入用Excelの記入と同じ決まり（answerColumns）で項目の値にする。照合は今の値と比べる（rows は今の全行）。
+ * 聞いている項目（askReasonOf）への答えはその問い合わせへの回答、聞いていない項目の答え（顧客からの訂正）は値が今と違えば変更にする。
+ * 同じ欄に2つの答え（同じ項目に違う答え）があれば、どちらも読まない（invalid）
+ */
+export async function readAiAnswers(items: readonly AiAnswer[], rows: readonly KojiRow[], ai: AnswerAi): Promise<AnswerReport> {
+  const report = emptyReport()
+  const now = new Map(rows.map((r) => [r.key, r]))
+  const read: ColumnAnswer[] = []
+  for (const [, list] of groupBy(items, (i) => `${i.rowKey}\t${columnOf(i.field)!.header}`)) {
+    const { rowKey } = list[0]!
+    const row = now.get(rowKey)
+    if (!row) {
+      report.unknownKeys.push(rowKey)
+      continue
+    }
+    const column = columnOf(list[0]!.field)!
+    const asked = column.fields.flatMap((field): CellInquiry[] => {
+      const reason = askReasonOf(field, row.cells[field])
+      return reason ? [{ kind: "cell", rowKey, field, reason, current: storedOf(row.cells[field]) }] : []
+    })
+    // 聞いていない欄への答えは、その欄の項目すべてを照合する（今と同じ値なら変えない）
+    const rowQs = asked.length ? asked : column.fields.map((field): CellInquiry => ({ kind: "cell", rowKey, field, reason: "needsReview", current: storedOf(row.cells[field]) }))
+    const shown = column.show(row)
+    const answers = [...new Set(list.map((i) => (i.confirm ? shown : i.answer.trim())))]
+    // 工事場所は都道府県と場所名を別に送ってもよい（つなげて1つの住所として読む）
+    const joined = column.fields.length > 1 && list.length === column.fields.length && new Set(list.map((i) => i.field)).size === list.length && !list.some((i) => i.confirm)
+    const answer = joined ? column.fields.map((f) => list.find((i) => i.field === f)!.answer!.trim()).join("") : answers.length === 1 ? answers[0]! : null
+    if (answer === null) {
+      for (const q of rowQs) report.invalid.push({ inquiry: q, answer: answers.join(" / "), message: "同じ欄に違う答えが2つあります" })
+      continue
+    }
+    read.push({ rowKey, row, column, rowQs, answer, shown })
+  }
+  await answerColumns(report, read, rows, ai)
   return report
+}
+
+/**
+ * 記入用Excelの、決まった欄（管理番号・照合用と記入の欄の見出しの列）の外にある記入の数（別の列・別のシートに書いた答え）。
+ * 決まった欄で読めなかった答えを AI に読ませるかを決める（readAnswers は決まった欄だけを読む）
+ */
+export function outsideCells(sheets: readonly SheetGrid[]): number {
+  const known = new Set([ASKED_HEADER, ...SHEET_COLUMNS.map((c) => c.header)])
+  let n = 0
+  let found = false
+  for (const s of sheets) {
+    const headerRow = found ? -1 : s.rows.findIndex((r) => r.some((c) => c.trim() === MANAGEMENT_HEADER))
+    if (headerRow < 0) {
+      n += s.rows.reduce((k, r) => k + r.filter((c) => c.trim()).length, 0)
+      continue
+    }
+    found = true
+    const header = s.rows[headerRow]!.map((c) => c.trim())
+    for (const r of s.rows.slice(headerRow + 1)) r.forEach((c, i) => c.trim() && !known.has(header[i] ?? "") && n++)
+  }
+  return n
 }
 
 /** AI が姓と名を区切った氏名（自信があってもなくても）。同じ案件の表記として、ほかの記入の区切りには使わない */
