@@ -1,7 +1,7 @@
 import { createServerFn } from "@tanstack/react-start"
 import { z } from "zod"
 import { getDb } from "@/db"
-import { rule7TaxSchema, ruleTextSchema, type RuleItem } from "@/lib/chat/rules"
+import { rule7TaxSchema, ruleTextSchema, type RuleItem, type RuleTarget } from "@/lib/chat/rules"
 import { errorMessage } from "@/lib/errors"
 import * as store from "./case-store"
 import { authMiddleware } from "./middleware"
@@ -12,12 +12,12 @@ import { authMiddleware } from "./middleware"
  */
 
 const id = z.string().min(1).max(64)
-const target = z.discriminatedUnion("scope", [z.object({ scope: z.literal("global") }), z.object({ scope: z.literal("customer"), customerId: id })])
+const target: z.ZodType<RuleTarget> = z.discriminatedUnion("scope", [z.object({ scope: z.literal("global") }), z.object({ scope: z.literal("customer"), customerId: id })])
 
 export type RulesResult = { ok: true; items: RuleItem[] } | { ok: false; stale: boolean; message: string; items: RuleItem[] }
 
 /** 操作をして、今の一覧を返す。断ったとき（ほかの画面と食い違った・上限）は理由と一緒に返す */
-async function run(t: store.RuleTarget, op: () => Promise<unknown>): Promise<RulesResult> {
+async function run(t: RuleTarget, op: () => Promise<unknown>): Promise<RulesResult> {
   const db = getDb()
   try {
     await op()

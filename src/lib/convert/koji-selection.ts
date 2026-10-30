@@ -22,7 +22,8 @@ export type TaxMode = "unknown" | "included" | "excluded"
 export const TAX_LABELS: Record<TaxMode, string> = { included: "税込", excluded: "税抜", unknown: "分からない" }
 
 /** 7割の計算を税抜・税込のどちらでするか（基準額＝決算書の完成工事高と、集計の金額がどちらか）。顧客の Excel の金額（TaxMode）とは別 */
-export type Rule7Tax = "excluded" | "included"
+export const RULE7_TAXES = ["excluded", "included"] as const
+export type Rule7Tax = (typeof RULE7_TAXES)[number]
 export const RULE7_TAX_LABELS: Record<Rule7Tax, string> = { excluded: "税抜", included: "税込" }
 /** 1/11 千円の単位から、7割の計算の税の千円にする割り算（税抜 x 千円 = 11x、税込 x 千円 = 10x） */
 const unitOf = (rule7Tax: Rule7Tax) => (rule7Tax === "excluded" ? 11 : 10)

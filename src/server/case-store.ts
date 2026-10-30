@@ -3,7 +3,7 @@ import type { BatchItem, BatchResponse } from "drizzle-orm/batch"
 import { alias, type BaseSQLiteDatabase } from "drizzle-orm/sqlite-core"
 import { csvCaseAiCaches, csvCaseFiles, csvCases, csvCaseStates, csvCustomers, csvRuleAppends, csvRuleItems, csvSettings } from "@/db/cases-schema"
 import type * as schema from "@/db/schema"
-import { DEFAULT_GLOBAL_RULE_ITEMS, MAX_RULE_ITEMS, MAX_RULES_TOTAL, rulesText, type Rule7Tax, type RuleItem, type RuleScope, type RuleSource } from "@/lib/chat/rules"
+import { charCount, MAX_RULE_ITEMS, MAX_RULES_TOTAL, rulesText, type Rule7Tax, type RuleItem, type RuleScope, type RuleSource, type RuleTarget } from "@/lib/chat/rules"
 import { deleteMemoryOfCustomer, deleteRunsOfCase } from "./location-store"
 import { casePrefix, r2KeyOf, type Case, type CaseFile, type CaseStatus, type Customer, type CustomerSummary, type DeletionCounts, type FileKind } from "@/lib/cases/types"
 
@@ -63,59 +63,27 @@ export async function updateCustomer(db: Db, id: string, patch: Partial<Pick<Cus
 
 const SETTINGS_ID = "global"
 
-/**
- * 設定の行が無ければ作り、全体ルールの初期値の項目も入れる（1つの処理で。同時に読んでも初期値を二度入れない。
- * 行があれば何もしない＝職員が全部消した全体ルールに初期値を戻さない）。前の形から移した本番は、マイグレーションが行を作っている
- */
-async function ensureSettings(db: Db) {
-  const [row] = await db.select({ id: csvSettings.id }).from(csvSettings).where(eq(csvSettings.id, SETTINGS_ID))
-  if (row) return
-  const noSettings = sql`not exists (select 1 from ${csvSettings} where ${csvSettings.id} = ${SETTINGS_ID})`
-  const seeds = DEFAULT_GLOBAL_RULE_ITEMS.map((text, i) =>
-    db
-      .insert(csvRuleItems)
-      .select(
-        db
-          .select({
-            id: sql<string>`${crypto.randomUUID()}`.as("id"),
-            scope: sql<RuleScope>`'global'`.as("scope"),
-            customerId: sql<null>`null`.as("customer_id"),
-            text: sql<string>`${text}`.as("text"),
-            position: sql<number>`${i + 1}`.as("position"),
-            source: sql<RuleSource>`'staff'`.as("source"),
-            caseId: sql<null>`null`.as("case_id"),
-            version: sql<number>`1`.as("version"),
-            createdAt: sql<Date>`${Date.now()}`.as("created_at"),
-            updatedAt: sql<Date>`${Date.now()}`.as("updated_at"),
-          })
-          .from(sql`(select 1)`)
-          .where(noSettings),
-      ),
-  )
-  // 初期値の項目を先に（設定の行がまだ無いときだけ入る）、設定の行を最後に
-  const [first, ...rest]: BatchItem<"sqlite">[] = [...seeds, db.insert(csvSettings).values({ id: SETTINGS_ID }).onConflictDoNothing()]
-  await db.batch([first!, ...rest])
-}
-
+/** 事務所の設定（行はマイグレーション 0004 が作る。読むだけで書かない） */
 export async function getSettings(db: Db): Promise<{ rule7Tax: Rule7Tax }> {
-  await ensureSettings(db)
   const [row] = await db.select({ rule7Tax: csvSettings.rule7Tax }).from(csvSettings).where(eq(csvSettings.id, SETTINGS_ID))
   return { rule7Tax: row?.rule7Tax ?? "excluded" }
 }
 
 export async function saveSettings(db: Db, patch: { rule7Tax: Rule7Tax }) {
-  await ensureSettings(db)
-  await db.update(csvSettings).set({ ...patch, updatedAt: new Date() }).where(eq(csvSettings.id, SETTINGS_ID))
+  await db
+    .insert(csvSettings)
+    .values({ id: SETTINGS_ID, ...patch })
+    .onConflictDoUpdate({ target: csvSettings.id, set: { ...patch, updatedAt: new Date() } })
 }
 
-export type RuleTarget = { scope: "global" } | { scope: "customer"; customerId: string }
+export type { RuleTarget }
+
 
 const inList = (target: RuleTarget) =>
   target.scope === "global" ? and(eq(csvRuleItems.scope, "global"), isNull(csvRuleItems.customerId)) : and(eq(csvRuleItems.scope, "customer"), eq(csvRuleItems.customerId, target.customerId))
 
 /** 一覧の項目（並びの順。由来の案件の年度と顧客名つき。案件が消えていれば由来は無し） */
 export async function listRuleItems(db: Db, target: RuleTarget): Promise<RuleItem[]> {
-  if (target.scope === "global") await ensureSettings(db)
   const originCustomer = alias(csvCustomers, "origin_customer")
   const rows = await db
     .select({ item: csvRuleItems, fiscalYear: csvCases.fiscalYear, customerName: originCustomer.name })
@@ -154,7 +122,7 @@ const listLength = (target: RuleTarget, except?: string) =>
 const canAdd = (target: RuleTarget, text: string) =>
   and(
     sql`${listCount(target)} < ${MAX_RULE_ITEMS}`,
-    sql`${listLength(target)} + ${text.length} <= ${MAX_RULES_TOTAL}`,
+    sql`${listLength(target)} + ${charCount(text)} <= ${MAX_RULES_TOTAL}`,
     target.scope === "customer" ? sql`exists (select 1 from ${csvCustomers} where ${csvCustomers.id} = ${target.customerId})` : undefined,
   )
 
@@ -186,7 +154,6 @@ const ownerMissing = async (db: Db, target: RuleTarget) => target.scope === "cus
 
 /** 職員が項目を末尾に足す。足した項目の id */
 export async function addRuleItem(db: Db, target: RuleTarget, text: string): Promise<string> {
-  if (target.scope === "global") await ensureSettings(db)
   const [added] = await newItemRow(db, target, { id: crypto.randomUUID(), text, source: "staff", caseId: null })
   if (added) return added.id
   throw (await ownerMissing(db, target)) ? new Error("顧客が見つかりません") : new RulesTooLongError()
@@ -204,7 +171,7 @@ export async function updateRuleItem(db: Db, target: RuleTarget, id: string, ver
   const saved = await db
     .update(csvRuleItems)
     .set({ text, version: sql`${csvRuleItems.version} + 1`, updatedAt: new Date() })
-    .where(and(eq(csvRuleItems.id, id), eq(csvRuleItems.version, version), sql`${listLength(target, id)} + ${text.length} <= ${MAX_RULES_TOTAL}`))
+    .where(and(eq(csvRuleItems.id, id), eq(csvRuleItems.version, version), sql`${listLength(target, id)} + ${charCount(text)} <= ${MAX_RULES_TOTAL}`))
     .returning({ id: csvRuleItems.id })
   if (saved.length) return
   const now = await itemRow(db, target, id)
@@ -253,10 +220,8 @@ export async function moveRuleItem(db: Db, target: RuleTarget, id: string, direc
  * 足したら "added"、もう足してあれば "already"
  */
 export async function appendRuleOnce(db: Db, target: RuleTarget, add: { caseId: string; proposalId: string; item: number; text: string }): Promise<"added" | "already"> {
-  if (target.scope === "global") await ensureSettings(db)
   const text = add.text
   const token = crypto.randomUUID()
-  const itemId = crypto.randomUUID()
   const mark = db
     .insert(csvRuleAppends)
     .select(
@@ -266,7 +231,6 @@ export async function appendRuleOnce(db: Db, target: RuleTarget, add: { caseId: 
           item: sql<number>`${add.item}`.as("item"),
           caseId: sql<string>`${add.caseId}`.as("case_id"),
           token: sql<string>`${token}`.as("token"),
-          itemId: sql<string>`${itemId}`.as("item_id"),
           createdAt: sql<Date>`${Date.now()}`.as("created_at"),
         })
         .from(sql`(select 1)`)
@@ -279,7 +243,7 @@ export async function appendRuleOnce(db: Db, target: RuleTarget, add: { caseId: 
       .from(csvRuleAppends)
       .where(and(eq(csvRuleAppends.proposalId, add.proposalId), eq(csvRuleAppends.item, add.item), eq(csvRuleAppends.token, token))),
   )
-  const [, added] = await db.batch([mark, newItemRow(db, target, { id: itemId, text, source: "chat", caseId: add.caseId }, marked)])
+  const [, added] = await db.batch([mark, newItemRow(db, target, { id: crypto.randomUUID(), text, source: "chat", caseId: add.caseId }, marked)])
   if (added.length) return "added"
   const [already] = await db
     .select({ one: sql`1` })
@@ -289,13 +253,13 @@ export async function appendRuleOnce(db: Db, target: RuleTarget, add: { caseId: 
   throw (await ownerMissing(db, target)) ? new Error("顧客が見つかりません") : new RulesTooLongError()
 }
 
+/** 一覧の項目の文章だけ（並びの順。AI に渡す） */
+const itemTexts = (db: Db, target: RuleTarget) =>
+  db.select({ text: csvRuleItems.text }).from(csvRuleItems).where(inList(target)).orderBy(asc(csvRuleItems.position), asc(csvRuleItems.createdAt), asc(csvRuleItems.id))
+
 /** AI に渡すルールの文章（全体ルールと、顧客があればその顧客ルール）と事務所の設定 */
 export async function rulesForAi(db: Db, customerId: string | null) {
-  const [global, customer, settings] = await Promise.all([
-    listRuleItems(db, { scope: "global" }),
-    customerId ? listRuleItems(db, { scope: "customer", customerId }) : [],
-    getSettings(db),
-  ])
+  const [global, customer, settings] = await Promise.all([itemTexts(db, { scope: "global" }), customerId ? itemTexts(db, { scope: "customer", customerId }) : [], getSettings(db)])
   return { global: rulesText(global), customer: rulesText(customer), rule7Tax: settings.rule7Tax }
 }
 

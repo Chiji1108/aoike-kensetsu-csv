@@ -14,7 +14,7 @@ import type { Basis, SelectionMode, TaxMode } from "../convert/koji-selection"
 import { basisSchema, fieldIdSchema, selectionSchema, taxSchema } from "../schemas"
 import { KOJI_ANONYMIZE, KOJI_KEIREKI, type KojiFieldId } from "../spec/koji-keireki"
 import { applyChanges, type ChatChange } from "./proposals"
-import { MAX_RULE_ITEM_LENGTH, RULE7_TAX_LABELS, type Rule7Tax } from "./rules"
+import { charCount, MAX_RULE_ITEM_LENGTH, RULE7_TAX_LABELS, ruleScopeSchema, type Rule7Tax, type RuleScope } from "./rules"
 import { CHAT_ACTIONS, type ChatAction } from "./messages"
 import { outcomeChanges } from "../location/changes"
 import { askReason, estimateUsd, MAX_SITES_PER_RUN, runSitesOf, siteOfRow, SOURCE_LABELS, type Outcome, type Site } from "../location/sites"
@@ -503,8 +503,11 @@ export function chatTools(state: TurnState) {
     }),
     propose_rule: tool({
       description: `全体ルール（global）か顧客ルール（customer）に足す項目の案を出す。ルールは箇条書きで、1つの決まりを1項目（1〜2文、${MAX_RULE_ITEM_LENGTH}字まで）にする。職員が項目ごとに承認すると保存される。`,
-      inputSchema: z.strictObject({ scope: z.enum(["global", "customer"]), items: z.array(z.string().min(1).max(MAX_RULE_ITEM_LENGTH)).min(1).max(MAX_RULE_PROPOSALS) }),
-      execute: counted<{ scope: "global" | "customer"; items: string[] }>(({ scope, items }) => {
+      inputSchema: z.strictObject({
+        scope: ruleScopeSchema,
+        items: z.array(z.string().min(1).refine((s) => charCount(s) <= MAX_RULE_ITEM_LENGTH, `1項目は${MAX_RULE_ITEM_LENGTH}字まで`)).min(1).max(MAX_RULE_PROPOSALS),
+      }),
+      execute: counted<{ scope: RuleScope; items: string[] }>(({ scope, items }) => {
         for (const text of items) state.pending.push({ kind: "rule", scope, text })
         state.log.push({ tool: "propose_rule", summary: `${scope}: ${items.join(" / ")}` })
         return `職員に${items.length}項目の案を見せました（承認待ち）。`

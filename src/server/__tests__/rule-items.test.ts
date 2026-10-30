@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite"
 import { beforeEach, describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
-import { DEFAULT_GLOBAL_RULE_ITEMS, MAX_RULE_ITEMS, MAX_RULES_TOTAL, rulesText } from "@/lib/chat/rules"
+import { DEFAULT_GLOBAL_RULE_ITEMS, MAX_RULE_ITEM_LENGTH, MAX_RULE_ITEMS, MAX_RULES_TOTAL, rulesText, ruleTextSchema } from "@/lib/chat/rules"
 import {
   addRuleItem,
   appendRuleOnce,
@@ -40,15 +40,35 @@ const GLOBAL: RuleTarget = { scope: "global" }
 const texts = async (t: RuleTarget) => (await listRuleItems(db, t)).map((i) => i.text)
 
 describe("ルールの項目", () => {
-  test("全体ルールは、はじめて読むときに初期値の項目を入れる（同時に読んでも一度だけ。全部消しても戻さない）", async () => {
-    const [a, b] = await Promise.all([listRuleItems(db, GLOBAL), listRuleItems(db, GLOBAL)])
-    expect(a.map((i) => i.text)).toEqual([...DEFAULT_GLOBAL_RULE_ITEMS])
-    expect(b.length).toBe(DEFAULT_GLOBAL_RULE_ITEMS.length)
+  test("全体ルールの初期値はマイグレーションが入れる。読むだけでは書かない（全部消しても戻さない）", async () => {
+    const counts = () => sqlite.query("select (select count(*) from csv_rule_items) as items, (select count(*) from csv_settings) as settings").get()
+    const before = counts()
+    expect(before).toEqual({ items: DEFAULT_GLOBAL_RULE_ITEMS.length, settings: 1 })
+    expect(await texts(GLOBAL)).toEqual([...DEFAULT_GLOBAL_RULE_ITEMS])
     expect(await getSettings(db)).toEqual({ rule7Tax: "excluded" })
+    await rulesForAi(db, null)
+    expect(counts()).toEqual(before)
     for (const i of await listRuleItems(db, GLOBAL)) await deleteRuleItem(db, GLOBAL, i.id, i.version)
     expect(await texts(GLOBAL)).toEqual([])
     await saveSettings(db, { rule7Tax: "included" })
     expect(await getSettings(db)).toEqual({ rule7Tax: "included" })
+  })
+
+  test("字数は文字の数で数える（サロゲートペアの「𠮷」も1字。D1 の length と同じ）", async () => {
+    const customer = await createCustomer(db, "合成建設")
+    const t: RuleTarget = { scope: "customer", customerId: customer.id }
+    // 𠮷 は JS の length では2。文字の数なら上限ちょうどで足せる
+    await addRuleItem(db, t, "𠮷".repeat(MAX_RULE_ITEM_LENGTH))
+    await addRuleItem(db, t, "𠮷".repeat(MAX_RULE_ITEM_LENGTH))
+    expect((await listRuleItems(db, t)).length).toBe(2)
+    expect(ruleTextSchema.safeParse("𠮷".repeat(MAX_RULE_ITEM_LENGTH)).success).toBe(true)
+    expect(ruleTextSchema.safeParse("𠮷".repeat(MAX_RULE_ITEM_LENGTH + 1)).success).toBe(false)
+    // 合計: SQL の length（文字の数）と同じ数え方で上限を見る
+    const items = await listRuleItems(db, t)
+    for (const i of items) await deleteRuleItem(db, t, i.id, i.version)
+    for (let i = 0; i < MAX_RULES_TOTAL / MAX_RULE_ITEM_LENGTH - 1; i++) await addRuleItem(db, t, "あ".repeat(MAX_RULE_ITEM_LENGTH))
+    await addRuleItem(db, t, "𠮷".repeat(MAX_RULE_ITEM_LENGTH))
+    await expect(addRuleItem(db, t, "a")).rejects.toBeInstanceOf(RulesTooLongError)
   })
 
   test("足す・直す・並べ替える・消す。顧客ルールは顧客ごと", async () => {
@@ -125,7 +145,7 @@ describe("ルールの項目", () => {
       ["工事名の読点は取る", "chat", { caseId: c.id, fiscalYear: 2026, customerName: "合成建設" }],
       ["A", "chat", { caseId: c.id, fiscalYear: 2026, customerName: "合成建設" }],
     ])
-    expect(sqlite.query("select count(*) as n from csv_rule_appends where item_id is not null").get()).toEqual({ n: 2 })
+    expect(sqlite.query("select count(*) as n from csv_rule_appends").get()).toEqual({ n: 2 })
 
     expect(await appendRuleOnce(db, GLOBAL, { caseId: c.id, proposalId: "p1", item: 2, text: "注文者の株式会社は㈱" })).toBe("added")
     expect((await texts(GLOBAL)).at(-1)).toBe("注文者の株式会社は㈱")
@@ -186,10 +206,11 @@ describe("前の形（1つの文章）から項目に移す（0004）", () => {
     expect(old.query("select id, rule7_tax as rule7Tax from csv_settings").all()).toEqual([{ id: "global", rule7Tax: "excluded" }])
   })
 
-  test("全体ルールを保存したことが無ければ設定の行を作らない（はじめて読むときに初期値を入れる）", () => {
+  test("全体ルールを保存したことが無ければ、初期値の項目（コードの DEFAULT_GLOBAL_RULE_ITEMS と同じ）と設定の行を入れる", () => {
     const old = new Database(":memory:")
     applyMigrations(old, [...BEFORE, "0004_rule_items"])
-    expect(old.query("select count(*) as n from csv_settings").get()).toEqual({ n: 0 })
-    expect(old.query("select count(*) as n from csv_rule_items").get()).toEqual({ n: 0 })
+    expect(old.query("select id, rule7_tax as rule7Tax from csv_settings").all()).toEqual([{ id: "global", rule7Tax: "excluded" }])
+    const rows = old.query("select scope, customer_id as customerId, text, position, source from csv_rule_items order by position").all()
+    expect(rows).toEqual(DEFAULT_GLOBAL_RULE_ITEMS.map((text, i) => ({ scope: "global", customerId: null, text, position: i + 1, source: "staff" })))
   })
 })

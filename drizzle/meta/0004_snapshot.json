@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "b50aff55-0efe-4bd1-bbe6-5f5eb24e70e8",
+  "id": "2974a418-541d-4737-8cad-8ed6f275c845",
   "prevId": "b943e45a-e661-4370-b0e2-69ed894be639",
   "tables": {
     "account": {
@@ -1086,13 +1086,6 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true,
-          "autoincrement": false
-        },
-        "item_id": {
-          "name": "item_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
           "autoincrement": false
         },
         "created_at": {

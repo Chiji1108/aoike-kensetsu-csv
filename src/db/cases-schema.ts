@@ -4,6 +4,8 @@
 import { sql } from "drizzle-orm"
 import { index, integer, primaryKey, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core"
 import { CASE_STATUSES, FILE_KINDS, FILE_STATUSES } from "@/lib/cases/types"
+import { RULE_SCOPES, RULE_SOURCES } from "@/lib/chat/rules"
+import { RULE7_TAXES } from "@/lib/convert/koji-selection"
 import { createdAt, updatedAt } from "./auth-schema"
 
 export const csvCustomers = sqliteTable("csv_customers", {
@@ -25,11 +27,9 @@ export const csvRules = sqliteTable("csv_rules", {
 
 /**
  * 全体ルール・顧客ルールの項目（1項目1行）。並びは position（同じ一覧の中で小さい順）。customer_id は顧客ルールのときだけ（全体ルールは null）。
- * source は誰が足したか（staff: 職員が画面で・移した前の文章、chat: チャットの変更案の承認、review: 案件を終えるときの見直し）、case_id は由来の案件（無ければ null。案件を消すと null にする）。
+ * source は誰が足したか（staff: 職員が画面で・移した前の文章、chat: チャットの変更案の承認）、case_id は由来の案件（無ければ null。案件を消すと null にする）。
  * version は文章を直すたびに1つ上げ、同じ項目を2つの画面で直したときに後の保存を断る（並べ替えでは上げない）。顧客を消すと顧客ルールの項目も消す
  */
-export const RULE_SCOPES = ["global", "customer"] as const
-export const RULE_SOURCES = ["staff", "chat", "review"] as const
 export const csvRuleItems = sqliteTable(
   "csv_rule_items",
   {
@@ -47,8 +47,7 @@ export const csvRuleItems = sqliteTable(
   (t) => [index("csv_rule_items_list_idx").on(t.scope, t.customerId, t.position), index("csv_rule_items_case_id_idx").on(t.caseId)],
 )
 
-/** 事務所の設定（id は "global" の1行だけ）。rule7_tax は7割の計算を税抜・税込のどちらでするか（新しい案件の初期値）。行を作るときに全体ルールの初期値の項目も入れる */
-export const RULE7_TAXES = ["excluded", "included"] as const
+/** 事務所の設定（id は "global" の1行だけ。マイグレーション 0004 が作る）。rule7_tax は7割の計算を税抜・税込のどちらでするか（新しい案件の初期値） */
 export const csvSettings = sqliteTable("csv_settings", {
   id: text("id").primaryKey(),
   rule7Tax: text("rule7_tax", { enum: RULE7_TAXES }).notNull().default("excluded"),
@@ -66,8 +65,6 @@ export const csvRuleAppends = sqliteTable(
     item: integer("item").notNull(),
     caseId: text("case_id").notNull(),
     token: text("token").notNull(),
-    /** 足した項目（csv_rule_items の id）。0004 より前の印は null */
-    itemId: text("item_id"),
     createdAt: createdAt(),
   },
   (t) => [primaryKey({ columns: [t.proposalId, t.item] }), index("csv_rule_appends_case_id_idx").on(t.caseId)],

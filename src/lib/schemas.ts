@@ -1,6 +1,6 @@
 import { z } from "zod"
 import type { CellEdit, Replacements } from "./convert/convert"
-import { SELECTION_MODES, type Basis, type Rule7Tax, type SelectionMode, type TaxMode } from "./convert/koji-selection"
+import { RULE7_TAXES, SELECTION_MODES, type Basis, type Rule7Tax, type SelectionMode, type TaxMode } from "./convert/koji-selection"
 import { KOJI_KEIREKI, type KojiFieldId } from "./spec/koji-keireki"
 
 /**
@@ -12,7 +12,7 @@ export const fieldIdSchema = z.enum(KOJI_KEIREKI.fields.map((f) => f.id) as [Koj
 
 export const taxSchema: z.ZodType<TaxMode> = z.enum(["unknown", "included", "excluded"])
 
-export const rule7TaxSchema: z.ZodType<Rule7Tax> = z.enum(["excluded", "included"])
+export const rule7TaxSchema: z.ZodType<Rule7Tax> = z.enum(RULE7_TAXES)
 
 export const selectionSchema: z.ZodType<SelectionMode> = z.enum(SELECTION_MODES)
 

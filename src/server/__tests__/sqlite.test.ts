@@ -12,7 +12,6 @@ describe("照合・テストの sqlite", () => {
     // 最後のマイグレーションを当てる前の状態にする（記録を消し、そのマイグレーションの表を落とす）
     first.sqlite.run("delete from __drizzle_migrations where created_at = (select max(created_at) from __drizzle_migrations)")
     for (const t of ["csv_rule_items", "csv_settings"]) first.sqlite.run(`drop table ${t}`)
-    first.sqlite.run("alter table csv_rule_appends drop column item_id")
     first.sqlite.close()
     const again = migratedDb(file)
     const tables = again.sqlite.query("select name from sqlite_master where type = 'table' and name in ('csv_rule_items', 'csv_settings')").all()
