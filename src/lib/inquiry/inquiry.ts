@@ -417,9 +417,10 @@ export async function readAiAnswers(items: readonly AiAnswer[], rows: readonly K
     const rowQs = asked.length ? asked : column.fields.map((field): CellInquiry => ({ kind: "cell", rowKey, field, reason: "needsReview", current: storedOf(row.cells[field]) }))
     const shown = column.show(row)
     const answers = [...new Set(list.map((i) => (i.confirm ? shown : i.answer.trim())))]
-    // 工事場所は都道府県と場所名を別に送ってもよい（つなげて1つの住所として読む）
+    // 工事場所は都道府県と場所名を別に送ってもよい（つなげて1つの住所として読む。場所名が都道府県から書いてあれば場所名だけ）
     const joined = column.fields.length > 1 && list.length === column.fields.length && new Set(list.map((i) => i.field)).size === list.length && !list.some((i) => i.confirm)
-    const answer = joined ? column.fields.map((f) => list.find((i) => i.field === f)!.answer!.trim()).join("") : answers.length === 1 ? answers[0]! : null
+    const parts = joined ? column.fields.map((f) => list.find((i) => i.field === f)!.answer!.trim()) : []
+    const answer = joined ? parts.reduce((a, b) => (b.startsWith(a) ? b : a + b)) : answers.length === 1 ? answers[0]! : null
     if (answer === null) {
       for (const q of rowQs) report.invalid.push({ inquiry: q, answer: answers.join(" / "), message: "同じ欄に違う答えが2つあります" })
       continue

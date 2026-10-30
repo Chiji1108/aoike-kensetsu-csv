@@ -55,11 +55,11 @@ describe("AI が読んだ顧客の回答", () => {
     expect(r.confirmed.map((q) => q.field)).toEqual(["place"])
   })
 
-  test("都道府県と場所名を別々に送っても1つの住所として読む。読めない答え・同じ欄の食い違う答えは反映しない", async () => {
+  test("都道府県と場所名を別々に送っても1つの住所として読む（場所名を都道府県から書いても）。読めない答え・同じ欄の食い違う答えは反映しない", async () => {
     const r = await readAiAnswers(
       [
         { rowKey: noLocation.key, field: "prefecture", answer: "大阪府" },
-        { rowKey: noLocation.key, field: "place", answer: "大阪市北区" },
+        { rowKey: noLocation.key, field: "place", answer: "大阪府大阪市北区" },
         { rowKey: noEngineer.key, field: "endYm", answer: "去年の秋" },
         { rowKey: guessedPlace.key, field: "place", answer: "東京都港区" },
         { rowKey: guessedPlace.key, field: "place", answer: "東京都品川区" },
