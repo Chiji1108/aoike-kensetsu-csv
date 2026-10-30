@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process"
 import { expect, test, type Page } from "@playwright/test"
-import { attachAndConvert, callsServerFn, confirmDelete, openCaseDelete, deleteCustomer, open, openNewCase, reload, showAllRows } from "./helpers"
+import { attachAndConvert, callsServerFn, confirmDelete, openCaseDelete, deleteCustomer, open, openNewCase, openTab, reload, showAllRows } from "./helpers"
 
 const FIXTURE = new URL("../fixtures/sample-messy.xlsx", import.meta.url).pathname
 const ROWS = '[data-testid="preview-table"] tbody tr[data-row-key]'
@@ -44,8 +44,9 @@ test("顧客と案件を作り、変換と手直しを保存して再読み込�
   await test.step("Excel の表題に「金額は税込」とあるので、計画が税込と決め、税込・税抜を聞き返さない", async () => {
     await expect(page.getByTestId("plan-tax-note")).toContainText("税込")
     await expect(page.locator('[data-testid="report-question"][data-question="tax"]')).toHaveCount(0)
-    await expect(page.getByTestId("chat-open-question")).toHaveCount(0)
+    await openTab(page, "selection")
     await expect(page.getByTestId("tax-included")).toHaveAttribute("aria-pressed", "true")
+    await openTab(page, "table")
   })
 
   const first = page.locator(ROWS).first()
@@ -79,9 +80,9 @@ test("顧客と案件を作り、変換と手直しを保存して再読み込�
     expect(aiCalls).toEqual([])
   })
 
-  await test.step("表ができたあとも元ファイルの行の「ファイル」で付けられる。PDF を付けると一覧に出て、変換の元は変わらない", async () => {
+  await test.step("表ができたあともチャットの📎でアップロードできる。PDF を上げると作業の画面のファイルの行に出て、変換の元は変わらない", async () => {
     const choosing = page.waitForEvent("filechooser")
-    await page.getByTestId("attach-button").click()
+    await page.getByTestId("chat-attach").click()
     await (await choosing).setFiles(PDF)
     const pdf = page.locator(`[data-testid="file-list"] [data-file="${PDF.name}"]`)
     await expect(pdf).toBeVisible()
@@ -134,6 +135,8 @@ test("顧客と案件を作り、変換と手直しを保存して再読み込�
 
   await test.step("案件を消すと、D1 の行も R2 のファイルも残らない", async () => {
     await reload(page)
+    // ファイルの行は作業の画面の上（保存した結果から表ができると開く）
+    await expect(page.getByTestId("preview-table")).toBeVisible({ timeout: 60_000 })
     const all = await page.locator('[data-testid="file-list"] a').evaluateAll((as) => as.map((a) => a.getAttribute("href")!))
     expect(all).toHaveLength(3)
     const keys = all.map((h) => `cases/${caseId}/${h.split("/").pop()}`)
@@ -163,7 +166,7 @@ test("列の対応を考えている途中で閉じても、開き直すと変�
   const { customer } = await openNewCase(page)
   // AI の計画の返事を止め、考えている途中のまま保存させる
   await page.route((url) => callsServerFn(url.href, ["planWithAi"]), () => {})
-  await page.getByTestId("file-input").setInputFiles(FIXTURE)
+  await page.getByTestId("chat-file-input").setInputFiles(FIXTURE)
   await expect(page.getByTestId("case-report")).toHaveAttribute("data-phase", "planning")
   await expect(page.getByTestId("report-progress")).toContainText("考えています")
   await waitSaved(page)
@@ -172,9 +175,9 @@ test("列の対応を考えている途中で閉じても、開き直すと変�
   const replanned = page.waitForRequest((r) => callsServerFn(r.url(), ["planWithAi"]))
   await reload(page)
   await replanned
-  await expect(page.getByTestId("current-source")).toBeVisible()
-  // 「変換する」のボタンは無い。考え終えると自動で変換する
+  // 「変換する」のボタンは無い。考え終えると自動で変換し、作業の画面が開く（変換の元は残っている）
   await expect(page.getByTestId("preview-table")).toBeVisible({ timeout: 180_000 })
+  await expect(page.getByTestId("current-source")).toBeVisible()
   await expect(page.getByTestId("case-report")).toHaveAttribute("data-phase", "done")
   await deleteCustomer(page, customer)
 })

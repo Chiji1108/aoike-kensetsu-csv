@@ -8,7 +8,19 @@ import { syntheticPdf } from "./pdf"
 const FIXTURE = new URL("../fixtures/sample-messy.xlsx", import.meta.url).pathname
 
 type WireRow = { key: string; excluded?: string; cells: Record<string, { value: string }> }
-type Reply = (body: { text: string; table: { rows: WireRow[] } }) => { text: string; changes: ChatChange[]; question?: string; caseUsd?: number; delayMs?: number; failAfterCost?: string; refuse?: number }
+type Reply = (body: { text: string; table: { rows: WireRow[] } }) => {
+  text: string
+  changes: ChatChange[]
+  question?: string
+  caseUsd?: number
+  delayMs?: number
+  failAfterCost?: string
+  refuse?: number
+  /** 返事に付けるボタン（offer_action） */
+  action?: "export" | "inquiry_excel"
+  /** 呼んだことにする道具（結果まで届ける） */
+  tool?: string
+}
 
 /**
  * チャットのサーバー（/api/cases/<id>/chat）の代わりに、決まった返事を AI SDK の UI メッセージのストリームで返す。
@@ -38,6 +50,11 @@ async function fakeChat(page: Page, replies: Reply[]) {
         writer.write({ type: "text-start", id: "t" })
         writer.write({ type: "text-delta", id: "t", delta: reply.text })
         writer.write({ type: "text-end", id: "t" })
+        if (reply.tool) {
+          writer.write({ type: "tool-input-available", toolCallId: `call-${n}`, toolName: reply.tool, input: {} })
+          writer.write({ type: "tool-output-available", toolCallId: `call-${n}`, output: { ok: true } })
+        }
+        if (reply.action) writer.write({ type: "data-action", data: { action: reply.action } })
         if (reply.changes.length || reply.question) {
           writer.write({ type: "data-proposal", data: { id: proposal.id } })
           writer.write({ type: "data-proposal-content", data: { proposal, changes: reply.changes }, transient: true })
@@ -141,21 +158,87 @@ test("チャットの変更案を一覧で確かめて承認すると、表と C
   await expect(page.locator(`tr[data-row-key="${target.key}"]`)).toContainText(target.to)
 })
 
-test("狭い画面: チャットは表に重ねて開き、閉じても進めている指示は続き、開き直すと会話と変更案が残る", async ({ page }) => {
+test("最初はチャットだけ。📎でアップロードすると作業の画面が右に開き、閉じても「表を開く」で開き直せる。チャットのボタンと道具の結果で作業の画面のタブが切り替わる", async ({ page }) => {
+  const { customer } = await openNewCase(page)
+  created.push(customer)
+
+  await test.step("ファイルの前はチャットだけで、入口は📎（アップロード）", async () => {
+    await expect(page.getByTestId("chat-panel")).toBeVisible()
+    await expect(page.getByTestId("work-panel")).toHaveCount(0)
+    await expect(page.getByTestId("report-empty")).toContainText("アップロードしてください")
+    await expect(page.getByTestId("chat-attach")).toHaveText("アップロード")
+  })
+
+  await test.step("📎で選ぶと変換し、作業の画面が表のタブで開く", async () => {
+    const choosing = page.waitForEvent("filechooser")
+    await page.getByTestId("chat-attach").click()
+    await (await choosing).setFiles(FIXTURE)
+    await expect(page.getByTestId("case-report")).toHaveAttribute("data-phase", "done", { timeout: 300_000 })
+    await expect(page.getByTestId("work-panel")).toBeVisible()
+    await expect(page.getByTestId("tab-table")).toHaveAttribute("aria-selected", "true")
+    await expect(page.getByTestId("preview-table")).toBeVisible()
+    // 📎は小さくなる（入口は同じ）
+    await expect(page.getByTestId("chat-attach")).toHaveAccessibleName("ファイルをアップロード")
+  })
+
+  await test.step("閉じるとチャットだけになり、「表を開く」で開き直せる。タブはキーボードでも選べる", async () => {
+    await page.getByTestId("work-close").click()
+    await expect(page.getByTestId("work-panel")).toHaveCount(0)
+    await page.getByTestId("work-open").click()
+    await expect(page.getByTestId("preview-table")).toBeVisible()
+    await page.getByTestId("tab-table").focus()
+    await page.keyboard.press("ArrowRight")
+    await page.keyboard.press("Enter")
+    await expect(page.getByTestId("tab-selection")).toHaveAttribute("aria-selected", "true")
+    await expect(page.getByTestId("tax-included")).toBeVisible()
+    await page.getByTestId("tab-table").click()
+  })
+
+  await test.step("返事のボタンで問い合わせのタブ、道具の結果でそのタブに切り替わる", async () => {
+    await fakeChat(page, [() => ({ text: "問い合わせの Excel はこちらから。", changes: [], action: "inquiry_excel" }), () => ({ text: "7割の設定を見ました。", changes: [], tool: "set_selection" })])
+    await send(page, "問い合わせの Excel を作って")
+    await page.getByTestId("chat-action").click()
+    await expect(page.getByTestId("tab-inquiry")).toHaveAttribute("aria-selected", "true")
+    await page.getByTestId("tab-table").click()
+    await send(page, "7割の設定を見て")
+    await expect(page.getByTestId("chat-messages")).toContainText("7割の設定を見ました。")
+    await expect(page.getByTestId("tab-selection")).toHaveAttribute("aria-selected", "true")
+    // 道具の行からも開ける
+    await page.getByTestId("tab-table").click()
+    await page.getByTestId("chat-open-tab").click()
+    await expect(page.getByTestId("tab-selection")).toHaveAttribute("aria-selected", "true")
+  })
+
+  await test.step("開き直すと（保存済みの案件）作業の画面は表のタブで開き、前の道具の結果ではタブを動かさない", async () => {
+    await page.unrouteAll({ behavior: "ignoreErrors" })
+    await reload(page)
+    await expect(page.getByTestId("preview-table")).toBeVisible({ timeout: 60_000 })
+    await expect(page.getByTestId("tab-table")).toHaveAttribute("aria-selected", "true")
+  })
+})
+
+test("狭い画面: チャットが画面いっぱいで、作業の画面は「表を開く」で上に重ねて開いて閉じる。道具の結果ではチャットを覆わずタブだけ切り替える", async ({ page }) => {
   await page.setViewportSize({ width: 1000, height: 900 })
   const { customer } = await convertFixture(page, FIXTURE)
   created.push(customer)
-  await expect(page.getByTestId("chat-panel")).toBeHidden()
-  await page.getByTestId("chat-open").click()
-  await expect(page.getByTestId("case-report")).toHaveAttribute("data-phase", "done")
-  await fakeChat(page, [({ table }) => ({ text: "1行を外す案です。", changes: [{ kind: "include", rowKey: companyRow(table.rows).key, include: false }], delayMs: 3_000 })])
+  await expect(page.getByTestId("chat-panel")).toBeVisible()
+  await expect(page.getByTestId("work-panel")).toHaveCount(0)
+
+  await page.getByTestId("work-open").click()
+  await expect(page.getByRole("dialog", { name: "作業の画面" })).toBeVisible()
+  await expect(page.getByTestId("preview-table")).toBeVisible()
+  await page.getByTestId("work-close").click()
+  await expect(page.getByTestId("work-panel")).toHaveCount(0)
+
+  await fakeChat(page, [({ table }) => ({ text: "1行を外す案です。", changes: [{ kind: "include", rowKey: companyRow(table.rows).key, include: false }], tool: "ask_customer" })])
   await send(page, "注文者が株式会社の最初の行を外して")
-  await page.getByRole("button", { name: "チャットを閉じる" }).click()
-  await expect(page.getByTestId("chat-panel")).toBeHidden()
-  await expect(page.getByTestId("chat-open")).toContainText("1", { timeout: 15_000 })
-  await page.getByTestId("chat-open").click()
-  await expect(page.getByTestId("chat-messages")).toContainText("注文者が株式会社の最初の行を外して")
   await expect(page.getByTestId("proposal")).toContainText("未決 1 件")
+  await expect(page.getByTestId("work-panel")).toHaveCount(0)
+  await page.getByTestId("work-open").click()
+  await expect(page.getByTestId("tab-inquiry")).toHaveAttribute("aria-selected", "true")
+  await page.keyboard.press("Escape")
+  await expect(page.getByTestId("work-panel")).toHaveCount(0)
+  await expect(page.getByTestId("chat-messages")).toContainText("注文者が株式会社の最初の行を外して")
 })
 
 test("変更案の無い聞き返しの答えは、AI に送れたときだけ回答済みにする（断られたら答え直せる）", async ({ page }) => {
@@ -256,7 +339,7 @@ const PDF_LINES = [
 /** PDF だけの案件を作る（表になるファイルが無いので、チャットで表を作る） */
 async function openPdfCase(page: Page) {
   const opened = await openNewCase(page)
-  await page.getByTestId("file-input").setInputFiles({ name: "工事経歴.pdf", mimeType: "application/pdf", buffer: syntheticPdf(PDF_LINES) })
+  await page.getByTestId("chat-file-input").setInputFiles({ name: "工事経歴.pdf", mimeType: "application/pdf", buffer: syntheticPdf(PDF_LINES) })
   await expect(page.getByTestId("no-sheet-source")).toBeVisible()
   return opened
 }

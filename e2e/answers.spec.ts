@@ -64,7 +64,7 @@ test("記入用Excelの色付きの欄の外に書いた答えは、チャット
   await expect(page.getByTestId("case-report")).toHaveAttribute("data-phase", "done")
 
   /** 返す記入用Excel（色付きの欄は空のまま、右に足した「備考」の列に答えを書く）と、答えた行・項目 */
-  const answered = await test.step("記入用Excelを落とし、色付きの欄でなく「備考」の列に答えを書く", async () => {
+  const answered = await test.step("記入用Excelをダウンロードし、色付きの欄でなく「備考」の列に答えを書く", async () => {
     await openTab(page, "inquiry")
     const downloading = page.waitForEvent("download")
     await page.getByTestId("download-inquiry-xlsx").click()

@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs"
 import ExcelJS from "exceljs"
 import { expect, test } from "@playwright/test"
 import { createUIMessageStream, createUIMessageStreamResponse } from "ai"
-import { attachAndConvert, callsServerFn, csvCount, deleteCustomer, open, openNewCase, showAllRows } from "./helpers"
+import { attachAndConvert, callsServerFn, csvCount, deleteCustomer, open, openNewCase, openTab, showAllRows } from "./helpers"
 
 const FIXTURE = new URL("../fixtures/sample-messy.xlsx", import.meta.url).pathname
 
@@ -70,11 +70,13 @@ test("同じ顧客の2年度目は去年の Excel との違いを出し、「去
 
   await test.step("全件を載せる切り替えで、載る件数が変わり、戻すと元の件数", async () => {
     const rule7 = await csvCount(page)
+    await openTab(page, "selection")
     await page.getByTestId("selection-all").click()
     await expect.poll(() => csvCount(page)).toBeGreaterThan(rule7)
     const all = await csvCount(page)
     await showAllRows(page)
     expect(await page.locator('[data-testid="preview-table"] tbody tr[data-row-key][data-included="1"]').count()).toBe(all)
+    await openTab(page, "selection")
     await page.getByTestId("selection-rule7").click()
     await expect.poll(() => csvCount(page)).toBe(rule7)
   })

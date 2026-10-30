@@ -3,10 +3,10 @@ import ExcelJS from "exceljs"
 import { expect, test, type Page } from "@playwright/test"
 import { createUIMessageStream, createUIMessageStreamResponse } from "ai"
 import type { ChatChange, Proposal } from "../src/lib/chat/proposals"
-import { callsServerFn, csvCount, deleteCustomer, openNewCase, reload, showAllRows } from "./helpers"
+import { callsServerFn, csvCount, deleteCustomer, openNewCase, openTab, reload, showAllRows } from "./helpers"
 
 /**
- * チャット中心の流れ: ファイルを落とす → 自動で変換 → 変換の報告（注意書き・聞き返し・確かめる行の件数） → チャットで列の対応を直す変更案 →
+ * チャット中心の流れ: ファイルをアップロードする → 自動で変換 → 変換の報告（注意書き・聞き返し・確かめる行の件数） → チャットで列の対応を直す変更案 →
  * 承認で変換し直す → 承認を取り消すと元に戻る（開き直しても） → 書き出す前の確認で決算書の額と照らす → 最後の Excel と CSV。
  * 列の対応は見出しからの推定にし（計画の AI を断る）、チャットは決まった返事にする（AI なしで同じ結果になる）
  */
@@ -68,12 +68,12 @@ async function rowWithPeriod(page: Page) {
   return row!
 }
 
-test("ファイルを落とすと自動で変換して報告で聞き返し、チャットで列の対応を直す変更案の承認で変換し直す。取り消すと戻り（開き直しても）、書き出す前に決算書の額と照らす", async ({ page }) => {
+test("ファイルをアップロードすると自動で変換して報告で聞き返し、チャットで列の対応を直す変更案の承認で変換し直す。取り消すと戻り（開き直しても）、書き出す前に決算書の額と照らす", async ({ page }) => {
   const { customer } = await openNewCase(page)
   created.push(customer)
   await page.route((url) => callsServerFn(url.href, ["planWithAi"]), (route) => route.fulfill({ status: 500, body: "計画の AI を使わない" }))
 
-  await test.step("チャット欄にファイルを落とすと、列の対応を考えてそのまま変換し、報告に注意書き・件数・聞き返しが出る", async () => {
+  await test.step("チャット欄の📎でファイルをアップロードすると、列の対応を考えてそのまま変換し、報告に注意書き・件数・聞き返しが出る", async () => {
     await expect(page.getByTestId("case-report")).toHaveAttribute("data-phase", "empty")
     await page.getByTestId("chat-file-input").setInputFiles(FIXTURE)
     await expect(page.getByTestId("preview-table")).toBeVisible({ timeout: 180_000 })
@@ -91,6 +91,7 @@ test("ファイルを落とすと自動で変換して報告で聞き返し、�
     const q = page.locator('[data-testid="report-question"][data-question="tax"]')
     await q.locator('[data-value="included"]').click()
     await expect(q).toHaveAttribute("data-answered", "税込")
+    await openTab(page, "selection")
     await expect(page.getByTestId("tax-included")).toHaveAttribute("aria-pressed", "true")
     // 選択肢の少ない欄はセグメントコントロール。キーボードでも選べる
     await page.getByTestId("tax-included").focus()
@@ -178,7 +179,7 @@ test("ファイルを落とすと自動で変換して報告で聞き返し、�
   })
 })
 
-test("表ができる前に直した Excel を落としても、黙って捨てずに報告に理由を出す", async ({ page }) => {
+test("表ができる前に直した Excel をアップロードしても、黙って捨てずに報告に理由を出す", async ({ page }) => {
   const { customer } = await openNewCase(page)
   created.push(customer)
   const wb = new ExcelJS.Workbook()

@@ -52,7 +52,7 @@ async function fakeChat(page: Page, changes: ChatChange[], texts: string[], dism
   })
 }
 
-/** 記入用Excelを落とし、「ご質問」の欄の値を管理番号ごとに読む */
+/** 記入用Excelをダウンロードし、「ご質問」の欄の値を管理番号ごとに読む */
 async function questionColumn(page: Page) {
   const downloading = page.waitForEvent("download")
   await page.getByTestId("download-inquiry-xlsx").click()

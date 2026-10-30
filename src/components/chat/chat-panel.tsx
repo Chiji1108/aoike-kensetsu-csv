@@ -100,11 +100,11 @@ export type ChatPanelProps = {
   /** 返事のボタン（書き出す前の確認・問い合わせ） */
   onAction: (action: ChatAction) => void
   /**
-   * 作業の画面のタブを開く。道具の結果を受け取ったとき（auto。返事の途中だけ。保存した会話を読んだときは開かない）と、
+   * 作業の画面のタブを開く。道具の結果が届いたとき（auto。保存した会話を読んだときは開かない）と、
    * 道具の行の「…を開く」を押したとき（click）
    */
   onOpenTab: (tab: WorkTab, how: "auto" | "click") => void
-  /** 作業の画面（表ができてから）。閉じているときは見出しに「作業の画面を開く」を出す */
+  /** 作業の画面（表ができてから）。閉じているときは見出しに「表を開く」を出す */
   work: { shown: boolean; open: () => void } | null
   /** 今の列の対応（列の対応の変更案を「今 → 案」で出す） */
   plan: MappingPlan<KojiFieldId> | null

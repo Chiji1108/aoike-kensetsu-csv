@@ -20,11 +20,11 @@ test.afterEach(async ({ page }) => {
   expect(pageErrors).toEqual([])
 })
 
-/** 書き出すの確認から最後の Excel を落とし、ExcelJS で開く（職員が Excel で開いたとき） */
+/** 書き出すの確認から最後の Excel をダウンロードし、ExcelJS で開く（職員が Excel で開いたとき） */
 async function downloadFinal(page: Page) {
   await page.getByTestId("export-button").click()
   const dialog = page.getByTestId("export-dialog")
-  await expect(dialog.getByTestId("export-note")).toContainText("上げると表に戻ります")
+  await expect(dialog.getByTestId("export-note")).toContainText("アップロードすると表に戻ります")
   const downloading = page.waitForEvent("download")
   await dialog.getByTestId("export-excel").click()
   const path = (await (await downloading).path())!
