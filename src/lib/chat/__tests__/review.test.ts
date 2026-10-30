@@ -102,11 +102,11 @@ describe("振り返りの材料", () => {
   })
 
   test("指示が多ければ後ろの分だけ（番号は会話の順のまま）、長い指示は切る", () => {
-    const many = Array.from({ length: 90 }, (_, i): ReviewTurn => ({ instruction: i === 89 ? "あ".repeat(2000) : `指示${i + 1}`, proposal: null, question: null, plan: [], selection: [], tools: [] }))
+    const many = Array.from({ length: 70 }, (_, i): ReviewTurn => ({ instruction: i === 69 ? "あ".repeat(2000) : `指示${i + 1}`, proposal: null, question: null, plan: [], selection: [], tools: [] }))
     const m = reviewMaterial({ turns: many, table, view: deriveTable(table), rounding: "floor", scrub: reviewScrubber(table) })
-    expect(m.instructions).toHaveLength(80)
+    expect(m.instructions).toHaveLength(60)
     expect(m.instructions[0]!.n).toBe(11)
-    expect([...m.instructions.at(-1)!.text].length).toBe(1501)
+    expect([...m.instructions.at(-1)!.text].length).toBe(601)
   })
 
   test("ルールの案の個人名: 表の人・分かっている名前（空白・全角半角の違いも）・表の記号を見つける。地名の一部は名前にしない", () => {

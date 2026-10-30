@@ -6,6 +6,7 @@ import { expect, test, type Page } from "@playwright/test"
 import { createUIMessageStream, createUIMessageStreamResponse } from "ai"
 import type { ChatMetadata } from "../src/lib/chat/messages"
 import { proposalKey, type ChatChange, type Proposal, type ProposalRecord } from "../src/lib/chat/proposals"
+import { REVIEW_PROMPT } from "../src/lib/chat/review"
 import { callsServerFn, convertFixture, deleteCustomer, open, openNewCase, reload } from "./helpers"
 
 const FIXTURE = new URL("../fixtures/sample-messy.xlsx", import.meta.url).pathname
@@ -199,4 +200,61 @@ test("チャットのルールの項目の案を承認すると、顧客ルー�
   await expect(origin).toHaveAttribute("data-source", "chat")
   await origin.getByRole("link").click()
   await expect(page).toHaveURL(caseUrl)
+})
+
+test("案件を完了にするとチャットに振り返りの案内が出て、押すと振り返りの指示を送る。振り返りの項目の案を承認すると、由来「振り返り」で顧客ルールに足す", async ({ page }) => {
+  const { customer, caseUrl } = await convertFixture(page, FIXTURE)
+  created.push(customer)
+  const caseId = caseUrl.split("/").at(-1)!
+  const rule = `完成年月は引渡日の列にする（E2E${Date.now()}）`
+  const changes: ChatChange[] = [{ kind: "rule", scope: "customer", text: rule, source: "review" }]
+  const proposal: Proposal = { id: `review-${Date.now()}`, origin: { kind: "chat", messageId: "m1" }, question: null, state: "open", count: 1, applied: [], rejected: [] }
+  putProposalRecord(caseId, { proposal, changes })
+  /** 届いた指示（本文と、振り返りに使う変更案の状態） */
+  const sent: { text: string; review?: { proposals: unknown[]; undo: unknown[] } }[] = []
+  await page.route("**/api/cases/*/chat", async (route) => {
+    if (route.request().method() !== "POST") return route.fallback()
+    sent.push(route.request().postDataJSON())
+    const metadata: ChatMetadata = { usd: 0.01, caseUsd: 0.5, ms: 1000, inputTokens: 100, outputTokens: 10, toolCalls: 2 }
+    const stream = createUIMessageStream({
+      execute: ({ writer }) => {
+        writer.write({ type: "start", messageId: "a1" })
+        writer.write({ type: "text-start", id: "t" })
+        writer.write({ type: "text-delta", id: "t", delta: "毎年の決まりを1項目、顧客ルールに足す案です。今年だけの事情: 1件だけ顧客の回答で直した完成年月（ルールにしません）。" })
+        writer.write({ type: "text-end", id: "t" })
+        writer.write({ type: "data-proposal", data: { id: proposal.id } })
+        writer.write({ type: "data-proposal-content", data: { proposal, changes }, transient: true })
+        writer.write({ type: "message-metadata", messageMetadata: metadata })
+        writer.write({ type: "finish" })
+      },
+    })
+    const res = createUIMessageStreamResponse({ stream })
+    await route.fulfill({ status: 200, headers: Object.fromEntries(res.headers), body: await res.text() })
+  })
+  const hint = page.locator('[data-testid="chat-suggestion"][data-suggestion="review"]')
+  await expect(hint).toHaveCount(0)
+  await page.getByTestId("case-status-done").click()
+  await expect(hint).toBeVisible()
+  // 完了から戻すと案内を消す
+  await page.getByTestId("case-status-inquiring").click()
+  await expect(hint).toHaveCount(0)
+  await page.getByTestId("case-status-done").click()
+  await hint.getByTestId("chat-suggestion-send").click()
+  const card = page.getByTestId("proposal").last()
+  await expect(card).toBeVisible()
+  expect(sent.map((s) => s.text)).toEqual([REVIEW_PROMPT])
+  expect(sent[0]!.review).toEqual({ proposals: [], undo: [] })
+  await expect(hint).toHaveCount(0)
+  await card.getByTestId("proposal-open").click()
+  await expect(page.getByTestId("proposal-dialog").getByTestId("proposal-item")).toContainText("項目を足す（振り返り）")
+  await page.keyboard.press("Escape")
+  await card.getByTestId("proposal-apply-all").click()
+  await expect(page.getByTestId("proposal-closed").last()).toContainText("反映 1 件")
+
+  await page.getByRole("link", { name: customer }).click()
+  const list = "customer-rules"
+  await expect.poll(() => texts(page, list)).toEqual([rule])
+  const origin = item(page, list, rule).getByTestId("rule-item-origin")
+  await expect(origin).toHaveText("2026年度の案件の振り返りから")
+  await expect(origin).toHaveAttribute("data-source", "review")
 })

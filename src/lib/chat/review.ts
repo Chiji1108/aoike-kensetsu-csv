@@ -47,8 +47,8 @@ const QUIET_TOOLS = new Set(["code_execution", "get_table", "check_table", "get_
 const planOutput = z.object({ ok: z.literal(true), changes: z.array(z.string()) })
 const selectionInput = z.object({ tax: taxSchema.optional(), selection: selectionSchema.optional(), basis: basisSchema.optional() })
 
-/** 7割の設定の変更を言葉にする */
-function describeSelection(input: unknown): string[] {
+/** 7割の設定の変更（set_selection の入力・変更案の settings）を言葉にする */
+export function describeSelection(input: unknown): string[] {
   const s = selectionInput.safeParse(input)
   if (!s.success) return []
   return [
@@ -115,8 +115,8 @@ const BY_ORDER: CellEdit["by"][] = ["staff", "excel", "chat", "customer", "confi
 /** 項目ごとに出す手直し・置換の例の数と、値・指示の長さの上限（AI に渡す材料を大きくしない） */
 const MAX_EXAMPLES = 10
 const MAX_VALUE_CHARS = 120
-const MAX_INSTRUCTION_CHARS = 1_500
-const MAX_TURNS = 80
+const MAX_INSTRUCTION_CHARS = 600
+const MAX_TURNS = 60
 
 const cut = (s: string, n: number) => ([...s].length > n ? `${[...s].slice(0, n).join("")}…` : s)
 
