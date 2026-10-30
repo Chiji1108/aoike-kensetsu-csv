@@ -10,6 +10,8 @@ import { INCLUDE_HEADER, type EditReport } from "@/lib/excel/edit-sheet"
 import { fieldLabel } from "@/lib/inquiry/inquiry"
 import type { KojiFieldId } from "@/lib/spec/koji-keireki"
 
+export type EditImport = { report: EditReport } | { error: string }
+
 const labelOf = (f: KojiFieldId | "include") => (f === "include" ? INCLUDE_HEADER : fieldLabel(f))
 
 /**
@@ -24,6 +26,8 @@ export function EditExcelPanel({
   busy,
   download,
   upload,
+  result,
+  onResult,
 }: {
   view: TableView
   /** 出どころが Excel の、開いている変更案 */
@@ -34,9 +38,12 @@ export function EditExcelPanel({
   download: () => Promise<void>
   /** 上げた Excel を読み、変更案を置く。読めなければ error */
   upload: (f: File) => Promise<{ report: EditReport } | { error: string } | undefined>
+  /** 最後に取り込んだ結果（案件の画面が持つ。チャット欄に落とした Excel の結果もここに出す） */
+  result: EditImport | null
+  onResult: (r: EditImport) => void
 }) {
   const [working, setWorking] = useState<"download" | "upload" | null>(null)
-  const [result, setResult] = useState<{ report: EditReport } | { error: string } | null>(null)
+  const setResult = onResult
   const input = useRef<HTMLInputElement>(null)
 
   async function run<T>(kind: "download" | "upload", f: () => Promise<T>) {

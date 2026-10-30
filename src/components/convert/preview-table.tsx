@@ -29,7 +29,7 @@ import { INCLUSION_LABELS, type Inclusion } from "@/lib/convert/koji-selection"
 import type { KojiFieldId } from "@/lib/spec/koji-keireki"
 import type { CsvSpec } from "@/lib/spec/types"
 import { cn } from "@/lib/utils"
-import { FILTER_ORDER, ROW_FILTERS, STATUS, cellClass, rowFilters, type RowFilter } from "./status"
+import { FILTER_ORDER, ROW_FILTERS, STATUS, cellClass, countRowFilters, rowFilters, type RowFilter } from "./status"
 
 type Row = RowResult<KojiFieldId>
 
@@ -140,19 +140,7 @@ export function PreviewTable({
   )
   const matches = useMemo(() => new Map(rows.map((r) => [r.key, rowFilters(r)])), [rows])
   /** 絞り込みごとの行数。CSV に載せる行と、表に出る行（載せない行も含む） */
-  const counts = useMemo(() => {
-    const c = Object.fromEntries(FILTER_ORDER.map((f) => [f, { csv: 0, all: 0 }])) as Record<RowFilter, { csv: number; all: number }>
-    for (const r of rows) {
-      const included = inclusion.get(r.key)?.included ?? false
-      const m = matches.get(r.key)!
-      for (const f of FILTER_ORDER) {
-        if (!m[f]) continue
-        c[f].all++
-        if (included) c[f].csv++
-      }
-    }
-    return c
-  }, [rows, matches, inclusion])
+  const counts = useMemo(() => countRowFilters(rows, inclusion, matches), [rows, matches, inclusion])
 
   const needle = query.trim().toLowerCase()
   const data = useMemo(() => {

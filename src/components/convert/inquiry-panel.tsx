@@ -41,7 +41,7 @@ export function InquiryPanel({
   answers,
   keepFile,
   onToggle,
-  readAnswerFile,
+  importAnswers,
 }: {
   inquiries: Inquiry[]
   outputRows: Row[]
@@ -53,11 +53,8 @@ export function InquiryPanel({
   /** ダウンロードした記入用Excelを案件に残す */
   keepFile: (name: string, bytes: Uint8Array, type: string) => void
   onToggle: (key: string, ask: boolean) => void
-  /**
-   * 回答のファイルを読んで照合し、手直しに反映する（注文者・工事名の記入は元データと同じ変換・AI に通す）。
-   * 結果は answers に入る。読んでいる間に値が変わったセル（手直し・置換・変換のやり直し）の回答は反映せず、結果の changed に入る。別の案件になったら undefined（結果は捨てる）
-   */
-  readAnswerFile: (file: File, rows: Row[]) => Promise<{ error: string } | { aiFailures: string[] } | undefined>
+  /** 記入された Excel を取り込む（案件の画面が照合して手直しに反映し、結果を answers に入れる。チャット欄に落としたときも同じ） */
+  importAnswers: (file: File) => Promise<void>
 }) {
   const active = useMemo(() => inquiries.filter((q) => !dismissed.has(inquiryKey(q))), [inquiries, dismissed])
   const activeCells = useMemo(() => active.filter((q): q is CellInquiry => q.kind === "cell"), [active])
@@ -97,25 +94,10 @@ export function InquiryPanel({
     }
   }
 
-  async function importAnswers(f: File) {
-    try {
-      const read = await readAnswerFile(f, allRows)
-      if (!read) return
-      if ("error" in read) {
-        toast.error(read.error)
-        return
-      }
-      toast.success("顧客の回答を取り込みました。反映した件数は取り込みの下に出ています")
-      if (read.aiFailures.length) toast.warning(`AI を使えず反映していない記入があります（${read.aiFailures.join(" / ")}）。一覧を確認してください`)
-    } catch (e) {
-      toast.error(errorMessage(e, "回答のファイルを読み込めませんでした"))
-    }
-  }
-
   return (
     <section className="mt-10 space-y-4" data-testid="inquiry-panel">
       <div>
-        <h2 className="text-lg font-semibold tracking-tight">3. 顧客に問い合わせる</h2>
+        <h2 className="text-lg font-semibold tracking-tight">顧客に問い合わせる</h2>
         <p className="mt-0.5 text-sm text-muted-foreground">
           CSV に載せる行のうち、書類に要るのにデータに無い項目と、推定に自信がない工事場所・配置技術者の姓と名の区切りです。聞かなくてよいものはチェックを外してください。
         </p>

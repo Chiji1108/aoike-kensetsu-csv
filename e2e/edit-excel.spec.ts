@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs"
 import ExcelJS from "exceljs"
-import { expect, test, type Page } from "@playwright/test"
-import { convertFixture, deleteCustomer, open } from "./helpers"
+import { expect, test } from "@playwright/test"
+import { convertFixture, deleteCustomer, downloadCsv, open, openTab, showAllRows } from "./helpers"
 
 const FIXTURE = new URL("../fixtures/sample-messy.xlsx", import.meta.url).pathname
 const ROWS = '[data-testid="preview-table"] tbody tr[data-row-key]'
@@ -17,16 +17,11 @@ test.afterEach(async ({ page }) => {
   expect(pageErrors).toEqual([])
 })
 
-async function downloadCsv(page: Page) {
-  const downloading = page.waitForEvent("download")
-  await page.getByTestId("download-button").click()
-  if (await page.getByRole("alertdialog").isVisible()) await page.getByRole("button", { name: "このままダウンロード" }).click()
-  return new TextDecoder("shift_jis").decode(readFileSync((await (await downloading).path())!))
-}
 
 test("編集用の Excel を落とし、値を1つ直して行を1つ消して上げ直すと、変更案 → 承認 → 表と CSV に入る。開き直しても残る", async ({ page }) => {
   const { customer, caseUrl } = await convertFixture(page, FIXTURE)
   created.push(customer)
+  await openTab(page, "excel")
   const edit = page.getByTestId("edit-excel")
   const downloading = page.waitForEvent("download")
   await edit.getByTestId("edit-excel-download").click()
@@ -65,12 +60,15 @@ test("編集用の Excel を落とし、値を1つ直して行を1つ消して�
   await proposal.getByTestId("proposal-apply-all").click()
   await expect(edit.getByTestId("proposal")).toHaveCount(0)
 
+  await showAllRows(page)
   await expect(page.locator(`${ROWS}[data-row-key="${changedKey}"]`)).toContainText(newAmount)
   await expect(page.locator(`${ROWS}[data-row-key="${deletedKey}"]`)).toHaveAttribute("data-included", "0")
   expect(await downloadCsv(page)).toContain(`,${newAmount},`)
 
   await expect(page.getByTestId("save-status")).toHaveAttribute("data-status", "saved")
   await open(page, caseUrl)
+  await expect(page.getByTestId("preview-table")).toBeVisible({ timeout: 60_000 })
+  await showAllRows(page)
   await expect(page.locator(`${ROWS}[data-row-key="${changedKey}"]`)).toContainText(newAmount, { timeout: 60_000 })
   await expect(page.locator(`${ROWS}[data-row-key="${deletedKey}"]`)).toHaveAttribute("data-included", "0")
 })
@@ -78,6 +76,7 @@ test("編集用の Excel を落とし、値を1つ直して行を1つ消して�
 test("壊れた照合用・読めない値は取り込まずに一覧で知らせる", async ({ page }) => {
   const { customer } = await convertFixture(page, FIXTURE)
   created.push(customer)
+  await openTab(page, "excel")
   const edit = page.getByTestId("edit-excel")
   const downloading = page.waitForEvent("download")
   await edit.getByTestId("edit-excel-download").click()

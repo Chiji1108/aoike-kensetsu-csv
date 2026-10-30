@@ -1,8 +1,8 @@
 import { readFileSync } from "node:fs"
 import ExcelJS from "exceljs"
-import { expect, test, type Page } from "@playwright/test"
+import { expect, test } from "@playwright/test"
 import { createUIMessageStream, createUIMessageStreamResponse } from "ai"
-import { attachAndConvert, callsServerFn, deleteCustomer, open, openNewCase } from "./helpers"
+import { attachAndConvert, callsServerFn, csvCount, deleteCustomer, open, openNewCase, showAllRows } from "./helpers"
 
 const FIXTURE = new URL("../fixtures/sample-messy.xlsx", import.meta.url).pathname
 
@@ -27,7 +27,6 @@ async function nextYearWorkbook() {
   return { name: "令和6年度_工事経歴.xlsx", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buffer: Buffer.from(await wb.xlsx.writeBuffer()) }
 }
 
-const csvCount = async (page: Page) => Number(/（(\d+)件/.exec((await page.getByTestId("download-button").textContent()) ?? "")![1])
 
 const created: string[] = []
 const pageErrors: string[] = []
@@ -74,6 +73,7 @@ test("同じ顧客の2年度目は去年の Excel との違いを出し、「去
     await page.getByTestId("selection-all").check()
     await expect.poll(() => csvCount(page)).toBeGreaterThan(rule7)
     const all = await csvCount(page)
+    await showAllRows(page)
     expect(await page.locator('[data-testid="preview-table"] tbody tr[data-row-key][data-included="1"]').count()).toBe(all)
     await page.getByTestId("selection-rule7").check()
     await expect.poll(() => csvCount(page)).toBe(rule7)
@@ -105,7 +105,6 @@ test("同じ顧客の2年度目は去年の Excel との違いを出し、「去
       const res = createUIMessageStreamResponse({ stream })
       await route.fulfill({ status: 200, headers: Object.fromEntries(res.headers), body: await res.text() })
     })
-    await page.getByTestId("chat-open").click()
     await expect(page.getByTestId("chat-carryover")).toContainText("2025年度の案件があります")
     await page.getByTestId("chat-carryover-send").click()
     await expect(page.getByTestId("chat-error")).toContainText("AI の呼び出しに失敗しました")
@@ -113,6 +112,8 @@ test("同じ顧客の2年度目は去年の Excel との違いを出し、「去
     await expect(page.getByTestId("chat-carryover-send")).toBeEnabled()
     await page.getByTestId("chat-carryover-send").click()
     await expect(page.getByTestId("chat-carryover-note")).toContainText("2025年度の案件で承認につながったコード 2 件と、顧客ルールを添えました")
+    // 失敗した回の返事にあった印の部品は描かない（会話の記録の印が立った返事の分だけ。前は2つ出ることがあった）
+    await expect(page.getByTestId("chat-carryover-note")).toHaveCount(1)
     expect(body).not.toBeNull()
     expect(body!.text).toBe("顧客ルールどおりに表を直して")
     expect(body!.carryover).toBe(true)
@@ -140,7 +141,6 @@ test("本物の AI: 去年のチャットで承認した変更のコードを、
   const { customer } = await openNewCase(page, "2025")
   created.push(customer)
   await attachAndConvert(page, FIXTURE)
-  await page.getByTestId("chat-open").click()
   await page.getByTestId("chat-input").fill("注文者の「株式会社」を「㈱」にして。ほかは変えないで")
   await page.getByTestId("chat-send").click()
   await expect(page.getByTestId("chat-reply-cost")).toBeVisible({ timeout: 300_000 })
@@ -149,12 +149,10 @@ test("本物の AI: 去年のチャットで承認した変更のコードを、
   await proposal.getByTestId("proposal-apply-all").click()
   await expect(page.getByTestId("save-status")).toHaveAttribute("data-status", "saved", { timeout: 30_000 })
 
-  await page.getByRole("button", { name: "チャットを閉じる" }).click()
   await page.getByRole("link", { name: customer }).click()
   await page.getByLabel("年度").fill("2026")
   await page.getByTestId("create-case").click()
   await attachAndConvert(page, await nextYearWorkbook())
-  await page.getByTestId("chat-open").click()
   await page.getByTestId("chat-carryover-send").click()
   await expect(page.getByTestId("chat-carryover-note")).toContainText(/2025年度の案件で承認につながったコード [1-9]\d* 件と、顧客ルールを添えました/, { timeout: 300_000 })
   await expect(page.getByTestId("chat-reply-cost")).toBeVisible({ timeout: 300_000 })

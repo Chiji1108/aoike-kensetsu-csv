@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs"
 import { expect, test, type Locator, type Page } from "@playwright/test"
-import { convertFixture, deleteCustomer, open } from "./helpers"
+import { convertFixture, csvCount, deleteCustomer, open, showAllRows } from "./helpers"
 
 const FIXTURE = new URL("../fixtures/sample-messy.xlsx", import.meta.url).pathname
 const LARGE = new URL("../fixtures/sample-large.xlsx", import.meta.url).pathname
@@ -65,6 +65,18 @@ test.afterEach(async ({ page }) => {
 
 test("プレビューの表で絞り込み・並べ替え・列の表示・手直し・行の入れ外しをして CSV を書き出す", async ({ page }) => {
   created.push((await convertFixture(page, FIXTURE)).customer)
+  await test.step("はじめは確かめる行（エラー・要確認・AI の推定・問い合わせ）だけを出し、報告の件数を押すとその行に絞る", async () => {
+    await expect(filterButton(page, "check")).toHaveAttribute("aria-pressed", "true")
+    const check = await filterCount(page, "check", "all")
+    expect(check).toBeGreaterThan(0)
+    await expect(page.locator(ROWS)).toHaveCount(check)
+    const chip = page.getByTestId("report-count").first()
+    const f = (await chip.getAttribute("data-filter"))!
+    await chip.click()
+    await expect(filterButton(page, f)).toHaveAttribute("aria-pressed", "true")
+    await expect(page.locator(ROWS)).toHaveCount(await filterCount(page, f, "all"))
+  })
+  await showAllRows(page)
   const total = await filterCount(page, "all", "all")
   expect(await shownCount(page)).toBe(total)
   await expect(page.locator(ROWS)).toHaveCount(total)
@@ -160,8 +172,7 @@ test("プレビューの表で絞り込み・並べ替え・列の表示・手�
     await expect(edited.locator('td[data-field="startYm"]')).toHaveAttribute("data-status", "error")
   })
 
-  const download = page.getByTestId("download-button")
-  const countOf = async () => Number(/（(\d+)件/.exec((await download.textContent()) ?? "")![1])
+  const countOf = () => csvCount(page)
   const before = await countOf()
 
   await test.step("行の入れ外し: 外すと CSV の件数が減り、戻すと増える", async () => {
@@ -177,15 +188,15 @@ test("プレビューの表で絞り込み・並べ替え・列の表示・手�
     expect(await countOf()).toBe(before)
   })
 
-  await test.step("CSV: CP932・CRLF・14列で、手直しが入っている", async () => {
+  await test.step("CSV（控え）: 書き出す前の確認にエラーの残りが出て、止めずに書ける。CP932・CRLF・14列で、手直しが入っている", async () => {
+    await page.getByTestId("export-button").click()
+    const dialog = page.getByTestId("export-dialog")
+    await expect(dialog.getByTestId("export-rows")).toHaveText(String(before))
+    await expect(dialog.getByTestId("export-errors")).toHaveAttribute("data-ok", "0")
     const downloading = page.waitForEvent("download")
-    await expect(download).toContainText("エラー")
-    await download.click()
-    const confirm = page.getByRole("alertdialog")
-    await expect(confirm).toBeVisible()
-    await confirm.getByRole("button", { name: "このままダウンロード" }).click()
-    await expect(confirm).toBeHidden()
+    await dialog.getByTestId("download-button").click()
     const file = await (await downloading).path()
+    await page.keyboard.press("Escape")
     const bytes = readFileSync(file)
     const text = new TextDecoder("shift_jis", { fatal: true }).decode(bytes)
     expect(text.endsWith("\r\n")).toBe(true)
@@ -199,6 +210,7 @@ test("プレビューの表で絞り込み・並べ替え・列の表示・手�
 
 test("行の多い表: 仮想スクロールの先でも絞り込み・検索・並べ替え・手直しができ、手直しの下書きはスクロールで消えない", async ({ page }) => {
   created.push((await convertFixture(page, LARGE)).customer)
+  await showAllRows(page)
   await page.getByRole("switch", { name: "記載順に並べ替え" }).click()
   await expect(page.locator(`${ROWS}[data-index="0"]`)).toHaveAttribute("data-row-key", "工事経歴!3")
   // データ行の範囲は AI の計画で決まり、最後の行を外すことがあるので、行数とキーは画面から読む
@@ -224,7 +236,6 @@ test("行の多い表: 仮想スクロールの先でも絞り込み・検索・
   })
 
   await test.step("件数: 金額がエラーの行は7割の選択で CSV に載らないので、エラーの件数は0で、かっこ内に表の行数が出る", async () => {
-    await expect(page.getByTestId("download-button")).not.toContainText("エラー")
     expect(await filterCount(page, "error")).toBe(0)
   })
 

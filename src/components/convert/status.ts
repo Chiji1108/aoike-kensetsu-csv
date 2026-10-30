@@ -47,3 +47,18 @@ export function rowFilters<F extends string>(row: RowResult<F>): Record<RowFilte
   const cells = Object.entries<CellResult>(row.cells)
   return Object.fromEntries(FILTER_ORDER.map((f) => [f, cells.some(([field, c]) => ROW_FILTERS[f].matches(c, field))])) as Record<RowFilter, boolean>
 }
+
+/** 絞り込みごとの行数。csv は CSV に載せる行、all は表に出る行（載せない行も含む） */
+export function countRowFilters<F extends string>(rows: readonly RowResult<F>[], inclusion: ReadonlyMap<string, { included: boolean }>, matches?: ReadonlyMap<string, Record<RowFilter, boolean>>) {
+  const c = Object.fromEntries(FILTER_ORDER.map((f) => [f, { csv: 0, all: 0 }])) as Record<RowFilter, { csv: number; all: number }>
+  for (const r of rows) {
+    const included = inclusion.get(r.key)?.included ?? false
+    const m = matches?.get(r.key) ?? rowFilters(r)
+    for (const f of FILTER_ORDER) {
+      if (!m[f]) continue
+      c[f].all++
+      if (included) c[f].csv++
+    }
+  }
+  return c
+}
