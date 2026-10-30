@@ -27,7 +27,7 @@ import { compareFormats, describeFormatDiff, similarity } from "../src/lib/conve
 import { DEFAULT_GLOBAL_RULES } from "../src/lib/chat/rules"
 import { checkReport, newTurnState, startTurn, systemPrompt } from "../src/lib/chat/turn"
 import type { RowResult } from "../src/lib/convert/convert"
-import { heuristicPlan, primarySheet } from "../src/lib/convert/heuristic-plan"
+import { heuristicPlan, sheetByNames } from "../src/lib/convert/heuristic-plan"
 import { runConversion } from "../src/lib/convert/pipeline"
 import { fileAddressLookup } from "../src/lib/convert/address-file"
 import { acceptAiPlan, type MappingPlan } from "../src/lib/convert/plan"
@@ -109,7 +109,7 @@ async function baseline(): Promise<Baseline> {
   const accepted = acceptAiPlan(KOJI_KEIREKI, sheets, res.json, fallbackFor, def!.sheet)
   // 画面と同じく、AI の計画を使えなければ見出しから選んだシートの推定にする
   if (!accepted.ok) console.log(`AI の計画を使わない: ${accepted.message}`)
-  const plan = accepted.ok ? accepted.plan : fallbackFor(def!.sheet ? sheets.find((s) => s.name === def!.sheet)! : primarySheet(KOJI_KEIREKI, KOJI_PLAN_HINTS, sheets)!)
+  const plan = accepted.ok ? accepted.plan : fallbackFor(sheetByNames(KOJI_KEIREKI, KOJI_PLAN_HINTS, sheets, def!.sheet)!)
   console.log(`計画のシート: ${plan.sheets.join("、")}（${plan.notes[0] ?? ""}）`)
   const rows = await runConversion({
     lookup: fileAddressLookup,
@@ -153,7 +153,7 @@ function previousDiff(sheet: string, headerRow: number) {
  */
 function previousPlanOf() {
   const lastSheet = lastYear().last.plan.sheets[0]!
-  const g = sheets.find((s) => s.name === (def!.sheet ?? lastSheet)) ?? primarySheet(KOJI_KEIREKI, KOJI_PLAN_HINTS, sheets)!
+  const g = sheetByNames(KOJI_KEIREKI, KOJI_PLAN_HINTS, sheets, def!.sheet, lastSheet)!
   const { fiscalYear, last, prevSheets, lines } = previousDiff(g.name, heuristicPlan(KOJI_KEIREKI, KOJI_PLAN_HINTS, g).headerRow)
   return previousPlanContext(KOJI_KEIREKI, { fiscalYear, grid: prevSheets.find((s) => s.name === last.plan.sheets[0])!, plan: last.plan, diff: lines })
 }

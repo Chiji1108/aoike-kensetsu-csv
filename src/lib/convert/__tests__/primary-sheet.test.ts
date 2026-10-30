@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { KOJI_KEIREKI, KOJI_PLAN_HINTS } from "../../spec/koji-keireki"
-import { primarySheet } from "../heuristic-plan"
+import { primarySheet, sheetByNames } from "../heuristic-plan"
 import type { SheetGrid } from "../plan"
 
 const grid = (name: string, rows: string[][]): SheetGrid => ({ name, rows, hidden: rows.map(() => false) })
@@ -30,5 +30,15 @@ describe("変換の元にするシート", () => {
   test("空のシートは選ばず、全部空なら無い", () => {
     expect(pick([grid("空", []), works])).toBe("工事")
     expect(pick([grid("空", [[""]])])).toBeUndefined()
+  })
+})
+
+describe("名前で選ぶシート（画面と照合で、予備の計画の元・去年と比べるシートを同じに選ぶ）", () => {
+  const by = (...names: (string | null | undefined)[]) => sheetByNames(KOJI_KEIREKI, KOJI_PLAN_HINTS, [customers, works], ...names)?.name
+  test("名前の順に最初にあるシート。どれも無ければ見出しから選んだシート", () => {
+    expect(by("顧客一覧")).toBe("顧客一覧")
+    expect(by(undefined, "無い", "顧客一覧")).toBe("顧客一覧")
+    expect(by(null, "無い")).toBe("工事")
+    expect(by()).toBe("工事")
   })
 })

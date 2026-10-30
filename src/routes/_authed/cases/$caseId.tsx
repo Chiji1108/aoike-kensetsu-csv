@@ -41,7 +41,7 @@ import { CASE_STATUSES, CASE_STATUS_LABELS, contentTypeOf, FILE_KIND_LABELS, fil
 import { convertRows, countByStatus, editKey, editSession, resolveRows, staffEdit, type CellEdit, type RowResult } from "@/lib/convert/convert"
 import { csvFileName, datedFileName, toCsvBytes } from "@/lib/convert/csv"
 import { personLetters } from "@/lib/convert/persons"
-import { heuristicPlan, primarySheet } from "@/lib/convert/heuristic-plan"
+import { heuristicPlan, primarySheet, sheetByNames } from "@/lib/convert/heuristic-plan"
 import { SELECTION_LABELS, SELECTION_MODES, summarizeKoji, TAX_LABELS, type Inclusion, type TaxMode } from "@/lib/convert/koji-selection"
 import { addressInputs, fillAiCache, type AiCache, type AiCaller } from "@/lib/convert/pipeline"
 import { ADDRESS_API_PATH, addressCache, addressKey, lookupAddresses, NO_ADDRESSES, type AddressBook, type AddressLookup } from "@/lib/convert/address"
@@ -90,12 +90,9 @@ const PREVIOUS_WAIT_MS = 3_000
 
 type PreviousCase = NonNullable<NonNullable<Awaited<ReturnType<typeof getCasePageFn>>>["previous"]>
 
-/** 去年と今年の Excel を比べるシート: その名前のシート（計画のシート）があればそれ、無ければ見出しから選んだシート */
-const previousComparisonSheet = (sheets: readonly SheetGrid[], name: string | undefined) => sheets.find((s) => s.name === name) ?? primarySheet(SPEC, KOJI_PLAN_HINTS, sheets)
-
 /** 去年の比べるシートと見出しの行（去年の計画のもの。計画が無い・シートが無ければ見出しから推定する）。比べるシートが無ければ null */
 function previousSideOf(previous: PreviousCase, sheets: SheetGrid[]) {
-  const prevGrid = previousComparisonSheet(sheets, previous.sheet ?? undefined)
+  const prevGrid = sheetByNames(SPEC, KOJI_PLAN_HINTS, sheets, previous.sheet)
   if (!prevGrid) return null
   const headerRow = prevGrid.name === previous.sheet && previous.headerRow !== null ? previous.headerRow : heuristicPlan(SPEC, KOJI_PLAN_HINTS, prevGrid).headerRow
   return { sheets, sheet: prevGrid.name, headerRow }
@@ -228,7 +225,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
 
   /**
    * 列の計画の AI に渡す去年の文脈: 去年の列の対応と、去年の Excel との違い。計画の前なので、今年のどのシートと比べるかは
-   * 職員が指定したシート → 去年と同じ名前のシート → 見出しから選んだシート（previousComparisonSheet）、見出しの行は見出しからの推定。
+   * 職員が指定したシート → 去年と同じ名前のシート → 見出しから選んだシート（sheetByNames）、見出しの行は見出しからの推定。
    * 比べたシートは違いの文に出る。去年の計画が無い・去年の Excel を読めなければ無し
    */
   async function previousPlanFor(src: Source, requiredSheet: string | undefined) {
@@ -238,7 +235,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
     const sheets = await Promise.race([loadPreviousSheets(), new Promise<null>((resolve) => setTimeout(() => resolve(null), PREVIOUS_WAIT_MS))])
     const side = sheets && previousSideOf(previous, sheets)
     const prevGrid = side && sheets.find((s) => s.name === prevPlan.sheets[0])
-    const g = previousComparisonSheet(src.sheets, requiredSheet ?? prevPlan.sheets[0]!)
+    const g = sheetByNames(SPEC, KOJI_PLAN_HINTS, src.sheets, requiredSheet, prevPlan.sheets[0])
     if (!side || !prevGrid || !g) return undefined
     const diff = describeFormatDiff(compareFormats(side, { sheets: src.sheets, sheet: g.name, headerRow: heuristicPlan(SPEC, KOJI_PLAN_HINTS, g).headerRow }))
     return previousPlanContext(SPEC, { fiscalYear: previous.fiscalYear, grid: prevGrid, plan: prevPlan, diff })
@@ -250,7 +247,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
    */
   async function startPlanning(src: Source, requiredSheet?: string) {
     const fallbackFor = (g: SheetGrid) => heuristicPlan(SPEC, KOJI_PLAN_HINTS, g)
-    const g = requiredSheet !== undefined ? src.sheets.find((s) => s.name === requiredSheet) : primarySheet(SPEC, KOJI_PLAN_HINTS, src.sheets)
+    const g = sheetByNames(SPEC, KOJI_PLAN_HINTS, src.sheets, requiredSheet)
     if (!g) throw new Error("シートが空です")
     const fallback = fallbackFor(g)
     const id = ++caseGeneration.current

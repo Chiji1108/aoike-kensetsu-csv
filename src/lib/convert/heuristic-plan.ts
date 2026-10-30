@@ -74,6 +74,18 @@ export function primarySheet<F extends string>(spec: CsvSpec<F>, hints: PlanHint
 }
 
 /**
+ * 名前の順に最初にあるシート。どれも無ければ見出しから選んだシート（primarySheet）。
+ * AI が使えないときの計画の元（職員の指定）と、去年と比べる今年のシート（指定 → 去年の計画のシート）を、画面と照合で同じに選ぶ
+ */
+export function sheetByNames<F extends string>(spec: CsvSpec<F>, hints: PlanHints<F>, sheets: readonly SheetGrid[], ...names: (string | null | undefined)[]) {
+  for (const name of names) {
+    const s = name == null ? undefined : sheets.find((g) => g.name === name)
+    if (s) return s
+  }
+  return primarySheet(spec, hints, sheets)
+}
+
+/**
  * 見出しの語だけで、grid の列の対応を推定する（APIキーが無いとき・AI の計画が使えないとき、AI の計画の項目ごとの予備）。
  * 使うシートは grid だけ（見出しが同じシートを足すかは、計画の AI か職員が決める）
  */
