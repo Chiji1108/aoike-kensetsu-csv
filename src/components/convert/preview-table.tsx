@@ -125,6 +125,8 @@ export function PreviewTable({
   /** 絞り込みごとの行数（確かめるは CSV に載せる行だけ） */
   const counts = useMemo(() => countRowFilters(rows, inclusion), [rows, inclusion])
   const [active, setActive] = useState<Active | null>(null)
+  /** 同じセルなら描き直さない（マウスを動かすたびに表を描き直さない） */
+  const activate = (row: string, field: KojiFieldId) => setActive((a) => (a?.row === row && a.field === field ? a : { row, field }))
 
   const needle = query.trim().toLowerCase()
   const data = useMemo(() => {
@@ -157,7 +159,7 @@ export function PreviewTable({
   function startEdit(r: Row, field: KojiFieldId) {
     if (editing) finishEdit(true)
     setPinned((p) => p ?? live.map((r) => r.key))
-    setActive({ row: r.key, field })
+    activate(r.key, field)
     const session = openEditor(r.cells[field])
     setEditing({ row: r.key, field, session, draft: session.text })
   }
@@ -223,8 +225,8 @@ export function PreviewTable({
             className="block min-h-8 w-full px-2 py-1.5 text-left break-words hover:ring-1 hover:ring-ring/40 hover:ring-inset"
             title={cell.message}
             aria-describedby={active?.row === r.key && active.field === field ? NOTE_ID : undefined}
-            onFocus={() => setActive({ row: r.key, field })}
-            onMouseEnter={() => setActive({ row: r.key, field })}
+            onFocus={() => activate(r.key, field)}
+            onMouseEnter={() => activate(r.key, field)}
             onClick={() => startEdit(r, field)}
           >
             <span className="whitespace-pre-wrap">{cell.value || <span className="text-muted-foreground/50">—</span>}</span>
