@@ -72,7 +72,7 @@ test("書き出した Excel の値を1つ直して行を1つ消し、上げ直�
 
   // 承認する前に同じ Excel をもう一度上げても、変更案もファイルも足さない
   await upload(page, wb, "直した.xlsx")
-  await expect(panel.getByTestId("final-import-report")).toContainText("同じ変更案がもうあります")
+  await expect(panel.getByTestId("final-import-report")).toContainText("前に出した・却下した変更と同じ")
   await expect(panel.getByTestId("proposal")).toHaveCount(1)
   await expect(page.locator('[data-testid="file-list"] [data-kind="edit_sheet"]')).toHaveCount(1)
 
