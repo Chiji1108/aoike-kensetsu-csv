@@ -27,7 +27,7 @@ import { newWork } from "../src/lib/cases/state"
 import { deriveTable, type CaseTable } from "../src/lib/cases/view"
 import { caseContext } from "../src/lib/chat/context"
 import { applyChanges, type ChatChange } from "../src/lib/chat/proposals"
-import { describeSelection, REVIEW_PROMPT, type ReviewTurn } from "../src/lib/chat/review"
+import { describeSelection, QUIET_TOOLS, REVIEW_PROMPT, type ReviewTurn } from "../src/lib/chat/review"
 import { carryoverPrompt, cleanCarryoverCodes, codesFromModel, knownWords, namesForCarryover } from "../src/lib/chat/carryover"
 import { compareFormats, describeFormatDiff, similarity } from "../src/lib/convert/format-diff"
 import { DEFAULT_GLOBAL_RULE_ITEMS, rulesText, ruleTextSchema } from "../src/lib/chat/rules"
@@ -298,6 +298,7 @@ try {
     writeFileSync(join(OUT, `${caseId}-${variant}.json`), JSON.stringify({ status: run.status, reason: run.reason, total: run.total, ms: Date.now() - t00, turns: run.log.length, log: run.log, final: csvRows(run.table), score: final, messages: run.messages }, null, 1))
     writeSummary(variant, { status: run.status, ...(run.reason ? { reason: run.reason } : {}), score: final, turns: run.log.length, ms: Date.now() - t00, conversionUsd: base.usd, usd: run.total })
     console.log(`\nSUMMARY ${caseId} ${variant} (${run.status}): turns ${run.log.length} time ${Math.round((Date.now() - t00) / 1000)}s chat $${run.total.toFixed(3)} cellRate ${(final.cellRate * 100).toFixed(1)}%`)
+    if (run.error) throw run.error
     if (run.status === "stopped") process.exitCode = 1
   }
 } catch (e) {
@@ -343,6 +344,7 @@ async function chatPhase(p: {
   const generated = new Set<string>()
   let status: RunSummary["status"] = "done"
   let reason: string | undefined
+  let error: unknown = null
   try {
     for (const [i, path_] of [def!.xlsx, ...(def!.files ?? [])].entries()) {
       const original = path_.split("/").at(-1)!
@@ -433,13 +435,14 @@ async function chatPhase(p: {
       printScore("  score", score)
     }
   } catch (e) {
+    // 落ちても、それまでの記録・費用を呼ぶ側が書けるように返す（呼ぶ側が書いてから error を投げる）
     status = "failed"
     reason = String(e).slice(0, 200)
-    throw e
+    error = e
   } finally {
     for (const id of [...uploads.map((u) => u.id), ...generated]) await anthropic.files.delete(id).catch((e) => console.log("delete failed", id, String(e).slice(0, 120)))
   }
-  return { table, plan, log, messages, total, status, reason }
+  return { table, plan, log, messages, total, status, reason, error }
 }
 
 /**
@@ -452,8 +455,17 @@ async function reviewEval() {
   const t00 = Date.now()
   const thisYear = def!.instructions.filter((t) => !/ルールに追加/.test(t))
   if (!thisYear.length) throw new Error("review には案件定義の instructions（顧客ルールに追加させる指示のほか）が要る")
-  const year = await chatPhase({ turns: thisYear, table: tableOf(base.rows), plan: base.plan, customerItems: [] })
-  if (year.status !== "done") throw new Error(`今年の指示が終わらなかった: ${year.reason}`)
+  /** 段階ごとの記録（落ちた・止めた段階があれば、そこまでを書いて投げる） */
+  const phases: Record<string, Awaited<ReturnType<typeof chatPhase>>> = {}
+  const finish = (name: string, run: Awaited<ReturnType<typeof chatPhase>>) => {
+    phases[name] = run
+    if (run.status === "done") return run
+    const total = Object.values(phases).reduce((n, r) => n + r.total, 0)
+    writeFileSync(join(OUT!, `${caseId}-review.json`), JSON.stringify({ status: run.status, reason: run.reason, failedAt: name, total, logs: Object.fromEntries(Object.entries(phases).map(([k, r]) => [k, r.log])) }, null, 1))
+    writeSummary("review", { status: run.status, reason: `${name}: ${run.reason}`, score: compare(csvRows(run.table)), turns: 0, ms: Date.now() - t00, conversionUsd: base.usd, usd: total })
+    throw run.error ?? new Error(`${name} が終わらなかった: ${run.reason}`)
+  }
+  const year = finish("year", await chatPhase({ turns: thisYear, table: tableOf(base.rows), plan: base.plan, customerItems: [] }))
   // 照合では変更案をすべて承認したので、指示ごとに変更案の項目を全部承認した記録にする（聞き返しは「はい」）
   const turns: ReviewTurn[] = year.log.map((l) => ({
     instruction: l.text,
@@ -461,14 +473,14 @@ async function reviewEval() {
     question: l.question ? { text: l.question, answer: "yes" } : null,
     plan: l.plan.flatMap((p) => describePlanPatch(p)),
     selection: l.pending.flatMap((c) => (c.kind === "settings" ? describeSelection(c) : [])),
-    tools: [...new Set(l.tools.map((t) => t.tool).filter((t) => !["get_table", "check_table", "get_inquiries"].includes(t)))],
+    tools: [...new Set(l.tools.map((t) => t.tool).filter((t) => !QUIET_TOOLS.has(t)))],
   }))
-  const review = await chatPhase({ turns: [REVIEW_PROMPT], table: year.table, plan: year.plan, customerItems: [], review: { turns: () => turns, names: async () => [], rounding: "floor" } })
+  const review = finish("review", await chatPhase({ turns: [REVIEW_PROMPT], table: year.table, plan: year.plan, customerItems: [], review: { turns: () => turns, names: async () => [], rounding: "floor" } }))
   const reviewed = review.log.flatMap((l) => l.pending.flatMap((c) => (c.kind === "rule" && c.scope === "customer" ? [ruleTextSchema.parse(c.text)] : [])))
   const oneOff = review.log.flatMap((l) => l.oneOff)
   console.log(`\n振り返りの毎年の決まり ${reviewed.length} 項目:\n  ${reviewed.join("\n  ")}\n今年だけ ${oneOff.length} 件:\n  ${oneOff.join("\n  ")}`)
   if (!reviewed.length) throw new Error("振り返りで毎年の決まりが出なかった")
-  const next = await chatPhase({ turns: [RULES_TURN], table: tableOf(base.rows), plan: base.plan, customerItems: reviewed })
+  const next = finish("next", await chatPhase({ turns: [RULES_TURN], table: tableOf(base.rows), plan: base.plan, customerItems: reviewed }))
   const total = year.total + review.total + next.total
   const final = compare(csvRows(next.table))
   writeFileSync(

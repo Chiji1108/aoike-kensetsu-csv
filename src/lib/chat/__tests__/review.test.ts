@@ -5,7 +5,7 @@ import type { CaseTable } from "../../cases/view"
 import { deriveTable } from "../../cases/view"
 import type { ChatMessage } from "../messages"
 import type { ChatChange, Proposal } from "../proposals"
-import { hasPersonalName, reviewMaterial, reviewScrubber, reviewTurnsFromUi, type ReviewTurn } from "../review"
+import { reviewGuard, reviewMaterial, reviewTurnsFromUi, type ReviewTurn } from "../review"
 import { chatTools, newTurnState, type ReviewDeps } from "../turn"
 
 const yamada = personToken("山田太郎")
@@ -74,16 +74,18 @@ describe("振り返りの材料", () => {
     { instruction: "配置技術者は見本 花子に", proposal: { applied: 0, count: 1, open: false, undone: false }, question: { text: "試験太郎さんでよいですか", answer: "yes" }, plan: [], selection: [], tools: [] },
     { instruction: "全部載せて", proposal: { applied: 1, count: 1, open: false, undone: true }, question: null, plan: [], selection: [], tools: [] },
     { instruction: "まだ", proposal: { applied: 0, count: 2, open: true, undone: false }, question: null, plan: [], selection: [], tools: [] },
+    { instruction: "(仮称)は？", proposal: { applied: 0, count: 0, open: false, undone: false }, question: { text: "取ってよいですか", answer: "yes" }, plan: [], selection: [], tools: ["ask_staff"] },
   ]
 
   test("指示と承認の結果、手直しの項目ごとの数と例（職員・チャットの直しを先に）、置換・入れ外し・設定をまとめ、個人名を伏せる", () => {
-    const scrub = reviewScrubber(table, ["山田太郎"])
-    const m = reviewMaterial({ turns, table, view: deriveTable(table), rounding: "round", scrub })
+    const m = reviewMaterial({ turns, table, view: deriveTable(table), rounding: "round", hide: reviewGuard(table, ["山田太郎"]).hide })
     expect(m.instructions).toEqual([
       { n: 1, text: "注文者の株式会社は㈱にして（〔個人名〕さんの件も）", result: "承認 2/2", tools: ["set_cells"] },
       { n: 2, text: "配置技術者は〔個人名〕に", result: "却下した", question: "〔個人名〕さんでよいですか", answer: "はい" },
       { n: 3, text: "全部載せて", result: "承認を取り消した" },
       { n: 4, text: "まだ", result: "まだ決めていない" },
+      // 変更の無い聞き返しだけの変更案は、却下とせず答えを出す
+      { n: 5, text: "(仮称)は？", result: "変更案なし（聞き返しだけ）", question: "取ってよいですか", answer: "はい", tools: ["ask_staff"] },
     ])
     const client = m.edits.find((e) => e.field === "client")!
     expect(client.counts).toEqual({ "チャット（承認）": 1, 職員: 1 })
@@ -103,20 +105,25 @@ describe("振り返りの材料", () => {
 
   test("指示が多ければ後ろの分だけ（番号は会話の順のまま）、長い指示は切る", () => {
     const many = Array.from({ length: 70 }, (_, i): ReviewTurn => ({ instruction: i === 69 ? "あ".repeat(2000) : `指示${i + 1}`, proposal: null, question: null, plan: [], selection: [], tools: [] }))
-    const m = reviewMaterial({ turns: many, table, view: deriveTable(table), rounding: "floor", scrub: reviewScrubber(table) })
+    const m = reviewMaterial({ turns: many, table, view: deriveTable(table), rounding: "floor", hide: reviewGuard(table).hide })
     expect(m.instructions).toHaveLength(60)
     expect(m.instructions[0]!.n).toBe(11)
     expect([...m.instructions.at(-1)!.text].length).toBe(601)
   })
 
-  test("ルールの案の個人名: 表の人・分かっている名前（空白・全角半角の違いも）・表の記号を見つける。地名の一部は名前にしない", () => {
-    const scrub = reviewScrubber(table, ["佐藤"])
-    expect(hasPersonalName("注文者が山田 太郎のときは〔個人名〕にする", scrub)).toBe(true)
-    expect(hasPersonalName("配置技術者は試験太郎にする", scrub)).toBe(true)
-    expect(hasPersonalName("〔Ａ〕の工事は載せない", scrub)).toBe(true)
-    expect(hasPersonalName("佐藤 の工事は外す", scrub)).toBe(true)
-    expect(hasPersonalName("佐藤町の工事は外す", scrub)).toBe(false)
-    expect(hasPersonalName("工事名の【支店名】は先頭に移す", scrub)).toBe(false)
+  test("ルールの案の個人名: 表の人・分かっている名前（空白・全角半角の違いも、空白で区切って書いても）・保存の前の置換の人・表の記号を見つける。地名の一部・ほかの〔…〕は名前にしない", () => {
+    const withReplacement: CaseTable = { ...table, replacements: { engineer: { "旧姓　花子": { value: "新姓　花子", by: "staff" } } } }
+    const { has } = reviewGuard(withReplacement, ["佐藤", "高橋一郎"])
+    expect(has("注文者が山田 太郎のときは株式会社を付ける")).toBe(true)
+    expect(has("配置技術者は試験太郎にする")).toBe(true)
+    expect(has("高橋 一郎の工事は外す")).toBe(true)
+    expect(has("旧姓花子は新姓にする")).toBe(true)
+    expect(has("〔Ａ〕の工事は載せない")).toBe(true)
+    expect(has("〔未掲載１〕は載せない")).toBe(true)
+    expect(has("〔個人名〕の工事は載せない")).toBe(true)
+    expect(has("佐藤 の工事は外す")).toBe(true)
+    expect(has("佐藤町の工事は外す")).toBe(false)
+    expect(has("工事名の〔仮称〕と【支店名】は先頭に移す")).toBe(false)
   })
 })
 
@@ -179,6 +186,12 @@ describe("振り返りの道具（get_review・propose_review）", () => {
     expect(await call(tools, "propose_rule", { scope: "customer", items: ["配置技術者は試験太郎にする"] })).toMatchObject({ ok: false, items: [0] })
     expect(await call(tools, "propose_rule", { scope: "global", items: ["〔Ａ〕邸は載せない"] })).toMatchObject({ ok: false, items: [0] })
     expect(state.pending).toEqual([])
+    // 分かっている個人名を集められない（保存した作業を読めない）ときは、何も出さずに理由を返す
+    const broken = newTurnState(table, undefined, undefined, null, null, deps({ names: async () => Promise.reject(new Error("読めない")) }))
+    const brokenTools = chatTools(broken)
+    expect(await call(brokenTools, "propose_rule", { scope: "customer", items: ["工事名の読点は取る"] })).toMatchObject({ ok: false, error: expect.stringContaining("読めない") })
+    expect(await call(brokenTools, "get_review", {})).toMatchObject({ ok: false })
+    expect(broken.pending).toEqual([])
     // 振り返りの道具が無くても、表の人で確かめる
     expect(await call(chatTools(newTurnState(table)), "propose_rule", { scope: "customer", items: ["山田太郎の件は外す"] })).toMatchObject({ ok: false })
   })

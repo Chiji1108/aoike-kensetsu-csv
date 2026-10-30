@@ -239,6 +239,16 @@ export function nameScrubber(names: Iterable<string>): (code: string) => string 
 
 export const scrubNames = (code: string, names: Iterable<string>) => nameScrubber(names)(code)
 
+/**
+ * 文字列に個人名（names）が含まれるかを確かめる関数（外に送る・残す文字列の確かめ。工事場所の調査とルールの案で同じものを使う）。
+ * 空白で区切った氏名（「田中 花子」）も見落とさないよう、空白を除いた文字列でも確かめる
+ */
+export function personalNameTest(names: Iterable<string>): (text: string) => boolean {
+  const scrub = nameScrubber(names)
+  const has = (t: string) => scrub(t) !== t
+  return (text) => has(text) || has(removeSpaces(nfkc(text)))
+}
+
 /** 伏せた文字列・コメントの印 */
 export const MASKED = "〔伏せた語〕"
 

@@ -15,7 +15,7 @@ import { basisSchema, fieldIdSchema, selectionSchema, taxSchema } from "../schem
 import { KOJI_ANONYMIZE, KOJI_KEIREKI, type KojiFieldId } from "../spec/koji-keireki"
 import { applyChanges, type ChatChange } from "./proposals"
 import { charCount, MAX_RULE_ITEM_LENGTH, RULE7_TAX_LABELS, ruleScopeSchema, type Rule7Tax, type RuleScope } from "./rules"
-import { hasPersonalName, MAX_REVIEW_NOTES, MAX_REVIEW_RULES, reviewMaterial, reviewScrubber, type ReviewTurn } from "./review"
+import { MAX_REVIEW_NOTES, MAX_REVIEW_RULES, reviewGuard, reviewMaterial, type ReviewGuard, type ReviewTurn } from "./review"
 import { CHAT_ACTIONS, type ChatAction } from "./messages"
 import { outcomeChanges } from "../location/changes"
 import { askReason, estimateUsd, MAX_SITES_PER_RUN, runSitesOf, siteOfRow, SOURCE_LABELS, type Outcome, type Site } from "../location/sites"
@@ -332,13 +332,22 @@ export function chatTools(state: TurnState) {
         return json({ ok: false, error: `この指示で道具を呼べる回数（${MAX_TOOL_CALLS}回）を使い切りました。ここまでの変更案と残りを職員に返してください。` })
       return run(args)
     }
-  /** ルールの案に入れない個人名を探す関数（表の人と、分かっている個人名。指示の間で1回だけ作る） */
-  let scrubbing: Promise<(s: string) => string> | null = null
-  const ruleScrub = () => (scrubbing ??= (async () => reviewScrubber(state.start, state.review ? await state.review.names() : []))())
+  /** ルールの案・振り返りの材料の個人名（表の人と、分かっている個人名。指示の間で1回だけ作る。集められなければ道具は理由を返す） */
+  let guarding: Promise<ReviewGuard> | null = null
+  const guard = () => (guarding ??= (async () => reviewGuard(state.start, state.review ? await state.review.names() : []))())
   /** 個人名の入った項目の番号（0 から） */
   const personal = async (texts: readonly string[]) => {
-    const scrub = await ruleScrub()
-    return texts.flatMap((t, i) => (hasPersonalName(t, scrub) ? [i] : []))
+    const g = await guard()
+    return texts.flatMap((t, i) => (g.has(t) ? [i] : []))
+  }
+  /** 名前を確かめられないとき（保存した作業を読めない）は、何も出さずに理由を返す */
+  const guarded = async (run: () => Promise<string>) => {
+    try {
+      await guard()
+    } catch (e) {
+      return json({ ok: false, error: `個人名を確かめられないので、何も出していません: ${e instanceof Error ? e.message : String(e)}` })
+    }
+    return run()
   }
   const ruleItem = z.string().min(1).refine((s) => charCount(s) <= MAX_RULE_ITEM_LENGTH, `1項目は${MAX_RULE_ITEM_LENGTH}字まで`)
   const NAME_REFUSAL = "個人名か表の記号（〔Ａ〕〔個人名〕など）が入っている項目があります。何も出していません。名前を挙げずに決まりとして書き直してください。"
@@ -623,13 +632,15 @@ export function chatTools(state: TurnState) {
         scope: ruleScopeSchema,
         items: z.array(ruleItem).min(1).max(MAX_RULE_PROPOSALS),
       }),
-      execute: counted<{ scope: RuleScope; items: string[] }>(async ({ scope, items }) => {
-        const named = await personal(items)
-        if (named.length) return json({ ok: false, error: NAME_REFUSAL, items: named })
-        for (const text of items) state.pending.push({ kind: "rule", scope, text, source: "chat" })
-        state.log.push({ tool: "propose_rule", summary: `${scope}: ${items.join(" / ")}` })
-        return `職員に${items.length}項目の案を見せました（承認待ち）。`
-      }),
+      execute: counted<{ scope: RuleScope; items: string[] }>(({ scope, items }) =>
+        guarded(async () => {
+          const named = await personal(items)
+          if (named.length) return json({ ok: false, error: NAME_REFUSAL, items: named })
+          for (const text of items) state.pending.push({ kind: "rule", scope, text, source: "chat" })
+          state.log.push({ tool: "propose_rule", summary: `${scope}: ${items.join(" / ")}` })
+          return `職員に${items.length}項目の案を見せました（承認待ち）。`
+        }),
+      ),
     }),
     get_review: tool({
       description:
@@ -638,9 +649,10 @@ export function chatTools(state: TurnState) {
       execute: counted<object>(async () => {
         const turns = state.review?.turns() ?? "振り返りの材料は今使えません"
         if (typeof turns === "string") return json({ ok: false, error: turns })
-        const v = view()
-        state.log.push({ tool: "get_review", summary: `${turns.length}回の指示` })
-        return json(reviewMaterial({ turns, table: state.current, view: v, rounding: state.review!.rounding, scrub: await ruleScrub() }))
+        return guarded(async () => {
+          state.log.push({ tool: "get_review", summary: `${turns.length}回の指示` })
+          return json(reviewMaterial({ turns, table: state.current, view: view(), rounding: state.review!.rounding, hide: (await guard()).hide }))
+        })
       }),
     }),
     propose_review: tool({
@@ -651,14 +663,16 @@ export function chatTools(state: TurnState) {
         yearly: z.array(z.strictObject({ text: ruleItem, evidence: z.string().max(500) })).max(MAX_REVIEW_RULES),
         one_off: z.array(z.string().min(1).max(500)).max(MAX_REVIEW_NOTES),
       }),
-      execute: counted<{ yearly: { text: string; evidence: string }[]; one_off: string[] }>(async ({ yearly, one_off }) => {
-        const named = await personal(yearly.map((y) => y.text))
-        if (named.length) return json({ ok: false, error: NAME_REFUSAL, yearly: named })
-        for (const y of yearly) state.pending.push({ kind: "rule", scope: "customer", text: y.text, source: "review" })
-        state.oneOff.push(...one_off)
-        state.log.push({ tool: "propose_review", summary: [...yearly.map((y) => `毎年: ${y.text}（${y.evidence}）`), ...one_off.map((o) => `今年だけ: ${o}`)].join(" / ") })
-        return json({ ok: true, yearly: yearly.length, oneOff: one_off.length, note: "返事で、足す案の数と今年だけの事情（ルールにしないもの）を分けて伝えてください。" })
-      }),
+      execute: counted<{ yearly: { text: string; evidence: string }[]; one_off: string[] }>(({ yearly, one_off }) =>
+        guarded(async () => {
+          const named = await personal(yearly.map((y) => y.text))
+          if (named.length) return json({ ok: false, error: NAME_REFUSAL, yearly: named })
+          for (const y of yearly) state.pending.push({ kind: "rule", scope: "customer", text: y.text, source: "review" })
+          state.oneOff.push(...one_off)
+          state.log.push({ tool: "propose_review", summary: [...yearly.map((y) => `毎年: ${y.text}（${y.evidence}）`), ...one_off.map((o) => `今年だけ: ${o}`)].join(" / ") })
+          return json({ ok: true, yearly: yearly.length, oneOff: one_off.length, note: "返事で、足す案の数と今年だけの事情（ルールにしないもの）を分けて伝えてください。" })
+        }),
+      ),
     }),
   }
 }

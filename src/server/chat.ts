@@ -6,7 +6,7 @@ import { getDb } from "@/db"
 import { containerName, contentTypeOf, type Case, type FileKind } from "@/lib/cases/types"
 import { fromWire, caseTableWireSchema } from "@/lib/chat/wire"
 import { ENDED_TEXT, type ChatHistory, type ChatMessage, type ChatMetadata } from "@/lib/chat/messages"
-import { approvedChatProposals, carryoverPrompt, cleanCarryoverCodes, codesFromUi, knownWords, namesForCarryover, namesOfCase, type Carryover } from "@/lib/chat/carryover"
+import { approvedChatProposals, carryoverPrompt, cleanCarryoverCodes, codesFromUi, knownWords, namesForCarryover, type Carryover } from "@/lib/chat/carryover"
 import { reviewTurnsFromUi } from "@/lib/chat/review"
 import { tryParseJson } from "@/lib/json"
 import { savedAiCacheSchema, savedWorkSchema } from "@/lib/cases/state"
@@ -42,6 +42,7 @@ import { locateOne } from "./location-run"
 import * as loc from "./location-store"
 import { serverAddressLookup, serverPlaceIndex } from "./place-index"
 import { personalChecker } from "./location-guard"
+import { savedCaseNames } from "./case-names"
 import { guardPersonal, type Site } from "@/lib/location/sites"
 
 
@@ -240,7 +241,7 @@ async function runTurn(request: Request, caseId: string): Promise<Response> {
     {
       // 会話は、この指示を受けたときの画面の会話（会話を終えても残る）
       turns: () => (body.review ? reviewTurnsFromUi(loaded.doc.ui, body.review.proposals, body.review.undo) : "画面が古いので振り返りの材料を送っていません。画面を開き直してください"),
-      names: () => caseNames(db, caseId),
+      names: () => savedCaseNames(db, caseId),
       rounding: body.rounding,
     },
   )
@@ -355,19 +356,6 @@ async function carryoverOf(db: store.Db, prev: Case, from: Omit<Parameters<typeo
   const { ui } = (await loadChat(bucket(), prev.id)).doc
   const names = namesForCarryover({ ...from, previous: { work: work.data, aiCache: aiCache.data } })
   return { fiscalYear: prev.fiscalYear, codes: cleanCarryoverCodes(codesFromUi(ui, approvedChatProposals(work.data.proposals, work.data.undo)), names, words) }
-}
-
-/**
- * 案件で分かっている個人名（保存した作業の手直し・置換と AI の結果。去年のコードと同じ集め方）。振り返りの材料と、ルールの案に入れない名前の確かめに使う。
- * 作業がまだ無ければ空（表の人は呼ぶ側が足す）。読めない形なら投げる（名前を確かめられないまま案を出さない）
- */
-async function caseNames(db: store.Db, caseId: string): Promise<Set<string>> {
-  const row = await store.getCaseState(db, caseId)
-  if (!row) return new Set()
-  const work = savedWorkSchema.safeParse(tryParseJson(row.json))
-  const aiCache = savedAiCacheSchema.safeParse(tryParseJson(row.aiCache))
-  if (!work.success || !aiCache.success) throw new Error("案件の作業を読めなかったので、個人名を確かめられません")
-  return namesOfCase(work.data, aiCache.data)
 }
 
 /**
