@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test"
 import type { CellResult, RowResult } from "@/lib/convert/convert"
 import { finalizeAll, kojiRow } from "@/lib/convert/__tests__/helpers"
-import { cellFix, changedCell, countFixes, inFilter, needsCheck, rowFix, type RowFix } from "../status"
+import { askReasonOf } from "@/lib/inquiry/inquiry"
+import { cellFix, changedCell, countFixes, inFilter, rowFix, type RowFix } from "../status"
 
 const ok: CellResult = { value: "x", status: "ok", source: "A列: x", original: "x" }
 const row = (key: string, other: Partial<CellResult>): RowResult<"a" | "b"> => ({
@@ -83,9 +84,14 @@ describe("直す行と顧客に聞く行", () => {
     expect(cellFix(ok, "gyoshu", true)).toBeUndefined()
   })
   test("AI の推定は、AI が自信がないと答えた値と AI が補った値", () => {
-    expect(needsCheck({ ...ok, guessed: true }, "a")).toBe(true)
-    expect(needsCheck({ ...ok, status: "ai", message: "補った" }, "a")).toBe(true)
-    expect(needsCheck({ ...ok, status: "ai" }, "a")).toBe(false)
+    expect(cellFix({ ...ok, guessed: true }, "a", true)).toBe("guess")
+    expect(cellFix({ ...ok, status: "ai", message: "補った" }, "a", true)).toBe("guess")
+    expect(cellFix({ ...ok, status: "ai" }, "a", true)).toBeUndefined()
+  })
+  test("値のある推定のエラーは、直すにだけ数え、問い合わせには入れない（1つのセルは片方だけ）", () => {
+    const c = { ...ok, status: "error" as const, value: "東京", guessed: true as const }
+    expect(cellFix(c, "prefecture", true)).toBe("error")
+    expect(askReasonOf("prefecture", c)).toBeUndefined()
   })
   test("直す行は、エラー・要確認・AI の推定のどれかがある行（項目 a・b は問い合わせに回らない）", () => {
     expect(checked).toEqual(["error", "warning", "aiFilled", "guessedFill", "ruleThenWarning", "staffError"])

@@ -22,9 +22,6 @@ export type RowFilter = "fix" | "all"
 /** AI が推定した値（AI 自身も自信がない値・AI が補った値） */
 const aiGuess = (c: CellResult) => c.guessed === true || (c.status === "ai" && !!c.message)
 
-/** 確かめるセル: エラー・要確認・AI の推定・顧客への問い合わせが要る（field はそのセルの項目） */
-export const needsCheck = (c: CellResult, field: string) => c.status === "error" || needsReview(c) || aiGuess(c) || askReasonOf(field, c) !== undefined
-
 /** 元データと値が違うセル（ルール・AIで変換、補った値、手直し、顧客の回答）。表のセルの印（data-changed）に使う */
 export const changedCell = (c: CellResult) => c.value !== c.original || c.by === "staff" || c.by === "customer" || c.by === "excel" || c.by === "location"
 
@@ -39,13 +36,13 @@ export const FIX_LABELS: Record<FixKind, string> = { empty: "必須が空", erro
 export const FIX_KINDS = Object.keys(FIX_LABELS) as FixKind[]
 
 /**
- * セルを誰がどう片付けるか（片付けることが無ければ undefined）。値のあるエラーは職員が直す（顧客に聞いても CSV に載らない）。
- * それ以外で問い合わせに回るものは顧客に聞く。asked は問い合わせを外していないか（外した問い合わせは、空なら片付いた・推定なら職員が確かめる）
+ * セルを誰がどう片付けるか（片付けることが無ければ undefined）。問い合わせに回るもの（askReasonOf）は顧客に聞き、ほかは職員が直す。
+ * asked は問い合わせを外していないか（外した問い合わせは、空の必須なら直す・推定なら職員が確かめる・空の任意の項目なら片付いた）
  */
 export function cellFix(c: CellResult, field: string, asked: boolean): CellFixKind | undefined {
-  const ask = askReasonOf(field, c)
-  if (c.status === "error") return c.value !== "" ? "error" : ask && asked ? "ask" : "empty"
-  if (ask && asked) return "ask"
+  // 顧客に聞くかは問い合わせを集めるのと同じ決まり（askReasonOf。値のあるエラーは聞かない）。1つのセルは直すか聞くかの片方にだけ数える
+  if (askReasonOf(field, c) && asked) return "ask"
+  if (c.status === "error") return c.value !== "" ? "error" : "empty"
   if (aiGuess(c)) return "guess"
   if (needsReview(c)) return "review"
   return undefined

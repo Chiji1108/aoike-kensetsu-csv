@@ -96,6 +96,9 @@ function activeStore() {
 }
 type ActiveStore = ReturnType<typeof activeStore>
 
+/** 絞り込みを比べる鍵（止めた並びがどの絞り込みのものか） */
+const filterKey = (f: TableFilter) => `${f.kind}|${f.reason ?? ""}|${f.ask ?? ""}`
+
 const originText = (r: Row) => `${r.sheet}!${r.row + 1}`
 
 /** 項目の短い名前（「請負代金（千円）」→「請負代金」） */
@@ -154,6 +157,12 @@ export function PreviewTable({
    */
   const [pinned, setPinned] = useState<readonly string[] | null>(null)
   const unpin = () => setPinned(null)
+  // 絞り込みが変わったら（表の上でも、次にやること・「表で見る」など外からでも）止めた並びを捨てる（描くときに1か所で）
+  const [pinnedFilter, setPinnedFilter] = useState(filterKey(filter))
+  if (pinnedFilter !== filterKey(filter)) {
+    setPinnedFilter(filterKey(filter))
+    setPinned(null)
+  }
 
   const columns = useMemo(
     () =>
@@ -284,10 +293,7 @@ export function PreviewTable({
           label="表の絞り込み"
           value={filter.kind}
           options={(["fix", "all"] as const).map((f) => ({ value: f, label: `${ROW_FILTERS[f].label} ${f === "fix" ? counts.rows : counts.all}` }))}
-          onChange={(kind) => {
-            unpin()
-            setFilter({ kind })
-          }}
+          onChange={(kind) => setFilter({ kind })}
           testId="row-filters"
         />
         {activeAsk ? (
@@ -307,10 +313,7 @@ export function PreviewTable({
                   size="xs"
                   variant={filter.reason === k ? "default" : "outline"}
                   aria-pressed={filter.reason === k}
-                  onClick={() => {
-                    unpin()
-                    setFilter(filter.reason === k ? { kind: "fix" } : { kind: "fix", reason: k })
-                  }}
+                  onClick={() => setFilter(filter.reason === k ? { kind: "fix" } : { kind: "fix", reason: k })}
                   data-testid={`fix-reason-${k}`}
                 >
                   {FIX_LABELS[k]} <span className="num">{counts.byKind[k]}</span>

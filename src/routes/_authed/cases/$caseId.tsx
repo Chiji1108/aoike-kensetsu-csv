@@ -54,10 +54,10 @@ import { heuristicPlan, planSheets, primarySheet, sheetByNames } from "@/lib/con
 import { RULE7_TAX_LABELS, SELECTION_LABELS, SELECTION_MODES, summarizeKoji, TAX_LABELS, type Inclusion, type Rule7Tax, type TaxMode } from "@/lib/convert/koji-selection"
 import { personLetters } from "@/lib/convert/persons"
 import { addressInputs, fillAiCache, type AiCache, type AiCaller } from "@/lib/convert/pipeline"
-import { acceptAiPlan, matchesValues, reviewPlanTransforms, type MappingPlan, type PlanAsk, type PlanAskKind, type SheetGrid } from "@/lib/convert/plan"
-import { applyPlanPatch, sheetShapeOf, type PlanPatch } from "@/lib/convert/plan-patch"
+import { acceptAiPlan, hasExclusion, reviewPlanTransforms, type MappingPlan, type PlanAsk, type PlanAskKind, type SheetGrid, type ValueFilter } from "@/lib/convert/plan"
+import { applyPlanPatch, sheetShapeOf } from "@/lib/convert/plan-patch"
 import { planExcerpt, previousPlanContext } from "@/lib/convert/prompt"
-import { collectSourceRows, sameHeader, sourceKey } from "@/lib/convert/sources"
+import { askTargets, collectSourceRows, sameHeader, sourceKey } from "@/lib/convert/sources"
 import type { Rounding } from "@/lib/convert/transforms"
 import { changeSignature, readFinalSheet, recount, withoutKnown, type FinalReport } from "@/lib/excel/final-import"
 import { finalSheet } from "@/lib/excel/final-sheet"
@@ -106,19 +106,6 @@ const ASK_KINDS: Record<PlanAskKind, { label: string; options: { value: "exclude
 /** 報告の聞き返しの答えの取り消しの記録（cases/undo.ts）の印 */
 const reportUndoId = (questionId: string) => `report:${questionId}`
 
-/** 計画の聞き返しの対象の行を、計画が今出さないか（答えの「載せない」側は計画の行の除外そのもの。答えを別に持たないので、計画と食い違わない） */
-function askExcluded(ask: PlanAsk, rf: Plan["rowFilter"]) {
-  if (!ask.values.length) return rf.excludeColumns.includes(ask.column)
-  return (rf.excludeValues ?? []).some((f) => f.column === ask.column && f.values.length === ask.values.length && f.values.every((v, i) => v === ask.values[i]))
-}
-
-/** 計画の聞き返しの「載せない」を足す・外す計画の差分（値が無ければ「値があれば出さない列」、あれば「この値なら出さない列」） */
-function askPatch(ask: PlanAsk, rf: Plan["rowFilter"], exclude: boolean): PlanPatch {
-  const reason = ASK_KINDS[ask.kind].label
-  if (!ask.values.length) return { excludeColumns: exclude ? [...new Set([...rf.excludeColumns, ask.column])] : rf.excludeColumns.filter((c) => c !== ask.column), reason }
-  const others = (rf.excludeValues ?? []).filter((f) => !askExcluded(ask, { ...rf, excludeValues: [f] }))
-  return { excludeValues: exclude ? [...others, { column: ask.column, values: ask.values }] : others, reason }
-}
 type Plan = MappingPlan<KojiFieldId>
 type Source = { fileId: string; name: string; sheets: SheetGrid[] }
 
@@ -653,24 +640,31 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
   /** 外していない問い合わせ（セル・案件全体）の数。「AI で文面を作る」に出す */
   const activeInquiries = inquiries.filter((q) => !dismissed.has(inquiryKey(q))).length
   const summary = useMemo(() => (edited && selected ? summarizeKoji(edited, selected, { tax, basis, rule7Tax }) : []), [edited, selected, tax, basis, rule7Tax])
-  /** 表の絞り込み。職員が選ぶまでは、直す行があればその行だけ（無ければすべて） */
-  const tableFilter: TableFilter = filter ?? { kind: fixCounts && fixCounts.rows > 0 ? "fix" : "all" }
 
   /** 計画の聞き返しと、その対象の表の行（元の Excel のセルで決める。答えで載せないにした行も数える） */
   const planAsks = work.plan?.plan.asks ?? NO_ASKS
   const askRows = useMemo(() => {
     if (!sources || !shown || !planAsks.length) return []
-    const cellsOf = new Map(sources.rows.map((r) => [sourceKey(r), r.cells]))
+    const rf = plan!.rowFilter
     return planAsks.map((a, i) => {
-      const keys = new Set(
-        shown.flatMap((r) => {
-          const cells = cellsOf.get(sourceKey(r))
-          return cells && matchesValues(a, cells) ? [r.key] : []
-        }),
-      )
+      // 計画の取り込みと同じ数え方（askTargets）。行は元の行の分け方（記号の列で分けた行）ごと
+      const targets = new Set(askTargets(a, sources.rows, rf).map(sourceKey))
+      const keys = new Set(shown.flatMap((r) => (targets.has(sourceKey(r)) ? [r.key] : [])))
       return { id: `plan-ask-${i}`, label: ASK_KINDS[a.kind].label, keys }
     })
-  }, [sources, shown, planAsks])
+  }, [sources, shown, planAsks, plan])
+
+  /**
+   * 表の絞り込み。職員が選ぶまでは、直す行があればその行だけ（無ければすべて）。もう無い聞き返し（計画を立て直した）は「すべて」に戻し、
+   * 行が無くなった理由（直し終えた）は理由を外す（絞り込みから抜けられなくならないように）
+   */
+  const chosenFilter: TableFilter = filter ?? { kind: fixCounts && fixCounts.rows > 0 ? "fix" : "all" }
+  const tableFilter: TableFilter =
+    chosenFilter.ask && !askRows.some((a) => a.id === chosenFilter.ask)
+      ? { kind: "all" }
+      : chosenFilter.reason && !(fixCounts && fixCounts.byKind[chosenFilter.reason] > 0)
+        ? { kind: chosenFilter.kind }
+        : chosenFilter
 
   const fx = useUsdJpy()
   /** 開いている変更案の中身（サーバーが R2 から読んだもの。指示の返事で届いたものを足す。保存はサーバーが済ませている） */
@@ -720,9 +714,12 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
 
   const updateProposal = (id: string, next: (p: Proposal) => Proposal) => update("proposals", (ps) => ps.map((p) => (p.id === id ? next(p) : p)))
 
-  /** 承認の記録を作って作業に足す（cases/undo.ts）。before と after は承認の前後の作業、items は承認した項目の番号 */
-  function withUndo(before: CaseWork, after: CaseWork, proposalId: string, items: number[], external: UndoEntry["external"] = []): CaseWork {
-    const entry = undoEntry(before, after, { id: crypto.randomUUID(), proposalId, items, label: proposalId, at: Date.now(), external })
+  /**
+   * 承認の記録を作って作業に足す（cases/undo.ts）。before と after は承認の前後の作業、items は承認した項目の番号。
+   * exclusions は計画の聞き返しの答えで足した出さない行の決まり（計画の前後の代わりに、足した分だけを残す）
+   */
+  function withUndo(before: CaseWork, after: CaseWork, proposalId: string, items: number[], external: UndoEntry["external"] = [], exclusions?: ValueFilter[]): CaseWork {
+    const entry = undoEntry(before, exclusions ? { ...after, plan: before.plan } : after, { id: crypto.randomUUID(), proposalId, items, label: proposalId, at: Date.now(), external, exclusions })
     return entry ? { ...after, undo: pushUndo(after.undo, entry) } : after
   }
 
@@ -1083,9 +1080,8 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
       ? askRows.map((r, i): ReportQuestion => {
           const ask = planAsks[i]!
           const kind = ASK_KINDS[ask.kind]
-          // 「載せない」側は計画がその行を出さないこと、「載せる」側は職員の答え
-          const value = work.plan && askExcluded(ask, work.plan.plan.rowFilter) ? "exclude" : work.reportAnswers[r.id] === "keep" ? "keep" : null
-          const answered = kind.options.find((o) => o.value === value)?.label ?? null
+          // 答えは聞き返しの答えとして記録したものだけ（チャットなどで入れた除外は答えと見なさない）
+          const answered = kind.options.find((o) => o.value === work.reportAnswers[r.id])?.label ?? null
           return {
             id: r.id,
             text: planAsks[i]!.text,
@@ -1096,7 +1092,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
               setFilter({ kind: "all", ask: r.id })
               showTab("table")
             },
-            undo: value === null ? null : () => answerAsk(r.id, null),
+            undo: answered !== null ? undoAnswer(r.id) : null,
           }
         })
       : []),
@@ -1115,21 +1111,20 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
   }
 
   /**
-   * 計画の聞き返しに答える（null は答えを取り消して聞き直す）。「載せない」側は対象の行を計画の行の除外に足して変換し直し
-   * （チャットの列の対応の変更と同じ確かめ方）、取り消すと外す。「載せる」側は今のまま答えだけを残す
+   * 計画の聞き返しに答える。「載せない」側は対象の行を計画の出さない行に足して変換し直す（チャットの set_plan と同じ差分・確かめ方）。
+   * 答えと足した分は取り消しの記録（税の答えと同じ記録）に残し、取り消すと答えと足した分だけを戻す（もう同じ除外があれば足さない）
    */
-  function answerAsk(id: string, value: "exclude" | "keep" | null) {
+  function answerAsk(id: string, value: "exclude" | "keep") {
     const ask = planAsks[askRows.findIndex((r) => r.id === id)]
     if (!ask || !work.plan) return
-    const rf = work.plan.plan.rowFilter
-    const exclude = value === "exclude"
+    const added: ValueFilter[] = value === "exclude" && !hasExclusion(work.plan.plan.rowFilter, ask) ? [{ column: ask.column, values: ask.values }] : []
     let nextPlan: Plan | null = null
-    if (exclude !== askExcluded(ask, rf)) {
+    if (added.length) {
       if (!grid || !source) {
         toast.error("変換の元のファイルを読んでいます。読み終えてから答えてください")
         return
       }
-      const r = applyPlanPatch(SPEC, work.plan.plan, askPatch(ask, rf, exclude), sheetShapeOf(grid), source.sheets)
+      const r = applyPlanPatch(SPEC, work.plan.plan, { excludeRows: { add: added, remove: [] }, reason: ASK_KINDS[ask.kind].label }, sheetShapeOf(grid), source.sheets)
       if (!r.ok) {
         toast.error(`答えを反映できません: ${r.problems.join(" / ")}`)
         return
@@ -1139,9 +1134,8 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
     }
     setWork((w) => {
       if (!w.plan) return w
-      const { [id]: _, ...rest } = w.reportAnswers
-      const reportAnswers = value === "keep" ? { ...rest, [id]: "keep" } : rest
-      return { ...w, ...(nextPlan ? { plan: { ...w.plan, plan: nextPlan }, converted: false } : {}), reportAnswers }
+      const after = { ...w, ...(nextPlan ? { plan: { ...w.plan, plan: nextPlan }, converted: false } : {}), reportAnswers: { ...w.reportAnswers, [id]: value } }
+      return withUndo(w, after, reportUndoId(id), [], [], added)
     })
   }
   const locationSites = locationSearch.sites
@@ -1309,8 +1303,18 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
   /** チャットに職員の答えを待つもの（承認待ちの変更案・聞き返し）。次にやることの「答える」 */
   const chatPending =
     work.proposals.filter((p) => p.state === "open" && (p.origin.kind === "chat" || p.origin.kind === "excel")).length + questions.filter((q) => q.answered === null).length
+  /**
+   * 問い合わせの段: 聞くことが無いか、返事（記入用Excel）を取り込んだら済み。案件の状態が問い合わせ中か、記入用Excel・メールの下書き（件名）を
+   * 出したら、送った・返事待ち
+   */
+  const inquiryState =
+    activeInquiries === 0 || work.answers !== null
+      ? ("done" as const)
+      : status === "inquiring" || files.some((f) => f.kind === "inquiry_sheet") || work.inquiryText.subject !== null
+        ? ("waiting" as const)
+        : ("todo" as const)
   /** 次にやること（作業の画面の上と書き出すの確認）。数は表・問い合わせのタブと同じもの */
-  const nextSteps: NextStepsData | null = fixCounts && output ? { answer: chatPending, fix: fixCounts, inquiry: activeInquiries, exportRows: output.length } : null
+  const nextSteps: NextStepsData | null = fixCounts && output ? { answer: chatPending, fix: fixCounts, inquiry: { count: activeInquiries, state: inquiryState }, exportRows: output.length } : null
 
   /** 次にやることの段へ移る。答えるはチャットの最初の答えを待つものへ（狭い画面では作業の画面を閉じる） */
   function goStep(id: StepId) {
