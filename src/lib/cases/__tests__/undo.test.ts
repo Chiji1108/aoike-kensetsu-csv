@@ -161,6 +161,25 @@ describe("報告の聞き返しの答えの取り消し", () => {
     expect(r.work.reportAnswers).toEqual({})
     expect(r.work.tax).toBe("unknown")
     expect(r.work.taxBy).toBe(null)
+    // 答え1つは1件（答えで変えた税の設定は答えの一部）
+    expect(r.reverted).toBe(1)
+  })
+  test("計画の聞き返しの答えで足した出さない行は、取り消すとそれだけを外す（答えのあとに足した除外・変えた計画は残す）", () => {
+    const rf = { excludeHidden: false, excludeColumns: [] }
+    const plan: SavedPlan = { plan: { sheets: ["s"], headerRow: 0, dataRows: { start: 1, end: 2 }, skipRows: [], rowFilter: rf, amountUnit: "yen", fields: {} as never, unusedColumns: [], notes: [] }, source: "ai" }
+    const before: CaseWork = { ...newWork("f"), plan }
+    const x = { column: 3, values: ["未成"] }
+    const answered: CaseWork = { ...before, plan: { ...plan, plan: { ...plan.plan, rowFilter: { ...rf, excludeValues: [x] } } }, reportAnswers: { "plan-ask-0": "exclude" } }
+    const entry = undoEntry(before, { ...answered, plan: before.plan }, { id: "u3", proposalId: "report:plan-ask-0", label: "x", at: 0, exclusions: [x] })!
+    expect(entry.plan).toBeUndefined()
+    // 答えのあとにチャットで別の列を除外した
+    const later: CaseWork = { ...answered, plan: { ...plan, plan: { ...plan.plan, skipRows: [2], rowFilter: { ...rf, excludeColumns: [5], excludeValues: [x] } } }, undo: [entry] }
+    const r = undo(later, "u3")!
+    expect(r.work.plan!.plan.rowFilter).toEqual({ excludeHidden: false, excludeColumns: [5] })
+    expect(r.work.plan!.plan.skipRows).toEqual([2])
+    expect(r.work.reportAnswers).toEqual({})
+    expect(r.planChanged).toBe(true)
+    expect(r.reverted).toBe(1)
   })
   test("答えは聞き返しごとに戻す（あとでほかの聞き返しに答えても、この答えだけを戻せる）", () => {
     const before = newWork("f")
