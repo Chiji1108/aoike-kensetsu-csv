@@ -11,7 +11,7 @@ import {
   type SortingState,
 } from "@tanstack/react-table"
 import { useVirtualizer } from "@tanstack/react-virtual"
-import { ArrowDown, ArrowUp, ArrowUpDown, Columns3, RefreshCw, Search } from "lucide-react"
+import { ArrowDown, ArrowUp, ArrowUpDown, Columns3, MessageCircleQuestion, RefreshCw, Search, X } from "lucide-react"
 import { Segmented } from "@/components/segmented"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -31,7 +31,7 @@ import { INCLUSION_LABELS, type Inclusion } from "@/lib/convert/koji-selection"
 import type { KojiFieldId } from "@/lib/spec/koji-keireki"
 import type { CsvSpec } from "@/lib/spec/types"
 import { cn } from "@/lib/utils"
-import { ROW_FILTERS, STATUS, cellClass, changedCell, inFilter, type RowFilter } from "./status"
+import { FIX_KINDS, FIX_LABELS, NO_FIX, ROW_FILTERS, STATUS, cellClass, changedCell, inFilter, type FixCounts, type FixKind, type RowFix, type TableFilter } from "./status"
 
 type Row = RowResult<KojiFieldId>
 
@@ -48,7 +48,7 @@ const columnHelper = createColumnHelper<typeof features, Row>()
  * 「載せる」と「元の行」の列もここで持つ
  */
 const WIDTH: Record<KojiFieldId | "include" | "origin", number> = {
-  include: 112,
+  include: 156,
   origin: 84,
   gyoshu: 64,
   client: 170,
@@ -98,6 +98,19 @@ type ActiveStore = ReturnType<typeof activeStore>
 
 const originText = (r: Row) => `${r.sheet}!${r.row + 1}`
 
+/** 項目の短い名前（「請負代金（千円）」→「請負代金」） */
+const shortLabel = (spec: CsvSpec<KojiFieldId>, field: KojiFieldId) => (spec.fields.find((f) => f.id === field)?.label ?? field).replace(/（.*）$/, "")
+
+/** 行の理由の1つ（例:「業種が空」「工事名: AI の推定」） */
+const fixText = (spec: CsvSpec<KojiFieldId>, f: { field: KojiFieldId; kind: FixKind }) =>
+  f.kind === "empty" ? `${shortLabel(spec, f.field)}が空` : `${shortLabel(spec, f.field)}: ${FIX_LABELS[f.kind]}`
+
+/** 行の理由として見せる数（残りは「他 N」。全部はツールチップ） */
+const SHOWN_FIXES = 2
+
+/** 計画の聞き返しの対象の行（表で見る） */
+export type AskRows = { id: string; label: string; keys: ReadonlySet<string> }
+
 export function PreviewTable({
   spec,
   rows,
@@ -107,8 +120,10 @@ export function PreviewTable({
   onToggle,
   filter,
   onFilterChange,
-  checks,
+  fixes,
   counts,
+  asks,
+  onOpenInquiry,
 }: {
   spec: CsvSpec<KojiFieldId>
   rows: Row[]
@@ -117,12 +132,16 @@ export function PreviewTable({
   openEditor: (cell: CellResult) => EditSession
   onEdit: (rowKey: string, field: KojiFieldId, edit: CellEdit) => void
   onToggle: (rowKey: string, included: boolean) => void
-  /** 絞り込み（案件の画面が持つ。チャットの報告の件数を押しても変わる） */
-  filter: RowFilter
-  onFilterChange: (f: RowFilter) => void
-  /** 行に確かめるセルがあるか（rowNeedsCheck）と、絞り込みごとの行数（countRowFilters）。案件の画面が1回だけ数えて渡す */
-  checks: ReadonlyMap<string, boolean>
-  counts: Record<RowFilter, number>
+  /** 絞り込み（案件の画面が持つ。次にやること・報告の聞き返しの「表で見る」を押しても変わる） */
+  filter: TableFilter
+  onFilterChange: (f: TableFilter) => void
+  /** 行の片付けること（rowFix）と、直す行の数（countFixes）。案件の画面が1回だけ数えて渡す */
+  fixes: ReadonlyMap<string, RowFix<KojiFieldId>>
+  counts: FixCounts
+  /** 計画の聞き返しの対象の行（filter.ask で絞る） */
+  asks: readonly AskRows[]
+  /** 問い合わせのタブを開く（顧客に聞く行から） */
+  onOpenInquiry: () => void
 }) {
   const [editing, setEditing] = useState<Editing | null>(null)
   const setFilter = onFilterChange
@@ -157,8 +176,11 @@ export function PreviewTable({
     const searched = spec.fields.filter((f) => visible(f.id))
     const hasText = (r: Row) =>
       (visible("origin") && originText(r).toLowerCase().includes(needle)) || searched.some((f) => r.cells[f.id].value.toLowerCase().includes(needle))
-    return rows.filter((r) => inFilter(filter, r, inclusion.get(r.key)?.included ?? false, checks.get(r.key)) && (!needle || hasText(r)))
-  }, [rows, checks, inclusion, filter, needle, columnVisibility, spec])
+    const ask = asks.find((a) => a.id === filter.ask)
+    const asked = (key: string) => ask?.keys.has(key) ?? false
+    return rows.filter((r) => inFilter(filter, fixes.get(r.key) ?? NO_FIX, inclusion.get(r.key)?.included ?? false, asked, r.key) && (!needle || hasText(r)))
+  }, [rows, fixes, inclusion, filter, asks, needle, columnVisibility, spec])
+  const activeAsk = asks.find((a) => a.id === filter.ask)
 
   const table = useTable({
     features,
@@ -213,6 +235,7 @@ export function PreviewTable({
             <Checkbox aria-label="CSVに載せる" checked={inc?.included ?? false} onCheckedChange={(checked) => onToggle(r.key, checked)} />
             <span className="text-[11px] text-muted-foreground">{inc ? INCLUSION_LABELS[inc.reason] : ""}</span>
           </label>
+          {inc?.included && <RowReasons spec={spec} fix={fixes.get(r.key) ?? NO_FIX} onOpenInquiry={onOpenInquiry} />}
           {!liveKeys.has(r.key) && (
             <span className="mt-0.5 block text-[11px] text-amber-700" data-testid="row-unmatched" title="手直しで、今の絞り込み・検索に合わなくなりました。「更新」で表から外れます">
               条件に合いません
@@ -259,14 +282,43 @@ export function PreviewTable({
       <div className="flex flex-wrap items-center gap-2">
         <Segmented
           label="表の絞り込み"
-          value={filter}
-          options={(["check", "all"] as const).map((f) => ({ value: f, label: `${ROW_FILTERS[f].label} ${counts[f]}` }))}
-          onChange={(f) => {
+          value={filter.kind}
+          options={(["fix", "all"] as const).map((f) => ({ value: f, label: `${ROW_FILTERS[f].label} ${f === "fix" ? counts.rows : counts.all}` }))}
+          onChange={(kind) => {
             unpin()
-            setFilter(f)
+            setFilter({ kind })
           }}
           testId="row-filters"
         />
+        {activeAsk ? (
+          <span className="flex items-center gap-1 rounded-full border border-amber-300 bg-amber-50 py-0.5 pr-1 pl-2.5 text-xs text-amber-900" data-testid="ask-filter" data-ask={activeAsk.id}>
+            {activeAsk.label}（{activeAsk.keys.size}行）
+            <Button size="icon-xs" variant="ghost" className="size-5" aria-label="聞き返しの絞り込みを外す" onClick={() => setFilter({ kind: "all" })}>
+              <X />
+            </Button>
+          </span>
+        ) : (
+          filter.kind === "fix" &&
+          counts.rows > 0 && (
+            <div className="flex flex-wrap items-center gap-1" role="group" aria-label="直す理由" data-testid="fix-reasons">
+              {FIX_KINDS.filter((k) => counts.byKind[k] > 0).map((k) => (
+                <Button
+                  key={k}
+                  size="xs"
+                  variant={filter.reason === k ? "default" : "outline"}
+                  aria-pressed={filter.reason === k}
+                  onClick={() => {
+                    unpin()
+                    setFilter(filter.reason === k ? { kind: "fix" } : { kind: "fix", reason: k })
+                  }}
+                  data-testid={`fix-reason-${k}`}
+                >
+                  {FIX_LABELS[k]} <span className="num">{counts.byKind[k]}</span>
+                </Button>
+              ))}
+            </div>
+          )
+        )}
         <div className="relative w-44 sm:w-56">
           <Search className="pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-muted-foreground" />
           <Input
@@ -382,13 +434,38 @@ export function PreviewTable({
             {shown.length === 0 && (
               <TableRow>
                 <TableCell colSpan={visibleColumns.length} className="h-20 text-center text-muted-foreground" data-testid="no-match">
-                  {needle ? `「${query.trim()}」を含む${ROW_FILTERS[filter].empty}` : ROW_FILTERS[filter].empty}はありません
+                  {needle ? `「${query.trim()}」を含む${ROW_FILTERS[filter.kind].empty}` : ROW_FILTERS[filter.kind].empty}はありません
                 </TableCell>
               </TableRow>
             )}
           </TableBody>
         </table>
       </div>
+    </div>
+  )
+}
+
+/**
+ * 載せる行の、片付けることの理由（例:「業種が空」「工事名: AI の推定」）。顧客に聞くセルは直さなくてよいので、問い合わせのタブへの道だけ出す
+ */
+function RowReasons({ spec, fix, onOpenInquiry }: { spec: CsvSpec<KojiFieldId>; fix: RowFix<KojiFieldId>; onOpenInquiry: () => void }) {
+  if (!fix.fixes.length && !fix.ask) return null
+  const texts = fix.fixes.map((f) => fixText(spec, f))
+  const rest = texts.length - SHOWN_FIXES
+  return (
+    <div className="mt-1 flex flex-wrap gap-1 text-[11px] leading-4" data-testid="row-reasons">
+      {texts.length > 0 && (
+        <span className="text-amber-800" title={texts.join("\n")} data-testid="row-fix">
+          {texts.slice(0, SHOWN_FIXES).join("・")}
+          {rest > 0 && ` 他${rest}`}
+        </span>
+      )}
+      {fix.ask > 0 && (
+        <button type="button" className="inline-flex items-center gap-0.5 text-muted-foreground underline-offset-2 hover:underline" title="顧客への問い合わせに入っています（直さなくてよい）。問い合わせのタブを開きます" onClick={onOpenInquiry} data-testid="row-ask">
+          <MessageCircleQuestion className="size-3" />
+          顧客に聞く
+        </button>
+      )}
     </div>
   )
 }

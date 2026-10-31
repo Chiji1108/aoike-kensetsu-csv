@@ -69,7 +69,7 @@ export function ProposalCard({
   const pending = pendingOf(proposal)
   const counts = countKinds(changes)
   return (
-    <div className="space-y-2" data-testid="proposal" data-proposal={proposal.id}>
+    <div className="space-y-2" data-testid="proposal" data-proposal={proposal.id} data-pending={pending.length > 0 || waiting ? "1" : undefined}>
       {question && (
         <QuestionBox
           question={question.text}

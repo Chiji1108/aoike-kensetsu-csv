@@ -1,4 +1,4 @@
-import { CircleHelp, FileUp, Loader2, MapPin, RotateCcw, Sparkles } from "lucide-react"
+import { CircleHelp, FileUp, Info, Loader2, MapPin, RotateCcw, Sparkles, TableProperties, Undo2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Item, ItemContent, ItemDescription, ItemMedia, ItemTitle } from "@/components/ui/item"
 import { Message, MessageContent, MessageHeader } from "@/components/ui/message"
@@ -6,9 +6,10 @@ import { cn } from "@/lib/utils"
 import type { ReportPhase } from "@/lib/cases/phase"
 
 /**
- * 変換の報告（チャットの最初の返事）。ファイルを読む → 列の対応を考える → 変換する の進み具合と、変換のあとの職員が判断・確認すること
- * （計画の AI のメモ・見出しから推定した理由・まとめた行・去年との違い）、職員に聞くこと（Confirmation）、費用のかかる工事場所の調査を出す。
- * 確かめる行の件数・書き出す・問い合わせは表と見出しにあるので出さない。案件の作業から作るので保存しない（変われば書き直る）
+ * 変換の報告（チャットの最初の返事）。ファイルを読む → 列の対応を考える → 変換する の進み具合と、変換のあとの知らせ（答えは要らない。
+ * 計画の AI のメモ・見出しから推定した理由・まとめた行・去年との違い）、職員に聞くこと（Confirmation。答えを選ぶと閉じ、取り消せる）、
+ * 費用のかかる工事場所の調査を出す。直す行の件数・書き出す・問い合わせは作業の画面の「次にやること」にあるので出さない。
+ * 案件の作業から作るので保存しない（変われば書き直る）
  */
 
 export type { ReportPhase }
@@ -19,9 +20,15 @@ export type UploadNote = { name: string; text: string; tone?: "error" }
 export type ReportQuestion = {
   id: string
   text: string
+  /** 対象の行の数など（例:「該当 12 行」） */
+  detail?: string
   options: { value: string; label: string }[]
   /** 答えたなら、その選択肢の表示 */
   answered: string | null
+  /** 対象の行を表で見る（答えではない。押しても閉じない） */
+  view?: () => void
+  /** 答えを取り消して聞き直す（取り消せるときだけ） */
+  undo?: (() => void) | null
 }
 
 export type ReportCounts = { rows: number; csv: number }
@@ -31,7 +38,7 @@ export type ReportProps = {
   /** 変換の元（ファイル名とシート）の1行 */
   source: string | null
   planByAi: boolean
-  /** 注意書き（計画の AI のメモなど）。tone は目立たせるか */
+  /** 知らせ（計画の AI のメモなど。答えは要らない）。tone は目立たせるか */
   notes: { text: string; tone?: "warning"; testId?: string }[]
   counts: ReportCounts | null
   questions: ReportQuestion[]
@@ -131,14 +138,64 @@ function Body(p: ReportProps) {
           )}
         </p>
       )}
+      {p.questions.map((q) => (
+        <Item
+          key={q.id}
+          variant="outline"
+          size="sm"
+          className={cn("items-start", q.answered === null ? "border-amber-300 bg-amber-50" : "bg-muted/30")}
+          data-testid="report-question"
+          data-question={q.id}
+          data-answered={q.answered ?? undefined}
+          data-pending={q.answered === null ? "1" : undefined}
+        >
+          <ItemMedia variant="icon">
+            <CircleHelp className="text-amber-600" />
+          </ItemMedia>
+          <ItemContent className="gap-2">
+            <ItemTitle className="whitespace-pre-wrap">{q.text}</ItemTitle>
+            {q.detail && <ItemDescription data-testid="report-question-detail">{q.detail}</ItemDescription>}
+            <div className="flex flex-wrap items-center gap-1.5">
+              {q.answered !== null ? (
+                <>
+                  <span className="text-sm font-medium" data-testid="report-question-answer">
+                    {q.answered}
+                  </span>
+                  {q.undo && (
+                    <Button size="xs" variant="ghost" onClick={q.undo} data-testid="report-question-undo">
+                      <Undo2 /> 取り消す
+                    </Button>
+                  )}
+                </>
+              ) : (
+                q.options.map((o) => (
+                  <Button key={o.value} size="sm" variant="outline" className="bg-background" onClick={() => p.onAnswer(q.id, o.value)} data-testid="report-answer" data-value={o.value}>
+                    {o.label}
+                  </Button>
+                ))
+              )}
+              {q.view && (
+                <Button size="sm" variant="ghost" onClick={q.view} data-testid="report-question-view">
+                  <TableProperties /> 表で見る
+                </Button>
+              )}
+            </div>
+          </ItemContent>
+        </Item>
+      ))}
       {p.notes.length > 0 && (
-        <ul className="grid gap-1 text-[13px]" data-testid="report-notes">
-          {p.notes.map((n, i) => (
-            <li key={i} className={cn("rounded-md px-2 py-1", n.tone === "warning" ? "bg-amber-50 text-amber-900" : "bg-muted/40 text-muted-foreground")} data-testid={n.testId}>
-              {n.text}
-            </li>
-          ))}
-        </ul>
+        <div className="grid gap-1" data-testid="report-notes">
+          <p className="flex items-center gap-1 text-xs text-muted-foreground">
+            <Info className="size-3.5" /> 知らせ（答えは要りません）
+          </p>
+          <ul className="grid gap-1 text-[13px]">
+            {p.notes.map((n, i) => (
+              <li key={i} className={cn("rounded-md px-2 py-1", n.tone === "warning" ? "bg-amber-50 text-amber-900" : "bg-muted/40 text-muted-foreground")} data-testid={n.testId}>
+                {n.text}
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
       {p.previous && (
         <div className={cn("rounded-md border px-2.5 py-1.5 text-[13px]", p.previous.changed ? "border-amber-200 bg-amber-50 text-amber-900" : "bg-muted/30")} data-testid="format-diff">
@@ -154,27 +211,6 @@ function Body(p: ReportProps) {
           )}
         </div>
       )}
-      {p.questions.map((q) => (
-        <Item key={q.id} variant="outline" size="sm" className={cn("items-start", q.answered === null ? "border-amber-300 bg-amber-50" : "bg-muted/30")} data-testid="report-question" data-question={q.id} data-answered={q.answered ?? undefined}>
-          <ItemMedia variant="icon">
-            <CircleHelp className="text-amber-600" />
-          </ItemMedia>
-          <ItemContent className="gap-2">
-            <ItemTitle className="whitespace-pre-wrap">{q.text}</ItemTitle>
-            {q.answered !== null ? (
-              <ItemDescription>{q.answered}</ItemDescription>
-            ) : (
-              <div className="flex flex-wrap gap-1.5">
-                {q.options.map((o) => (
-                  <Button key={o.value} size="sm" variant="outline" className="bg-background" onClick={() => p.onAnswer(q.id, o.value)} data-testid="report-answer" data-value={o.value}>
-                    {o.label}
-                  </Button>
-                ))}
-              </div>
-            )}
-          </ItemContent>
-        </Item>
-      ))}
       {p.location && (
         <Button size="sm" variant="outline" className="w-fit" onClick={p.location.open} data-testid="report-location">
           <MapPin /> 工事場所を調べる（{p.location.sites}現場）
