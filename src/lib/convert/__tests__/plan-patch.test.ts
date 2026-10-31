@@ -103,3 +103,24 @@ describe("チャットの計画の差分（set_plan）", () => {
     expect(describePlanPatch(p, before)[0]).not.toMatch(/H列.+ → H列/)
   })
 })
+
+describe("値で行を出さない（計画の聞き返しの答え）", () => {
+  test("値の除外は今のものと入れ替え、ほかの差分を重ねても消えない。範囲外の列は受け取らない", () => {
+    const r = applyPlanPatch(KOJI_KEIREKI, plan, { excludeValues: [{ column: 10, values: ["追加工事あり"] }], reason: "迷う行" }, shape)
+    if (!r.ok) throw new Error(r.problems.join())
+    expect(r.plan.rowFilter.excludeValues).toEqual([{ column: 10, values: ["追加工事あり"] }])
+    const again = applyPlanPatch(KOJI_KEIREKI, r.plan, { skipRows: [11], reason: "合計の行" }, shape)
+    if (!again.ok) throw new Error(again.problems.join())
+    expect(again.plan.rowFilter.excludeValues).toEqual([{ column: 10, values: ["追加工事あり"] }])
+    expect(applyPlanPatch(KOJI_KEIREKI, plan, { excludeValues: [{ column: 99, values: ["x"] }], reason: "x" }, shape).ok).toBe(false)
+    expect(describePlanPatch({ excludeValues: [{ column: 10, values: ["追加工事あり"] }], reason: "" })).toEqual(["この値なら出さない列: K列「追加工事あり」"])
+  })
+})
+
+test("値の除外の対象の行は、理由を付けて出さない（全角・半角と前後の空白の違いは見ない）", async () => {
+  const { excludedReason } = await import("../sources")
+  const filter = { excludeHidden: false, excludeColumns: [], excludeValues: [{ column: 1, values: ["未成"] }] }
+  expect(excludedReason({ sheet: "s", row: 1, cells: ["1", " 未成 "], hidden: false }, filter)).toBe("B列が「未成」")
+  expect(excludedReason({ sheet: "s", row: 2, cells: ["1", "完成"], hidden: false }, filter)).toBeUndefined()
+  expect(excludedReason({ sheet: "s", row: 3, cells: ["1", "完成"], hidden: false }, { excludeHidden: false, excludeColumns: [] })).toBeUndefined()
+})

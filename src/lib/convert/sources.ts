@@ -1,4 +1,4 @@
-import { columnCount as columnCountOf, columnLetter, isDataRow, planColumns, type FieldPlan, type MappingPlan, type RowFilter, type SheetGrid, type SourceRow } from "./plan"
+import { columnCount as columnCountOf, columnLetter, isDataRow, matchesValues, planColumns, type FieldPlan, type MappingPlan, type RowFilter, type SheetGrid, type SourceRow } from "./plan"
 import { matchKey } from "./text"
 
 const TOTAL_ROW_RE = /^(合計|小計|総計|累計|計|総合計)$|^(合計|小計|総計)|(合計|小計|総計)$/
@@ -135,5 +135,7 @@ export function copiedFrom(grid: SheetGrid, others: readonly SheetGrid[], header
 export function excludedReason(row: SourceRow, filter: RowFilter): string | undefined {
   if (filter.excludeHidden && row.hidden) return "非表示の行"
   const marked = filter.excludeColumns.find((c) => row.cells[c]?.trim())
-  return marked === undefined ? undefined : `${columnLetter(marked)}列（除外の印）に値がある`
+  if (marked !== undefined) return `${columnLetter(marked)}列（除外の印）に値がある`
+  const value = filter.excludeValues?.find((f) => matchesValues(f, row.cells))
+  return value ? `${columnLetter(value.column)}列が「${row.cells[value.column]!.trim()}」` : undefined
 }

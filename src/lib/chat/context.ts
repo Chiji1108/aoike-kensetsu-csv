@@ -30,6 +30,10 @@ export function caseContext(sheets: readonly SheetGrid[], grid: SheetGrid, plan:
     lines.push(`- ${f.id}: ${how}`)
   }
   if (plan.notes.length) lines.push(`計画のメモ: ${plan.notes.join(" / ")}`)
+  // 計画の聞き返し（職員が報告で答える。答えは計画の行の除外 rowFilter に入る）
+  for (const a of plan.asks ?? []) lines.push(`計画の聞き返し: ${a.text}（${columnLetter(a.column)}列${a.values.length ? `が「${a.values.join("」「")}」` : "に値がある"}の行）`)
+  const ev = plan.rowFilter.excludeValues ?? []
+  if (ev.length) lines.push(`値で出さない行: ${ev.map((f) => `${columnLetter(f.column)}列が「${f.values.join("」「")}」`).join("、")}`)
   // 去年の元の Excel と形が変わった年は、去年のルール・コードの列の名前と位置をそのまま使えない
   if (previous) lines.push(`去年（${previous.fiscalYear}年度）の元の Excel との違い（決まった処理で見出しを比べたもの）:`, ...previous.lines.map((l) => `- ${l}`))
   return lines.join("\n")

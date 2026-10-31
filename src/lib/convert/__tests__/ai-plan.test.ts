@@ -44,6 +44,7 @@ function aiPlan(overrides: Record<string, unknown> = {}) {
     },
     unusedColumns: [{ column: 0, header: "No.", reason: "連番" }],
     notes: ["金額は税込の可能性があります"],
+    asks: [],
   }
 }
 
@@ -213,5 +214,40 @@ describe("計画の税込・税抜", () => {
     expect(no.ok && "amountTax" in no.plan).toBe(false)
     if (!no.ok) throw new Error("計画を取り込めない")
     expect(savedPlanSchema.parse({ plan: no.plan, source: "ai" }).plan.amountTax).toBeUndefined()
+  })
+})
+
+describe("計画の聞き返し（asks）", () => {
+  const accept = (asks: unknown[]) => {
+    const r = acceptAiPlan(KOJI_KEIREKI, book, excerpt, { ...aiPlan(), asks }, fallbackFor)
+    if (!r.ok) throw new Error(r.message)
+    return r.plan
+  }
+  test("対象の行がデータの行にある聞き返しはそのまま聞く（値は前後の空白を除き、重ねない）", () => {
+    const p = accept([{ kind: "doubtful", text: "備考に注記のある行があります。", column: 10, values: [] }, { kind: "unfinished", text: "完成日の列で未成を見分けます。", column: 8, values: [" 2024-03-31 ", "2024-03-31"] }])
+    expect(p.asks).toEqual([
+      { kind: "doubtful", text: "備考に注記のある行があります。", column: 10, values: [] },
+      { kind: "unfinished", text: "完成日の列で未成を見分けます。", column: 8, values: ["2024-03-31"] },
+    ])
+    expect(p.notes).toEqual(["使うシート「工事経歴」: 工事の一覧", "金額は税込の可能性があります"])
+  })
+  test("列がシートの外・対象の行が無い聞き返しは、文だけを知らせにする（答えても何も変わらない聞き返しを出さない）", () => {
+    const p = accept([{ kind: "doubtful", text: "範囲外", column: 42, values: [] }, { kind: "unfinished", text: "該当なし", column: 10, values: ["未成"] }])
+    expect(p.asks).toEqual([])
+    expect(p.notes).toContain("範囲外")
+    expect(p.notes).toContain("該当なし")
+  })
+  test("前の版の保存した計画（聞き返し・値の除外が無い・文の notes だけ）も読める", () => {
+    const old = { ...fallback, notes: ["未成の工事を載せるか確認してください"] }
+    const read = savedPlanSchema.parse({ plan: old, source: "ai" }).plan
+    expect(read.asks).toBeUndefined()
+    expect(read.rowFilter.excludeValues).toBeUndefined()
+    expect(read.notes).toEqual(["未成の工事を載せるか確認してください"])
+  })
+  test("聞き返しは決まった種類だけをスキーマで返させ、プロンプトに答えの選び方を書く", () => {
+    const prompt = systemPrompt(KOJI_KEIREKI)
+    expect(prompt).toContain("unfinished")
+    expect(prompt).toContain("doubtful")
+    expect(acceptAiPlan(KOJI_KEIREKI, book, excerpt, { ...aiPlan(), asks: [{ kind: "other", text: "x", column: 1, values: [] }] }, fallbackFor).ok).toBe(false)
   })
 })

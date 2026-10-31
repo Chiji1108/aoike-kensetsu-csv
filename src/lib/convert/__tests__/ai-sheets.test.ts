@@ -48,6 +48,7 @@ function wireOf(plan: MappingPlan<string>, sheets: number[]) {
     fields,
     unusedColumns: [],
     notes: [],
+    asks: [],
   }
 }
 const worksWire = (sheets: number[]) => wireOf(fallbackFor(works), sheets)
