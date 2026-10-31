@@ -6,9 +6,9 @@ const FIXTURE = new URL("../fixtures/sample-messy.xlsx", import.meta.url).pathna
 const LARGE = new URL("../fixtures/sample-large.xlsx", import.meta.url).pathname
 const ROWS = '[data-testid="preview-table"] tbody tr[data-row-key]'
 
-const filterButton = (page: Page, f: "check" | "all") => page.getByTestId(`row-filters-${f}`)
-/** 絞り込みの件数（確かめるは CSV に載せる行だけ。すべては表の全行） */
-const filterCount = async (page: Page, f: "check" | "all") => Number(/(\d+)\s*$/.exec((await filterButton(page, f).textContent()) ?? "")![1])
+const filterButton = (page: Page, f: "fix" | "all") => page.getByTestId(`row-filters-${f}`)
+/** 絞り込みの件数（直すは CSV に載せる行だけ。すべては表の全行） */
+const filterCount = async (page: Page, f: "fix" | "all") => Number(/(\d+)\s*$/.exec((await filterButton(page, f).textContent()) ?? "")![1])
 /** 選んだセルの注意書き（表の上の1行） */
 const cellNote = (page: Page) => page.getByTestId("cell-note")
 const cellText = (td: Locator) => td.locator("button > span").first().textContent()
@@ -53,12 +53,17 @@ test.afterEach(async ({ page }) => {
 
 test("プレビューの表で絞り込み・並べ替え・列の表示・手直し・行の入れ外しをして CSV を書き出す", async ({ page }) => {
   created.push((await convertFixture(page, FIXTURE)).customer)
-  await test.step("はじめは確かめる（CSV に載せる行のうち、エラー・要確認・AI の推定・問い合わせのある行）だけを出す。載せない行は出さない", async () => {
-    await expect(filterButton(page, "check")).toHaveAttribute("aria-pressed", "true")
-    const check = await filterCount(page, "check")
+  await test.step("はじめは直す（CSV に載せる行のうち、職員が直すセル: 必須が空・エラー・要確認・AI の推定のある行）だけを出し、行に理由を出す。載せない行は出さない", async () => {
+    await expect(filterButton(page, "fix")).toHaveAttribute("aria-pressed", "true")
+    const check = await filterCount(page, "fix")
     expect(check).toBeGreaterThan(0)
     await expect(page.locator(ROWS)).toHaveCount(check)
-    for (const tr of await page.locator(ROWS).all()) await expect(tr).toHaveAttribute("data-included", "1")
+    for (const tr of await page.locator(ROWS).all()) {
+      await expect(tr).toHaveAttribute("data-included", "1")
+      await expect(tr.getByTestId("row-fix")).toBeVisible()
+    }
+    // 作業の画面の上の次にやることの「直す」も同じ数
+    await expect(page.getByTestId("next-step-fix")).toContainText(String(check))
   })
   const checkKeys = await rowKeys(page)
   await showAllRows(page)
@@ -112,7 +117,7 @@ test("プレビューの表で絞り込み・並べ替え・列の表示・手�
     await expect(page.locator('td[data-field="workName"]')).toHaveCount(total)
   })
 
-  // 確かめるに入っていない、載せる行を直す
+  // 直すに入っていない、載せる行を直す
   const key = (await page.locator(`${ROWS}[data-included="1"]`).evaluateAll((trs, skip) => trs.map((tr) => (tr as HTMLElement).dataset.rowKey!).find((k) => !skip.includes(k)), checkKeys))!
   expect(key).toBeTruthy()
   const edited = page.locator(`tr[data-row-key="${key}"]`)
@@ -127,18 +132,23 @@ test("プレビューの表で絞り込み・並べ替え・列の表示・手�
     expect(await cellText(td)).toBe("テスト市")
   })
 
-  await test.step("手直しでエラーにすると、確かめるにその行が出る", async () => {
-    const before = await filterCount(page, "check")
+  await test.step("手直しでエラーにすると、直すにその行が出て、理由に「エラー」が出る", async () => {
+    const before = await filterCount(page, "fix")
     await edited.locator('td[data-field="startYm"] button').click()
     await page.getByLabel("セルの値").fill("20231")
     await page.getByLabel("セルの値").press("Enter")
     await expect(edited.locator('td[data-field="startYm"]')).toHaveAttribute("data-status", "error")
-    await expect.poll(() => filterCount(page, "check")).toBe(before + 1)
-    await filterButton(page, "check").click()
+    await expect.poll(() => filterCount(page, "fix")).toBe(before + 1)
+    await filterButton(page, "fix").click()
     await expect(edited).toBeVisible()
+    await expect(edited.getByTestId("row-fix")).toContainText("着工年月: エラー")
+    // 理由で絞れる
+    await page.getByTestId("fix-reason-error").click()
+    await expect(edited).toBeVisible()
+    await page.getByTestId("fix-reason-error").click()
   })
 
-  await test.step("確かめるの中で直すと、行はその場に残って「条件に合いません」と出て、「更新」で外れる", async () => {
+  await test.step("直すの中で直すと、行はその場に残って「条件に合いません」と出て、「更新」で外れる", async () => {
     const keys = await rowKeys(page)
     await edited.locator('td[data-field="startYm"] button').click()
     await page.getByLabel("セルの値").fill("202304")
@@ -218,14 +228,14 @@ test("行の多い表: 仮想スクロールの先でも絞り込み・検索・
   })
 
   const search = page.getByLabel("表の中を検索")
-  await test.step("確かめるは載せる行だけ: 金額がエラーの行は7割の選択で載らないので、確かめるには出ず、すべてでだけ見える", async () => {
+  await test.step("直すは載せる行だけ: 金額がエラーの行は7割の選択で載らないので、直すには出ず、すべてでだけ見える", async () => {
     await search.fill("第30倉庫")
     await expect(page.locator(ROWS)).toHaveCount(1)
     await expect(page.locator(ROWS).locator('td[data-field="amount"]')).toHaveAttribute("data-status", "error")
     await expect(page.locator(ROWS)).toHaveAttribute("data-included", "0")
-    await filterButton(page, "check").click()
-    await expect(page.getByTestId("no-match")).toContainText("「第30倉庫」を含む確かめる行")
-    expect(await filterCount(page, "check")).toBeLessThan(total)
+    await filterButton(page, "fix").click()
+    await expect(page.getByTestId("no-match")).toContainText("「第30倉庫」を含む直す行")
+    expect(await filterCount(page, "fix")).toBeLessThan(total)
     await search.fill("")
     for (const tr of await page.locator(ROWS).all()) await expect(tr).toHaveAttribute("data-included", "1")
     await filterButton(page, "all").click()
@@ -236,7 +246,7 @@ test("行の多い表: 仮想スクロールの先でも絞り込み・検索・
     await expect(page.locator(ROWS)).toHaveCount(1)
     await expect(page.locator(ROWS).locator('td[data-field="workName"]')).toContainText("サンプル第123倉庫改修工事")
     await search.fill("第31倉庫")
-    await filterButton(page, "check").click()
+    await filterButton(page, "fix").click()
     await expect(page.getByTestId("no-match")).toContainText("「第31倉庫」を含む")
     await filterButton(page, "all").click()
     await search.fill("第123倉庫")

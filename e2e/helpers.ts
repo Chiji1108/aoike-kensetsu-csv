@@ -50,7 +50,7 @@ export async function attachAndConvert(page: Page, file: Parameters<Locator["set
   if ((page.viewportSize()?.width ?? 0) >= 1280) await expect(page.getByTestId("preview-table")).toBeVisible()
 }
 
-/** 作業の画面の表のタブで、絞り込みを「すべて」にする（はじめは確かめる行だけ） */
+/** 作業の画面の表のタブで、絞り込みを「すべて」にする（はじめは直す行だけ） */
 export async function showAllRows(page: Page) {
   await openTab(page, "table")
   await page.getByTestId("row-filters-all").click()

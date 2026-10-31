@@ -261,16 +261,18 @@ test("狭い画面: チャットが画面いっぱいで、作業の画面は「
     await expect(page.getByTestId("work-panel")).toBeHidden()
   })
 
-  await test.step("道具の結果ではチャットを覆わずタブだけ切り替える。重ねて開いている間は、チャットに承認待ちがあると印が出る", async () => {
+  await test.step("道具の結果ではチャットを覆わずタブだけ切り替える。重ねて開いている間は、次にやることの「答える」に承認待ちが出て、押すとチャットへ移る", async () => {
     await fakeChat(page, [({ table }) => ({ text: "1行を外す案です。", changes: [{ kind: "include", rowKey: companyRow(table.rows).key, include: false }], tool: "ask_customer" })])
     await send(page, "注文者が株式会社の最初の行を外して")
     await expect(page.getByTestId("proposal")).toContainText("未決 1 件")
     await expect(page.getByTestId("work-panel")).toBeHidden()
     await page.getByTestId("work-open").click()
     await expect(page.getByTestId("tab-inquiry")).toHaveAttribute("aria-selected", "true")
-    await expect(page.getByTestId("work-chat-pending")).toContainText("1")
-    await page.keyboard.press("Escape")
+    // 次にやることの「答える」に承認待ちの数が出て、押すと作業の画面を閉じてチャットの変更案へ移る
+    await expect(page.getByTestId("next-step-answer")).toContainText("1")
+    await page.getByTestId("next-step-answer").click()
     await expect(page.getByTestId("work-panel")).toBeHidden()
+    await expect(page.getByTestId("proposal")).toBeInViewport()
     await expect(page.getByTestId("chat-messages")).toContainText("注文者が株式会社の最初の行を外して")
   })
 })
