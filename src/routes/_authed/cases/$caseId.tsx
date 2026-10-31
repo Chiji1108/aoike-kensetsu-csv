@@ -1118,23 +1118,30 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
     const ask = planAsks[askRows.findIndex((r) => r.id === id)]
     if (!ask || !work.plan) return
     const added: ValueFilter[] = value === "exclude" && !hasExclusion(work.plan.plan.rowFilter, ask) ? [{ column: ask.column, values: ask.values }] : []
-    let nextPlan: Plan | null = null
+    const patch = { excludeRows: { add: added, remove: [] }, reason: ASK_KINDS[ask.kind].label }
     if (added.length) {
       if (!grid || !source) {
         toast.error("変換の元のファイルを読んでいます。読み終えてから答えてください")
         return
       }
-      const r = applyPlanPatch(SPEC, work.plan.plan, { excludeRows: { add: added, remove: [] }, reason: ASK_KINDS[ask.kind].label }, sheetShapeOf(grid), source.sheets)
+      // 今の計画で確かめて知らせる。反映は下で、そのときの計画に重ねる（間に変わった計画を古い計画で上書きしない）
+      const r = applyPlanPatch(SPEC, work.plan.plan, patch, sheetShapeOf(grid), source.sheets)
       if (!r.ok) {
         toast.error(`答えを反映できません: ${r.problems.join(" / ")}`)
         return
       }
-      nextPlan = r.plan
       supersedeConversion()
     }
     setWork((w) => {
       if (!w.plan) return w
-      const after = { ...w, ...(nextPlan ? { plan: { ...w.plan, plan: nextPlan }, converted: false } : {}), reportAnswers: { ...w.reportAnswers, [id]: value } }
+      let plan = w.plan
+      if (added.length) {
+        const r = applyPlanPatch(SPEC, w.plan.plan, patch, sheetShapeOf(grid!), source!.sheets)
+        // 間に変わった計画には重ねられない: 答えずに残す（聞き返しは開いたまま）
+        if (!r.ok) return w
+        plan = { ...w.plan, plan: r.plan }
+      }
+      const after = { ...w, ...(added.length ? { plan, converted: false } : {}), reportAnswers: { ...w.reportAnswers, [id]: value } }
       return withUndo(w, after, reportUndoId(id), [], [], added)
     })
   }
