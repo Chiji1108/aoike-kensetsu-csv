@@ -2,7 +2,7 @@ import { z } from "zod"
 import { fieldIdSchema } from "../schemas"
 import type { CsvSpec } from "../spec/types"
 import { KOJI_KEIREKI, type KojiFieldId } from "../spec/koji-keireki"
-import { columnCount, columnLetter, extraSheetReason, fieldPlanProblem, type FieldPlan, type MappingPlan, type SheetGrid, type ValueFilter } from "./plan"
+import { columnCount, columnLetter, extraSheetReason, fieldPlanProblem, withExclusions, type FieldPlan, type MappingPlan, type SheetGrid, type ValueFilter } from "./plan"
 import { fieldPlanSchema, valueFilterSchema } from "./plan-schema"
 import { getTransform, TRANSFORM_IDS } from "./transforms"
 
@@ -36,8 +36,16 @@ export const planPatchInputSchema = z.strictObject({
   excludeHidden: z.boolean().optional(),
   /** データでない行（合計・小計・注記）。送ると今のものと入れ替える */
   skipRows: z.array(z.number().int().min(1)).max(2000).optional(),
-  /** 値があればその行を出さない列。送ると今のものと入れ替える */
-  excludeColumns: z.array(columnRef).max(100).optional(),
+  /**
+   * 出さない行を足す・外す（今のものに重ねる差分）。values が空なら「その列に値がある行」、あれば「その列の値がそのどれかの行」。
+   * 外すときは今あるものと同じ列・値を書く
+   */
+  excludeRows: z
+    .strictObject({
+      add: z.array(z.strictObject({ column: columnRef, values: z.array(z.string().min(1).max(200)).max(20) })).max(20).optional(),
+      remove: z.array(z.strictObject({ column: columnRef, values: z.array(z.string().min(1).max(200)).max(20) })).max(20).optional(),
+    })
+    .optional(),
   amountUnit: z.enum(["yen", "thousandYen"]).optional(),
   /** 職員に見せる、変える理由（1〜2文） */
   reason: z.string().min(1).max(500),
@@ -52,9 +60,10 @@ export type PlanPatch = {
   dataEnd?: number
   excludeHidden?: boolean
   skipRows?: number[]
+  /** 前の版の変更案の「値があれば出さない列」（送ると今のものと入れ替える）。読むだけで、新しい差分は excludeRows */
   excludeColumns?: number[]
-  /** 値がそのどれかなら行を出さない列（計画の聞き返しの答え。チャットの set_plan には無い）。送ると今のものと入れ替える */
-  excludeValues?: ValueFilter[]
+  /** 出さない行を足す・外す（今のものに重ねる。計画の聞き返しの答えとチャットの set_plan で同じ） */
+  excludeRows?: { add: ValueFilter[]; remove: ValueFilter[] }
   amountUnit?: "yen" | "thousandYen"
   reason: string
 }
@@ -67,7 +76,7 @@ export const planPatchSchema: z.ZodType<PlanPatch> = z.object({
   excludeHidden: z.boolean().optional(),
   skipRows: z.array(z.number().int().min(0)).max(2000).optional(),
   excludeColumns: z.array(z.number().int().min(0)).max(100).optional(),
-  excludeValues: z.array(valueFilterSchema).max(100).optional(),
+  excludeRows: z.object({ add: z.array(valueFilterSchema).max(20), remove: z.array(valueFilterSchema).max(20) }).optional(),
   amountUnit: z.enum(["yen", "thousandYen"]).optional(),
   reason: z.string().max(500),
 })
@@ -94,6 +103,8 @@ function fieldFromInput(p: z.infer<typeof fieldPlanInputSchema>): FieldPlan {
   }
 }
 
+const exclusionFromInput = (x: { column: string; values: string[] }): ValueFilter => ({ column: columnIndex(x.column), values: [...new Set(x.values.map((v) => v.trim()).filter(Boolean))] })
+
 /** set_plan の引数を計画の番号にする（形は zod で確かめたもの） */
 export function patchFromInput(input: PlanPatchInput): PlanPatch {
   const fields = input.fields ? (Object.fromEntries(Object.entries(input.fields).flatMap(([f, p]) => (p ? [[f, fieldFromInput(p)]] : []))) as PlanPatch["fields"]) : undefined
@@ -104,7 +115,9 @@ export function patchFromInput(input: PlanPatchInput): PlanPatch {
     ...(input.dataEnd !== undefined ? { dataEnd: input.dataEnd - 1 } : {}),
     ...(input.excludeHidden !== undefined ? { excludeHidden: input.excludeHidden } : {}),
     ...(input.skipRows ? { skipRows: [...new Set(input.skipRows.map((r) => r - 1))].sort((a, b) => a - b) } : {}),
-    ...(input.excludeColumns ? { excludeColumns: [...new Set(input.excludeColumns.map(columnIndex))].sort((a, b) => a - b) } : {}),
+    ...(input.excludeRows && (input.excludeRows.add?.length || input.excludeRows.remove?.length)
+      ? { excludeRows: { add: (input.excludeRows.add ?? []).map(exclusionFromInput), remove: (input.excludeRows.remove ?? []).map(exclusionFromInput) } }
+      : {}),
     ...(input.amountUnit ? { amountUnit: input.amountUnit } : {}),
     reason: input.reason.trim(),
   }
@@ -117,7 +130,7 @@ export const sheetShapeSchema: z.ZodType<SheetShape> = z.object({ rows: z.number
 
 /** 差分に何も入っていない（理由だけ） */
 export const isEmptyPatch = (p: PlanPatch) =>
-  !p.fields && p.headerRow === undefined && p.dataStart === undefined && p.dataEnd === undefined && p.excludeHidden === undefined && !p.skipRows && !p.excludeColumns && !p.excludeValues && p.amountUnit === undefined
+  !p.fields && p.headerRow === undefined && p.dataStart === undefined && p.dataEnd === undefined && p.excludeHidden === undefined && !p.skipRows && !p.excludeColumns && !p.excludeRows && p.amountUnit === undefined
 
 /**
  * 差分を計画に重ねる。合わない項目が1つでもあれば、どれも重ねずに理由を返す（AI が直して出し直す。黙って一部だけ入れない）。
@@ -150,9 +163,9 @@ export function applyPlanPatch<F extends string>(
   const skipRows = patch.skipRows ?? plan.skipRows.filter((r) => r >= start && r <= end)
   const outside = skipRows.filter((r) => r < start || r > end)
   if (outside.length) problems.push(`飛ばす行 ${outside.map((r) => r + 1).join("・")}行目 はデータの範囲の外です`)
-  const excludeColumns = patch.excludeColumns ?? plan.rowFilter.excludeColumns
-  const excludeValues = patch.excludeValues ?? plan.rowFilter.excludeValues
-  const wide = [...excludeColumns, ...(excludeValues ?? []).map((f) => f.column)].filter((c) => c >= shape.columns)
+  const replaced = patch.excludeColumns ? { ...plan.rowFilter, excludeColumns: patch.excludeColumns } : plan.rowFilter
+  const rowFilter = patch.excludeRows ? withExclusions(replaced, patch.excludeRows.add, patch.excludeRows.remove) : replaced
+  const wide = [...rowFilter.excludeColumns, ...(rowFilter.excludeValues ?? []).map((f) => f.column)].filter((c) => c >= shape.columns)
   if (wide.length) problems.push(`除外の列 ${[...new Set(wide)].map(columnLetter).join("・")} はシートの範囲の外です`)
   const primary = workbook?.find((s) => s.name === plan.sheets[0])
   if (workbook && primary)
@@ -169,7 +182,7 @@ export function applyPlanPatch<F extends string>(
       headerRow,
       dataRows: { start, end },
       skipRows,
-      rowFilter: { excludeHidden: patch.excludeHidden ?? plan.rowFilter.excludeHidden, excludeColumns, ...(excludeValues?.length ? { excludeValues } : {}) },
+      rowFilter: { ...rowFilter, excludeHidden: patch.excludeHidden ?? plan.rowFilter.excludeHidden },
       amountUnit: patch.amountUnit ?? plan.amountUnit,
       fields,
     },
@@ -202,11 +215,13 @@ export function beforeOf(plan: MappingPlan<KojiFieldId>, patch: PlanPatch): Plan
     ...(patch.excludeHidden !== undefined ? { excludeHidden: plan.rowFilter.excludeHidden } : {}),
     ...(patch.skipRows ? { skipRows: plan.skipRows } : {}),
     ...(patch.excludeColumns ? { excludeColumns: plan.rowFilter.excludeColumns } : {}),
-    ...(patch.excludeValues ? { excludeValues: plan.rowFilter.excludeValues ?? [] } : {}),
     ...(patch.amountUnit ? { amountUnit: plan.amountUnit } : {}),
     reason: "",
   }
 }
+
+/** 出さない行の決まりを職員向けに（例:「S列に値がある行」「F列が「未成」の行」） */
+export const exclusionText = (x: ValueFilter) => (x.values.length ? `${columnLetter(x.column)}列が「${x.values.join("」「")}」の行` : `${columnLetter(x.column)}列に値がある行`)
 
 const rowsText = (rows: number[]) => (rows.length ? rows.map((r) => r + 1).join("・") + "行目" : "なし")
 const colsText = (cols: number[]) => (cols.length ? cols.map(columnLetter).join("・") : "なし")
@@ -225,7 +240,9 @@ export function describePlanPatch(patch: PlanPatch, before?: PlanPatch, spec: Cs
   line("隠れた行", patch.excludeHidden, before?.excludeHidden, (v) => (v ? "出さない" : "出す"))
   line("飛ばす行", patch.skipRows, before?.skipRows, rowsText)
   line("値があれば出さない列", patch.excludeColumns, before?.excludeColumns, colsText)
-  line("この値なら出さない列", patch.excludeValues, before?.excludeValues, (fs) => (fs.length ? fs.map((f) => `${columnLetter(f.column)}列「${f.values.join("」「")}」`).join("・") : "なし"))
+  // 出さない行は差分（足す・外す）なので「前 → 後」にしない
+  if (patch.excludeRows?.add.length) lines.push(`出さない行に足す: ${patch.excludeRows.add.map(exclusionText).join("・")}`)
+  if (patch.excludeRows?.remove.length) lines.push(`出さない行から外す: ${patch.excludeRows.remove.map(exclusionText).join("・")}`)
   line("金額の単位", patch.amountUnit, before?.amountUnit, (u) => (u === "yen" ? "円" : "千円"))
   return lines
 }

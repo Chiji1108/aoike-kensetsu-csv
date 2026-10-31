@@ -32,8 +32,9 @@ export function caseContext(sheets: readonly SheetGrid[], grid: SheetGrid, plan:
   if (plan.notes.length) lines.push(`計画のメモ: ${plan.notes.join(" / ")}`)
   // 計画の聞き返し（職員が報告で答える。答えは計画の行の除外 rowFilter に入る）
   for (const a of plan.asks ?? []) lines.push(`計画の聞き返し: ${a.text}（${columnLetter(a.column)}列${a.values.length ? `が「${a.values.join("」「")}」` : "に値がある"}の行）`)
-  const ev = plan.rowFilter.excludeValues ?? []
-  if (ev.length) lines.push(`値で出さない行: ${ev.map((f) => `${columnLetter(f.column)}列が「${f.values.join("」「")}」`).join("、")}`)
+  // 出さない行の決まり（set_plan の excludeRows で外すときは、これと同じ列・値を書く）
+  const ex = [...plan.rowFilter.excludeColumns.map((c) => `${columnLetter(c)}列に値がある行`), ...(plan.rowFilter.excludeValues ?? []).map((f) => `${columnLetter(f.column)}列が「${f.values.join("」「")}」の行`)]
+  if (ex.length) lines.push(`出さない行: ${ex.join("、")}`)
   // 去年の元の Excel と形が変わった年は、去年のルール・コードの列の名前と位置をそのまま使えない
   if (previous) lines.push(`去年（${previous.fiscalYear}年度）の元の Excel との違い（決まった処理で見出しを比べたもの）:`, ...previous.lines.map((l) => `- ${l}`))
   return lines.join("\n")

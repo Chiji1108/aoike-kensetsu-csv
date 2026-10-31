@@ -1,4 +1,4 @@
-import { columnCount as columnCountOf, columnLetter, isDataRow, matchesValues, planColumns, type FieldPlan, type MappingPlan, type RowFilter, type SheetGrid, type SourceRow } from "./plan"
+import { columnCount as columnCountOf, columnLetter, isDataRow, matchesValues, planColumns, withExclusions, type FieldPlan, type MappingPlan, type PlanAsk, type RowFilter, type SheetGrid, type SourceRow } from "./plan"
 import { matchKey } from "./text"
 
 const TOTAL_ROW_RE = /^(合計|小計|総計|累計|計|総合計)$|^(合計|小計|総計)|(合計|小計|総計)$/
@@ -129,6 +129,15 @@ export function copiedFrom(grid: SheetGrid, others: readonly SheetGrid[], header
     if (ratio >= COPY_RATIO) return { sheet: o.name, ratio }
   }
   return undefined
+}
+
+/**
+ * 計画の聞き返しの対象の行: 使う全シートの行のうち、聞き返しの列と値に合い、ほかの決まり（隠れた行・ほかの除外）では出さない行を除いたもの。
+ * 聞き返し自身の除外（答えの「載せない」）では外さない（答えたあとも同じ行を数える）。計画の取り込みと画面で同じ数え方
+ */
+export function askTargets(ask: Pick<PlanAsk, "column" | "values">, rows: readonly SourceRow[], rf: RowFilter): SourceRow[] {
+  const others = withExclusions(rf, [], [ask])
+  return rows.filter((r) => matchesValues(ask, r.cells) && excludedReason(r, others) === undefined)
 }
 
 /** 行を出力しない理由（除外しないなら undefined） */

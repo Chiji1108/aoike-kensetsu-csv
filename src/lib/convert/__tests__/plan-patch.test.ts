@@ -55,9 +55,9 @@ describe("チャットの計画の差分（set_plan）", () => {
     expect(applyPlanPatch(KOJI_KEIREKI, plan, patch({ headerRow: 9999, reason: "x" }), shape).ok).toBe(false)
     expect(applyPlanPatch(KOJI_KEIREKI, plan, patch({ dataStart: plan.headerRow + 1, reason: "x" }), shape).ok).toBe(false)
     expect(applyPlanPatch(KOJI_KEIREKI, plan, patch({ skipRows: [1], reason: "x" }), shape).ok).toBe(false)
-    expect(applyPlanPatch(KOJI_KEIREKI, plan, patch({ excludeColumns: ["ZZ"], reason: "x" }), shape).ok).toBe(false)
+    expect(applyPlanPatch(KOJI_KEIREKI, plan, patch({ excludeRows: { add: [{ column: "ZZ", values: [] }] }, reason: "x" }), shape).ok).toBe(false)
     expect(applyPlanPatch(KOJI_KEIREKI, plan, patch({ reason: "理由だけ" }), shape).ok).toBe(false)
-    const ok = applyPlanPatch(KOJI_KEIREKI, plan, patch({ excludeColumns: ["A"], amountUnit: "thousandYen", reason: "x" }), shape)
+    const ok = applyPlanPatch(KOJI_KEIREKI, plan, patch({ excludeRows: { add: [{ column: "A", values: [] }] }, amountUnit: "thousandYen", reason: "x" }), shape)
     expect(ok.ok && ok.plan.rowFilter.excludeColumns).toEqual([0])
     expect(ok.ok && ok.plan.amountUnit).toBe("thousandYen")
   })
@@ -104,16 +104,29 @@ describe("チャットの計画の差分（set_plan）", () => {
   })
 })
 
-describe("値で行を出さない（計画の聞き返しの答え）", () => {
-  test("値の除外は今のものと入れ替え、ほかの差分を重ねても消えない。範囲外の列は受け取らない", () => {
-    const r = applyPlanPatch(KOJI_KEIREKI, plan, { excludeValues: [{ column: 10, values: ["追加工事あり"] }], reason: "迷う行" }, shape)
+describe("出さない行の差分（計画の聞き返しの答えとチャットの set_plan）", () => {
+  test("足す・外すを今のものに重ね（入れ替えない）、ほかの差分を重ねても消えない。範囲外の列は受け取らない", () => {
+    const r = applyPlanPatch(KOJI_KEIREKI, plan, patch({ excludeRows: { add: [{ column: "K", values: ["追加工事あり"] }] }, reason: "迷う行" }), shape)
     if (!r.ok) throw new Error(r.problems.join())
     expect(r.plan.rowFilter.excludeValues).toEqual([{ column: 10, values: ["追加工事あり"] }])
-    const again = applyPlanPatch(KOJI_KEIREKI, r.plan, { skipRows: [11], reason: "合計の行" }, shape)
+    // 別の列を足しても、前の除外は残る（入れ替えない）。同じものは二重にしない
+    const more = applyPlanPatch(KOJI_KEIREKI, r.plan, patch({ excludeRows: { add: [{ column: "A", values: [] }, { column: "K", values: ["追加工事あり"] }] }, reason: "x" }), shape)
+    if (!more.ok) throw new Error(more.problems.join())
+    expect(more.plan.rowFilter.excludeColumns).toEqual([0])
+    expect(more.plan.rowFilter.excludeValues).toEqual([{ column: 10, values: ["追加工事あり"] }])
+    const again = applyPlanPatch(KOJI_KEIREKI, more.plan, { skipRows: [11], reason: "合計の行" }, shape)
     if (!again.ok) throw new Error(again.problems.join())
     expect(again.plan.rowFilter.excludeValues).toEqual([{ column: 10, values: ["追加工事あり"] }])
-    expect(applyPlanPatch(KOJI_KEIREKI, plan, { excludeValues: [{ column: 99, values: ["x"] }], reason: "x" }, shape).ok).toBe(false)
-    expect(describePlanPatch({ excludeValues: [{ column: 10, values: ["追加工事あり"] }], reason: "" })).toEqual(["この値なら出さない列: K列「追加工事あり」"])
+    // 外すと、その分だけ外れる
+    const removed = applyPlanPatch(KOJI_KEIREKI, again.plan, patch({ excludeRows: { remove: [{ column: "K", values: ["追加工事あり"] }] }, reason: "x" }), shape)
+    if (!removed.ok) throw new Error(removed.problems.join())
+    expect(removed.plan.rowFilter.excludeValues).toBeUndefined()
+    expect(removed.plan.rowFilter.excludeColumns).toEqual([0])
+    expect(describePlanPatch({ excludeRows: { add: [{ column: 10, values: ["追加工事あり"] }], remove: [{ column: 0, values: [] }] }, reason: "" })).toEqual(["出さない行に足す: K列が「追加工事あり」の行", "出さない行から外す: A列に値がある行"])
+  })
+  test("前の版の変更案の「値があれば出さない列」（入れ替え）も読める", () => {
+    const r = applyPlanPatch(KOJI_KEIREKI, plan, { excludeColumns: [0], reason: "x" }, shape)
+    expect(r.ok && r.plan.rowFilter.excludeColumns).toEqual([0])
   })
 })
 
