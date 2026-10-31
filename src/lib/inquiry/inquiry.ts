@@ -174,9 +174,11 @@ export function fixedQuestion(q: Inquiry): string {
 /** 問い合わせられる項目: CSV の必須か書類に要る項目のうち、記入用Excelに列があるもの */
 const ASKABLE = new Set(KOJI_KEIREKI.fields.filter((f) => (f.required || f.filing) && columnOf(f.id)).map((f) => f.id))
 
-/** そのセルを顧客に聞く理由（聞けない項目・聞かなくてよいセルは undefined）。問い合わせを集めるのと表の絞り込みで同じ決まり */
+/** そのセルを顧客に聞く理由（聞けない項目・聞かなくてよいセルは undefined）。問い合わせを集めるのと表の「直す」（cellFix）で同じ決まり */
 export function askReasonOf(field: string, cell: CellResult): InquiryReason | undefined {
   if (!ASKABLE.has(field as KojiFieldId)) return undefined
+  // 値のあるエラーは顧客に聞いても CSV に載らないので聞かない（職員が直す。表の「直す」と問い合わせで1つのセルを二重に数えない）
+  if (cell.status === "error" && cell.value !== "") return undefined
   return (Object.keys(REASONS) as InquiryReason[]).find((k) => REASONS[k].applies(cell))
 }
 

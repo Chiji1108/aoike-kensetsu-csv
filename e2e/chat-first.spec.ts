@@ -6,7 +6,7 @@ import type { ChatChange, Proposal } from "../src/lib/chat/proposals"
 import { callsServerFn, csvCount, deleteCustomer, openNewCase, openTab, reload, showAllRows } from "./helpers"
 
 /**
- * チャット中心の流れ: ファイルをアップロードする → 自動で変換 → 変換の報告（注意書き・聞き返し・確かめる行の件数） → チャットで列の対応を直す変更案 →
+ * チャット中心の流れ: ファイルをアップロードする → 自動で変換 → 変換の報告（知らせ・聞き返し）と次にやること → チャットで列の対応を直す変更案 →
  * 承認で変換し直す → 承認を取り消すと元に戻る（開き直しても） → 書き出す前の確認で決算書の額と照らす → 最後の Excel と CSV。
  * 列の対応は見出しからの推定にし（計画の AI を断る）、チャットは決まった返事にする（AI なしで同じ結果になる）
  */
@@ -80,7 +80,7 @@ test("ファイルをアップロードすると自動で変換して報告で�
     const report = page.getByTestId("case-report")
     await expect(report).toHaveAttribute("data-phase", "done")
     await expect(report.getByTestId("report-notes")).toContainText("見出しから列を推定しました")
-    await expect(page.getByTestId("row-filters-check")).toHaveAttribute("aria-pressed", "true")
+    await expect(page.getByTestId("row-filters-fix")).toHaveAttribute("aria-pressed", "true")
     // 件数・問い合わせ・書き出すは表と見出しにあるので、報告には出さない
     await expect(report.getByTestId("report-count")).toHaveCount(0)
     await expect(report.getByTestId("report-export")).toHaveCount(0)

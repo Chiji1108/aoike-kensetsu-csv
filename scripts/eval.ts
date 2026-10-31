@@ -40,7 +40,7 @@ import type { RowResult } from "../src/lib/convert/convert"
 import { heuristicPlan, planSheets, sheetByNames } from "../src/lib/convert/heuristic-plan"
 import { runConversion } from "../src/lib/convert/pipeline"
 import { fileAddressLookup } from "../src/lib/convert/address-file"
-import { acceptAiPlan, type MappingPlan } from "../src/lib/convert/plan"
+import { acceptAiPlan, matchesValues, type MappingPlan } from "../src/lib/convert/plan"
 import { applyPlanPatch, describePlanPatch, sheetShapeOf, type PlanPatch } from "../src/lib/convert/plan-patch"
 import { planExcerpt, previousPlanContext } from "../src/lib/convert/prompt"
 import { collectSourceRows } from "../src/lib/convert/sources"
@@ -139,6 +139,10 @@ async function baseline(): Promise<Baseline> {
   console.log(`計画のシート: ${plan.sheets.join("、")}（${plan.notes[0] ?? ""}）`)
   console.log(`計画の税込・税抜: ${plan.amountTax ?? "unknown"}`)
   console.log(`計画の notes ${plan.notes.length} 件:\n${plan.notes.map((n) => `  - ${n}`).join("\n")}`)
+  // 聞き返しは種類と対象の行の数（画面と同じく元の Excel のセルで数える）
+  const sourceRows = collectSourceRows(sheets, plan).rows
+  const asks = plan.asks ?? []
+  console.log(`計画の asks ${asks.length} 件:\n${asks.map((a) => `  - [${a.kind}] ${a.text}（${sourceRows.filter((r) => matchesValues(a, r.cells)).length} 行）`).join("\n")}`)
   const rows = await runConversion({
     lookup: fileAddressLookup,
     spec: KOJI_KEIREKI,

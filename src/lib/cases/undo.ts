@@ -1,7 +1,8 @@
 import { z } from "zod"
 import type { CellEdit, CellEdits } from "../convert/convert"
 import type { Basis, SelectionMode } from "../convert/koji-selection"
-import { savedPlanSchema } from "../convert/plan-schema"
+import { savedPlanSchema, valueFilterSchema } from "../convert/plan-schema"
+import { hasExclusion, withExclusions, type ValueFilter } from "../convert/plan"
 import { basisSchema, cellEditSchema, selectionSchema } from "../schemas"
 import { setTax, taxSettingSchema, type TaxBy, type TaxSetting } from "./tax"
 import type { AddedRow } from "./added"
@@ -27,6 +28,8 @@ export type Undoable = {
   basis: Basis
   plan: SavedPlan | null
   inquiryText: InquiryText
+  /** 変換の報告の聞き返しへの答え（答えを取り消すと聞き返しを開き直す） */
+  reportAnswers: Record<string, string>
 }
 
 type Pair<T> = [before: T, after: T]
@@ -51,6 +54,13 @@ export type UndoEntry = {
   plan?: Pair<SavedPlan | null>
   /** 問い合わせの文面（この項目より前の記録には無い） */
   inquiryText?: InquiryTextDiff
+  /** 変換の報告の聞き返しへの答え（この項目より前の記録には無い） */
+  reportAnswers?: [string, string | null, string | null][]
+  /**
+   * 計画の聞き返しの答えで計画に足した、出さない行の決まり（計画の前と後は残さない）。取り消すと、今の計画からこれだけを外す
+   * （答えのあとにチャットなどで変えた計画の部分は残す）。この項目より前の記録には無い
+   */
+  exclusions?: ValueFilter[]
   /** 戻さない外への書き込み */
   external: ("rule" | "location")[]
   /** 記録が大きすぎて中身を残さなかった（取り消せない） */
@@ -68,7 +78,7 @@ const same = (a: unknown, b: unknown) => a === b || JSON.stringify(a) === JSON.s
 export function undoEntry(
   before: Undoable,
   after: Undoable,
-  meta: { id: string; proposalId: string; items?: number[]; label: string; at: number; external?: UndoEntry["external"] },
+  meta: { id: string; proposalId: string; items?: number[]; label: string; at: number; external?: UndoEntry["external"]; exclusions?: ValueFilter[] },
 ): UndoEntry | null {
   const edits: UndoEntry["edits"] = []
   for (const [k, v] of after.edits) if (before.edits.get(k) !== v) edits.push([k, before.edits.get(k) ?? null, v])
@@ -77,10 +87,16 @@ export function undoEntry(
   for (const [k, v] of after.manual) if (before.manual.get(k) !== v) manual.push([k, before.manual.get(k) ?? null, v])
   const had = new Set(before.added.map((a) => a.key))
   const added = after.added.filter((a) => !had.has(a.key))
+  // 聞き返しの答えは聞き返しごと（ほかの聞き返しにあとで答えても、この答えだけを戻せる）
+  const answers: [string, string | null, string | null][] = [...new Set([...Object.keys(before.reportAnswers), ...Object.keys(after.reportAnswers)])].flatMap((k) =>
+    before.reportAnswers[k] === after.reportAnswers[k] ? [] : [[k, before.reportAnswers[k] ?? null, after.reportAnswers[k] ?? null] as [string, string | null, string | null]],
+  )
   const text = before.inquiryText === after.inquiryText ? null : diffInquiryText(before.inquiryText, after.inquiryText)
+  const { exclusions: _exclusions, ...metaRest } = meta
   const entry: UndoEntry = {
-    ...meta,
+    ...metaRest,
     external: meta.external ?? [],
+    ...(meta.exclusions?.length ? { exclusions: meta.exclusions } : {}),
     edits,
     manual,
     added,
@@ -91,8 +107,9 @@ export function undoEntry(
     ...(!same(before.basis, after.basis) ? { basis: [before.basis, after.basis] as Pair<Basis> } : {}),
     ...(before.plan !== after.plan && !same(before.plan, after.plan) ? { plan: [before.plan, after.plan] as Pair<SavedPlan | null> } : {}),
     ...(text ? { inquiryText: text } : {}),
+    ...(answers.length ? { reportAnswers: answers } : {}),
   }
-  const changed = edits.length || manual.length || added.length || entry.tax || entry.selection || entry.basis || entry.plan || entry.inquiryText
+  const changed = edits.length || manual.length || added.length || entry.tax || entry.selection || entry.basis || entry.plan || entry.inquiryText || entry.reportAnswers || entry.exclusions
   if (!changed && !entry.external.length) return null
   return entry
 }
@@ -114,7 +131,7 @@ export function pushUndo(list: readonly UndoEntry[], entry: UndoEntry): UndoEntr
 
 /** 取り消せる記録か（取り消した・中身が無い・戻す値が無いものは取り消せない） */
 export const canUndo = (e: UndoEntry) =>
-  !e.undone && !e.tooLarge && (e.edits.length > 0 || e.manual.length > 0 || e.added.length > 0 || !!e.tax || !!e.selection || !!e.basis || !!e.plan || !!e.inquiryText)
+  !e.undone && !e.tooLarge && (e.edits.length > 0 || e.manual.length > 0 || e.added.length > 0 || !!e.tax || !!e.selection || !!e.basis || !!e.plan || !!e.inquiryText || !!e.reportAnswers?.length || !!e.exclusions?.length)
 
 export type UndoResult<W> = { work: W; reverted: number; kept: number; planChanged: boolean }
 
@@ -168,7 +185,24 @@ export function undo<W extends Undoable & { undo: readonly UndoEntry[] }>(work: 
     reverted++
     return pair[0]
   }
-  const plan = revert(entry.plan, work.plan)
+  const answersAfter = { ...work.reportAnswers }
+  for (const [k, before, after] of entry.reportAnswers ?? []) {
+    if ((answersAfter[k] ?? null) !== after) {
+      kept++
+      continue
+    }
+    if (before === null) delete answersAfter[k]
+    else answersAfter[k] = before
+    reverted++
+  }
+  let plan = revert(entry.plan, work.plan)
+  // 聞き返しの答えで足した出さない行の決まりは、今の計画からそれだけを外す（もう無いものは数える）
+  if (entry.exclusions?.length && plan) {
+    const present = entry.exclusions.filter((x) => hasExclusion(plan!.plan.rowFilter, x))
+    kept += entry.exclusions.length - present.length
+    reverted += present.length
+    if (present.length) plan = { ...plan, plan: { ...plan.plan, rowFilter: withExclusions(plan.plan.rowFilter, [], present) } }
+  }
   const tax = revert(entry.tax, { tax: work.tax, taxBy: work.taxBy })
   // 問い合わせの文面は質問ごと・件名・前置きごとに戻す（あとで直した文は残す）
   const text = entry.inquiryText ? revertInquiryText(work.inquiryText, entry.inquiryText) : { text: work.inquiryText, reverted: 0, kept: 0 }
@@ -183,9 +217,13 @@ export function undo<W extends Undoable & { undo: readonly UndoEntry[] }>(work: 
     basis: revert(entry.basis, work.basis),
     plan,
     inquiryText: text.text,
+    reportAnswers: answersAfter,
     undo: work.undo.map((e) => (e.id === entryId ? { ...e, undone: true as const } : e)),
   }
-  return { work: setTax(next, tax.tax, tax.taxBy), reverted, kept, planChanged: plan !== work.plan }
+  // 聞き返しの答えの記録は、答え1つを1件と数える（答えで変えた設定・計画は答えの一部）
+  const answers = entry.reportAnswers?.length ? entry.reportAnswers.filter(([k, , after]) => (work.reportAnswers[k] ?? null) === after).length : null
+  const counts = answers === null ? { reverted, kept } : { reverted: answers, kept: entry.reportAnswers!.length - answers }
+  return { work: setTax(next, tax.tax, tax.taxBy), ...counts, planChanged: plan !== work.plan }
 }
 
 const pair = <T extends z.ZodType>(s: T) => z.tuple([s, s])
@@ -204,6 +242,8 @@ export const undoEntrySchema: z.ZodType<UndoEntry> = z.object({
   basis: pair(basisSchema).optional(),
   plan: pair(savedPlanSchema.nullable()).optional(),
   inquiryText: inquiryTextDiffSchema.optional(),
+  reportAnswers: z.array(z.tuple([z.string(), z.string().max(100).nullable(), z.string().max(100).nullable()])).optional(),
+  exclusions: z.array(valueFilterSchema).max(20).optional(),
   external: z.array(z.enum(["rule", "location"])),
   tooLarge: z.literal(true).optional(),
   undone: z.literal(true).optional(),

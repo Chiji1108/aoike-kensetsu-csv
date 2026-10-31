@@ -1,8 +1,9 @@
 import { useMemo } from "react"
-import { CircleAlert, CircleCheck, Download, FileSpreadsheet, TriangleAlert } from "lucide-react"
+import { ChevronRight, CircleAlert, CircleCheck, Download, FileSpreadsheet, TriangleAlert } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { GyoshuSummaryTable } from "@/components/convert/summary-panel"
+import { remainingSteps, type NextStepsData, type StepId } from "@/components/cases/next-steps"
 import { exportCheck, issueLabel } from "@/lib/cases/export-check"
 import type { RowResult } from "@/lib/convert/convert"
 import { RULE7_TAX_LABELS, type Basis, type GyoshuSummary, type Rule7Tax } from "@/lib/convert/koji-selection"
@@ -27,6 +28,8 @@ export function ExportDialog({
   onBasisChange,
   onExcel,
   onCsv,
+  steps,
+  onGo,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -37,6 +40,9 @@ export function ExportDialog({
   onBasisChange: (code: string, side: "total" | "motouke", value: number | undefined) => void
   onExcel: () => void
   onCsv: () => void
+  /** 次にやること（書き出す前に残っていることを、作業の画面の上・書き出すのツールチップと同じ言葉で出す。押すとそこへ移る） */
+  steps: NextStepsData | null
+  onGo: (id: StepId) => void
 }) {
   const check = useMemo(() => (open ? exportCheck(output, summary, basis) : null), [open, output, summary, basis])
   return (
@@ -50,6 +56,7 @@ export function ExportDialog({
         </DialogHeader>
         {check && (
           <div className="grid gap-3 text-sm">
+            <Remaining steps={steps} onGo={onGo} />
             <ul className="grid gap-1.5" data-testid="export-checks">
               <CheckLine ok={check.short.length === 0} testId="export-rule7">
                 {check.short.length === 0
@@ -104,6 +111,32 @@ export function ExportDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  )
+}
+
+/** 書き出す前に残っていること（次にやることと同じ言葉）。無ければ済みと出す */
+function Remaining({ steps, onGo }: { steps: NextStepsData | null; onGo: (id: StepId) => void }) {
+  const left = steps ? remainingSteps(steps) : []
+  if (!left.length)
+    return (
+      <p className="flex items-center gap-2 text-emerald-800" data-testid="export-remaining" data-left="0">
+        <CircleCheck className="size-4 text-emerald-600" /> 残りはありません
+      </p>
+    )
+  return (
+    <div className="flex flex-wrap items-center gap-1 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-amber-900" data-testid="export-remaining" data-left={left.length}>
+      <TriangleAlert className="mr-1 size-4 text-amber-600" />
+      <span className="mr-1">残り:</span>
+      {left.map((r, i) => (
+        <span key={r.id} className="flex items-center gap-1">
+          {i > 0 && <ChevronRight className="size-3 opacity-60" aria-hidden />}
+          <Button size="xs" variant="outline" className="bg-background" onClick={() => onGo(r.id)} data-testid={`export-remaining-${r.id}`}>
+            {r.text}
+          </Button>
+        </span>
+      ))}
+      <span className="basis-full pt-0.5 text-xs text-amber-800/80">残っていても書き出せます。</span>
+    </div>
   )
 }
 

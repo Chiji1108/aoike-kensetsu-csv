@@ -16,40 +16,81 @@ export function cellClass(c: CellResult) {
   return needsReview(c) ? STATUS.warning.cell : STATUS[c.status].cell
 }
 
-/** 表の絞り込み。確かめる（CSV に載せる行のうち、確かめるセルがある行）か、すべて（載せない行も） */
-export type RowFilter = "check" | "all"
+/** 表の絞り込み。直す（CSV に載せる行のうち、職員が直すセルがある行）か、すべて（載せない行も） */
+export type RowFilter = "fix" | "all"
 
 /** AI が推定した値（AI 自身も自信がない値・AI が補った値） */
 const aiGuess = (c: CellResult) => c.guessed === true || (c.status === "ai" && !!c.message)
 
-/** 確かめるセル: エラー・要確認・AI の推定・顧客への問い合わせが要る（field はそのセルの項目） */
-export const needsCheck = (c: CellResult, field: string) => c.status === "error" || needsReview(c) || aiGuess(c) || askReasonOf(field, c) !== undefined
-
 /** 元データと値が違うセル（ルール・AIで変換、補った値、手直し、顧客の回答）。表のセルの印（data-changed）に使う */
 export const changedCell = (c: CellResult) => c.value !== c.original || c.by === "staff" || c.by === "customer" || c.by === "excel" || c.by === "location"
 
+/**
+ * 職員が直すセルの理由。empty: 必須が空、error: 値がエラー、review: 要確認、guess: AI の推定。
+ * 顧客への問い合わせに回るセル（問い合わせのタブにあり、外していないもの）は ask（直さなくてよい。顧客の答えで埋まる）
+ */
+export type FixKind = "empty" | "error" | "review" | "guess"
+export type CellFixKind = FixKind | "ask"
+
+export const FIX_LABELS: Record<FixKind, string> = { empty: "必須が空", error: "エラー", review: "要確認", guess: "AI の推定" }
+export const FIX_KINDS = Object.keys(FIX_LABELS) as FixKind[]
+
+/**
+ * セルを誰がどう片付けるか（片付けることが無ければ undefined）。問い合わせに回るもの（askReasonOf）は顧客に聞き、ほかは職員が直す。
+ * asked は問い合わせを外していないか（外した問い合わせは、空の必須なら直す・推定なら職員が確かめる・空の任意の項目なら片付いた）
+ */
+export function cellFix(c: CellResult, field: string, asked: boolean): CellFixKind | undefined {
+  // 顧客に聞くかは問い合わせを集めるのと同じ決まり（askReasonOf。値のあるエラーは聞かない）。1つのセルは直すか聞くかの片方にだけ数える
+  if (askReasonOf(field, c) && asked) return "ask"
+  if (c.status === "error") return c.value !== "" ? "error" : "empty"
+  if (aiGuess(c)) return "guess"
+  if (needsReview(c)) return "review"
+  return undefined
+}
+
+/** 行の片付けること: 職員が直すセル（fixes）と、顧客に聞くセルの数（ask） */
+export type RowFix<F extends string = string> = { fixes: { field: F; kind: FixKind }[]; ask: number }
+
+/** 行の片付けること。isAsked(field) はそのセルの問い合わせを外していないか */
+export function rowFix<F extends string>(row: RowResult<F>, isAsked: (field: F) => boolean): RowFix<F> {
+  const fixes: RowFix<F>["fixes"] = []
+  let ask = 0
+  for (const [field, c] of Object.entries<CellResult>(row.cells) as [F, CellResult][]) {
+    const kind = cellFix(c, field, isAsked(field))
+    if (kind === "ask") ask++
+    else if (kind) fixes.push({ field, kind })
+  }
+  return { fixes, ask }
+}
+
+export const NO_FIX: RowFix<never> = { fixes: [], ask: 0 }
+
+/** 表の絞り込みの状態。reason は直すの中の理由、ask は計画の聞き返しの対象の行だけ（載せない行も） */
+export type TableFilter = { kind: RowFilter; reason?: FixKind; ask?: string }
+
 export const ROW_FILTERS: Record<RowFilter, { label: string; empty: string }> = {
-  check: { label: "確かめる", empty: "確かめる行" },
+  fix: { label: "直す", empty: "直す行" },
   all: { label: "すべて", empty: "行" },
 }
 
-/** 行に確かめるセルがあるか */
-export function rowNeedsCheck<F extends string>(row: RowResult<F>) {
-  return Object.entries<CellResult>(row.cells).some(([field, c]) => needsCheck(c, field))
+/** 行がその絞り込みに出るか。直すは CSV に載せる行だけ（載せない行は「すべて」でだけ見える）。asked は聞き返しの対象の行か */
+export function inFilter<F extends string>(filter: TableFilter, fix: RowFix<F>, included: boolean, asked: (key: string) => boolean, key: string) {
+  if (filter.ask) return asked(key)
+  if (filter.kind === "all") return true
+  return included && (filter.reason ? fix.fixes.some((f) => f.kind === filter.reason) : fix.fixes.length > 0)
 }
 
-/** 行がその絞り込みに出るか。確かめるは CSV に載せる行だけ（載せない行は「すべて」でだけ見える） */
-export function inFilter<F extends string>(filter: RowFilter, row: RowResult<F>, included: boolean, check = rowNeedsCheck(row)) {
-  return filter === "all" || (included && check)
-}
+/** 直す行の数と、理由ごとの行の数（1行に理由が複数あれば、それぞれに数える）。表・次にやること・書き出すの確認で同じ数を使う */
+export type FixCounts = { rows: number; byKind: Record<FixKind, number>; all: number }
 
-/** 絞り込みごとの行数（表に出る行の数と同じ） */
-export function countRowFilters<F extends string>(
-  rows: readonly RowResult<F>[],
-  inclusion: ReadonlyMap<string, { included: boolean }>,
-  checks?: ReadonlyMap<string, boolean>,
-): Record<RowFilter, number> {
-  let check = 0
-  for (const r of rows) if (inFilter("check", r, inclusion.get(r.key)?.included ?? false, checks?.get(r.key) ?? rowNeedsCheck(r))) check++
-  return { check, all: rows.length }
+export function countFixes<F extends string>(rows: readonly RowResult<F>[], inclusion: ReadonlyMap<string, { included: boolean }>, fixes: ReadonlyMap<string, RowFix<F>>): FixCounts {
+  const byKind = Object.fromEntries(FIX_KINDS.map((k) => [k, 0])) as Record<FixKind, number>
+  let n = 0
+  for (const r of rows) {
+    const f = fixes.get(r.key)
+    if (!inclusion.get(r.key)?.included || !f?.fixes.length) continue
+    n++
+    for (const k of new Set(f.fixes.map((x) => x.kind))) byKind[k]++
+  }
+  return { rows: n, byKind, all: rows.length }
 }

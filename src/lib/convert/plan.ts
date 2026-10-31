@@ -3,7 +3,7 @@ import { CODE_SETS } from "../spec/code-sets"
 import type { CsvSpec } from "../spec/types"
 import type { ValueType } from "../spec/types"
 import type { PlanExcerpt } from "./prompt"
-import { copiedFrom, rowIsBlank, sameHeader } from "./sources"
+import { askTargets, collectSourceRows, copiedFrom, rowIsBlank, sameHeader } from "./sources"
 import { TRANSFORM_IDS, getTransform, preferredTransform, transformFits, type TransformId } from "./transforms"
 
 /**
@@ -26,8 +26,57 @@ export type FieldPlan =
   | { kind: "constant"; value: string; reason: string }
   | { kind: "missing" }
 
-/** 出力しない行。excludeColumns の列に値がある行を除く（例:「工事実績から除外」列） */
-export type RowFilter = { excludeHidden: boolean; excludeColumns: number[] }
+/**
+ * 出力しない行。excludeColumns の列に値がある行を除く（例:「工事実績から除外」列）。excludeValues は列の値がそのどれかの行を除く
+ * （例: 区分の列が「未成」。計画の聞き返しへの職員の答え）。excludeValues は前の版の保存済みの計画には無い
+ */
+export type RowFilter = { excludeHidden: boolean; excludeColumns: number[]; excludeValues?: ValueFilter[] }
+
+/** 列の値が values のどれかか（前後の空白と全角・半角の違いは見ない） */
+export type ValueFilter = { column: number; values: string[] }
+
+/**
+ * 計画の AI の聞き返し（職員が答えを選ぶ）。対象は、column の列の値が values のどれか（values が空なら値がある）の行。
+ * unfinished: 未成の工事（完成だけ載せるか、未成も載せるか）。doubtful: 載せるか迷う行（メモ・重複の印など。載せないか、載せるか）
+ */
+export const PLAN_ASK_KINDS = ["unfinished", "doubtful"] as const
+export type PlanAskKind = (typeof PLAN_ASK_KINDS)[number]
+export type PlanAsk = { kind: PlanAskKind; text: string; column: number; values: string[] }
+
+const normalizeCell = (v: string) => v.normalize("NFKC").trim()
+
+/** 値の集まりが同じか（順と、前後の空白・全角半角の違いは見ない） */
+const sameValues = (a: readonly string[], b: readonly string[]) => {
+  const x = new Set(a.map(normalizeCell))
+  const y = new Set(b.map(normalizeCell))
+  return x.size === y.size && [...x].every((v) => y.has(v))
+}
+
+/** 行の除外（values が空なら「値があれば出さない列」、あれば「この値なら出さない列」）がもう計画にあるか */
+export function hasExclusion(rf: RowFilter, x: ValueFilter) {
+  if (!x.values.length) return rf.excludeColumns.includes(x.column)
+  return (rf.excludeValues ?? []).some((f) => f.column === x.column && sameValues(f.values, x.values))
+}
+
+/** 行の除外を足す・外す（もうあるものは足さず、無いものは外さない）。計画の聞き返しの答えとチャットの set_plan で同じ */
+export function withExclusions(rf: RowFilter, add: readonly ValueFilter[], remove: readonly ValueFilter[]): RowFilter {
+  let excludeColumns = rf.excludeColumns.filter((c) => !remove.some((x) => !x.values.length && x.column === c))
+  let excludeValues = (rf.excludeValues ?? []).filter((f) => !remove.some((x) => x.values.length && x.column === f.column && sameValues(x.values, f.values)))
+  for (const x of add) {
+    const now = { ...rf, excludeColumns, excludeValues }
+    if (hasExclusion(now, x)) continue
+    if (x.values.length) excludeValues = [...excludeValues, { column: x.column, values: [...x.values] }]
+    else excludeColumns = [...excludeColumns, x.column].sort((a, b) => a - b)
+  }
+  const { excludeValues: _, ...rest } = rf
+  return { ...rest, excludeColumns, ...(excludeValues.length ? { excludeValues } : {}) }
+}
+
+/** 行（元の Excel のセル）が聞き返し・値の除外の対象か */
+export function matchesValues(f: { column: number; values: readonly string[] }, cells: readonly string[]) {
+  const v = normalizeCell(cells[f.column] ?? "")
+  return f.values.length ? f.values.some((x) => normalizeCell(x) === v) : v !== ""
+}
 
 /** 行・列の番号はすべて 0 始まり（画面では Excel の行番号・列記号で表示する） */
 export type MappingPlan<F extends string> = {
@@ -46,7 +95,10 @@ export type MappingPlan<F extends string> = {
   amountTax?: "included" | "excluded"
   fields: Record<F, FieldPlan>
   unusedColumns: { column: number; header: string; reason: string }[]
+  /** 知らせ（職員が読むだけで、答えは要らない） */
   notes: string[]
+  /** 聞き返し（職員が答えを選ぶ）。前の版の保存済みの計画には無い（文の notes だけ） */
+  asks?: PlanAsk[]
 }
 
 export function columnCount(grid: SheetGrid) {
@@ -98,6 +150,8 @@ export function mappingPlanWireSchema<F extends string>(spec: CsvSpec<F>) {
     fields: z.object(fields),
     unusedColumns: z.array(z.object({ column: z.number().int(), header: z.string(), reason: z.string() })),
     notes: z.array(z.string()),
+    // 聞き返しの種類は決まったものだけ（種類ごとに答えの選択肢と反映のしかたが決まっている）。それ以外は notes（知らせ）に書かせる
+    asks: z.array(z.object({ kind: z.enum(PLAN_ASK_KINDS), text: z.string(), column: z.number().int(), values: z.array(z.string()) })),
   })
 }
 
@@ -108,6 +162,10 @@ export function mappingPlanWireSchema<F extends string>(spec: CsvSpec<F>) {
  * - 行・列の範囲外、項目の型に合わない変換は、選んだシートについて見出しから推定した計画（fallbackFor）の値に戻す。
  * 直したことは notes に残す。
  */
+/** 聞き返しの数と、1つの聞き返しの値の数の上限 */
+const MAX_ASKS = 5
+const MAX_ASK_VALUES = 20
+
 export function acceptAiPlan<F extends string>(
   spec: CsvSpec<F>,
   workbook: readonly SheetGrid[],
@@ -169,24 +227,37 @@ export function acceptAiPlan<F extends string>(
   }
 
   const sheetNote = workbook.length > 1 ? [`使うシート「${sheets.join("」「")}」: ${wire.sheetReason.trim() || "（AI の理由なし）"}`] : []
-  return {
-    ok: true,
-    plan: {
-      sheets,
-      headerRow,
-      dataRows,
-      // 合計・小計の行はルールでも見つける（AI は抜粋しか見ないので、途中の小計を見落とす）
-      skipRows: rowsOk
-        ? [...new Set([...wire.skipRows, ...fallback.skipRows])].filter((r) => r >= dataRows.start && r <= dataRows.end).sort((a, b) => a - b)
-        : fallback.skipRows,
-      rowFilter: { ...fallback.rowFilter, excludeColumns: [...new Set(wire.excludeColumns)].filter((c) => c >= 0 && c < nCols) },
-      amountUnit: wire.amountUnit,
-      ...(wire.amountTax !== "unknown" ? { amountTax: wire.amountTax } : {}),
-      fields,
-      unusedColumns: wire.unusedColumns.filter((c) => c.column >= 0 && c.column < nCols),
-      notes: [...sheetNote, ...wire.notes, ...problems],
-    },
+  const plan: MappingPlan<F> = {
+    sheets,
+    headerRow,
+    dataRows,
+    // 合計・小計の行はルールでも見つける（AI は抜粋しか見ないので、途中の小計を見落とす）
+    skipRows: rowsOk
+      ? [...new Set([...wire.skipRows, ...fallback.skipRows])].filter((r) => r >= dataRows.start && r <= dataRows.end).sort((a, b) => a - b)
+      : fallback.skipRows,
+    rowFilter: { ...fallback.rowFilter, excludeColumns: [...new Set(wire.excludeColumns)].filter((c) => c >= 0 && c < nCols) },
+    amountUnit: wire.amountUnit,
+    ...(wire.amountTax !== "unknown" ? { amountTax: wire.amountTax } : {}),
+    fields,
+    unusedColumns: wire.unusedColumns.filter((c) => c.column >= 0 && c.column < nCols),
+    notes: [...sheetNote, ...wire.notes, ...problems],
+    asks: [],
   }
+
+  // 聞き返しは、列がシートの中で、対象の行（画面と同じ数え方: 使う全シートの行のうち、ほかの決まりで出さない行を除く）が1つでもあり、
+  // 答えがまだ決まっていない（もう同じ除外がある）ときだけ聞く。そうでなければ文だけを知らせにする
+  const sources = collectSourceRows(workbook, plan).rows
+  const asks: PlanAsk[] = []
+  const askNotes: string[] = []
+  for (const a of wire.asks) {
+    const text = a.text.trim()
+    const values = [...new Set(a.values.map(normalizeCell).filter(Boolean))].slice(0, MAX_ASK_VALUES)
+    const ask = { kind: a.kind, text, column: a.column, values }
+    const usable = text && a.column >= 0 && a.column < nCols && asks.length < MAX_ASKS && !hasExclusion(plan.rowFilter, ask) && askTargets(ask, sources, plan.rowFilter).length > 0
+    if (usable) asks.push(ask)
+    else if (text) askNotes.push(text)
+  }
+  return { ok: true, plan: { ...plan, notes: [...sheetNote, ...wire.notes, ...askNotes, ...problems], asks } }
 }
 
 /**
