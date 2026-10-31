@@ -105,6 +105,20 @@ const ASK_KINDS: Record<PlanAskKind, { label: string; options: { value: "exclude
 }
 /** 報告の聞き返しの答えの取り消しの記録（cases/undo.ts）の印 */
 const reportUndoId = (questionId: string) => `report:${questionId}`
+
+/** 計画の聞き返しの対象の行を、計画が今出さないか（答えの「載せない」側は計画の行の除外そのもの。答えを別に持たないので、計画と食い違わない） */
+function askExcluded(ask: PlanAsk, rf: Plan["rowFilter"]) {
+  if (!ask.values.length) return rf.excludeColumns.includes(ask.column)
+  return (rf.excludeValues ?? []).some((f) => f.column === ask.column && f.values.length === ask.values.length && f.values.every((v, i) => v === ask.values[i]))
+}
+
+/** 計画の聞き返しの「載せない」を足す・外す計画の差分（値が無ければ「値があれば出さない列」、あれば「この値なら出さない列」） */
+function askPatch(ask: PlanAsk, rf: Plan["rowFilter"], exclude: boolean): PlanPatch {
+  const reason = ASK_KINDS[ask.kind].label
+  if (!ask.values.length) return { excludeColumns: exclude ? [...new Set([...rf.excludeColumns, ask.column])] : rf.excludeColumns.filter((c) => c !== ask.column), reason }
+  const others = (rf.excludeValues ?? []).filter((f) => !askExcluded(ask, { ...rf, excludeValues: [f] }))
+  return { excludeValues: exclude ? [...others, { column: ask.column, values: ask.values }] : others, reason }
+}
 type Plan = MappingPlan<KojiFieldId>
 type Source = { fileId: string; name: string; sheets: SheetGrid[] }
 
@@ -1067,9 +1081,11 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
     // 計画の AI の聞き返し。答えは計画の行の除外（決まった処理）にし、取り消せる
     ...(hasTable
       ? askRows.map((r, i): ReportQuestion => {
-          const kind = ASK_KINDS[planAsks[i]!.kind]
-          const a = work.reportAnswers[r.id]
-          const answered = kind.options.find((o) => o.value === a)?.label ?? null
+          const ask = planAsks[i]!
+          const kind = ASK_KINDS[ask.kind]
+          // 「載せない」側は計画がその行を出さないこと、「載せる」側は職員の答え
+          const value = work.plan && askExcluded(ask, work.plan.plan.rowFilter) ? "exclude" : work.reportAnswers[r.id] === "keep" ? "keep" : null
+          const answered = kind.options.find((o) => o.value === value)?.label ?? null
           return {
             id: r.id,
             text: planAsks[i]!.text,
@@ -1080,14 +1096,13 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
               setFilter({ kind: "all", ask: r.id })
               showTab("table")
             },
-            undo: answered !== null ? undoAnswer(r.id) : null,
+            undo: value === null ? null : () => answerAsk(r.id, null),
           }
         })
       : []),
   ]
   /**
-   * 聞き返しに答える。答えは取り消しの記録（cases/undo.ts）に残す（答えを取り消すと聞き返しを開き直し、変えた設定・計画も戻る）。
-   * 計画の聞き返しで「載せない」側を選んだら、対象の行を計画の行の除外に足して変換し直す（チャットの列の対応の変更と同じ確かめ方）
+   * 聞き返しに答える。税込・税抜の答えは取り消しの記録（cases/undo.ts）に残す（取り消すと聞き返しを開き直し、税の設定も戻る）
    */
   function answerReport(id: string, value: string) {
     if (id === "tax") {
@@ -1096,20 +1111,25 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
       setWork((w) => withUndo(w, { ...setTax(w, next, "staff"), reportAnswers: { ...w.reportAnswers, tax: value === "ask" ? "ask" : next } }, reportUndoId(id), []))
       return
     }
-    const i = askRows.findIndex((r) => r.id === id)
-    const ask = planAsks[i]
-    if (!ask || !work.plan || (value !== "exclude" && value !== "keep")) return
+    if (value === "exclude" || value === "keep") answerAsk(id, value)
+  }
+
+  /**
+   * 計画の聞き返しに答える（null は答えを取り消して聞き直す）。「載せない」側は対象の行を計画の行の除外に足して変換し直し
+   * （チャットの列の対応の変更と同じ確かめ方）、取り消すと外す。「載せる」側は今のまま答えだけを残す
+   */
+  function answerAsk(id: string, value: "exclude" | "keep" | null) {
+    const ask = planAsks[askRows.findIndex((r) => r.id === id)]
+    if (!ask || !work.plan) return
+    const rf = work.plan.plan.rowFilter
+    const exclude = value === "exclude"
     let nextPlan: Plan | null = null
-    if (value === "exclude") {
+    if (exclude !== askExcluded(ask, rf)) {
       if (!grid || !source) {
         toast.error("変換の元のファイルを読んでいます。読み終えてから答えてください")
         return
       }
-      const rf = work.plan.plan.rowFilter
-      const patch: PlanPatch = ask.values.length
-        ? { excludeValues: [...(rf.excludeValues ?? []), { column: ask.column, values: ask.values }], reason: ASK_KINDS[ask.kind].label }
-        : { excludeColumns: [...new Set([...rf.excludeColumns, ask.column])], reason: ASK_KINDS[ask.kind].label }
-      const r = applyPlanPatch(SPEC, work.plan.plan, patch, sheetShapeOf(grid), source.sheets)
+      const r = applyPlanPatch(SPEC, work.plan.plan, askPatch(ask, rf, exclude), sheetShapeOf(grid), source.sheets)
       if (!r.ok) {
         toast.error(`答えを反映できません: ${r.problems.join(" / ")}`)
         return
@@ -1119,8 +1139,9 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
     }
     setWork((w) => {
       if (!w.plan) return w
-      const replanned = nextPlan ? { ...w, plan: { ...w.plan, plan: nextPlan }, converted: false } : w
-      return withUndo(w, { ...replanned, reportAnswers: { ...w.reportAnswers, [id]: value } }, reportUndoId(id), [])
+      const { [id]: _, ...rest } = w.reportAnswers
+      const reportAnswers = value === "keep" ? { ...rest, [id]: "keep" } : rest
+      return { ...w, ...(nextPlan ? { plan: { ...w.plan, plan: nextPlan }, converted: false } : {}), reportAnswers }
     })
   }
   const locationSites = locationSearch.sites

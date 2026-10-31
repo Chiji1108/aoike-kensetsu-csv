@@ -162,10 +162,19 @@ describe("報告の聞き返しの答えの取り消し", () => {
     expect(r.work.tax).toBe("unknown")
     expect(r.work.taxBy).toBe(null)
   })
-  test("何も変えない答え（「未成も載せる」）も記録し、取り消せる", () => {
+  test("答えは聞き返しごとに戻す（あとでほかの聞き返しに答えても、この答えだけを戻せる）", () => {
+    const before = newWork("f")
+    const a1 = { ...before, reportAnswers: { tax: "ask" } }
+    const e1 = undoEntry(before, a1, { id: "e1", proposalId: "report:tax", label: "x", at: 0 })!
+    const a2: CaseWork = { ...a1, reportAnswers: { tax: "ask", other: "keep" }, undo: [e1] }
+    const r = undo(a2, "e1")!
+    expect(r.kept).toBe(0)
+    expect(r.work.reportAnswers).toEqual({ other: "keep" })
+  })
+  test("何も変えない答えも記録し、取り消せる", () => {
     const before = newWork("f")
     const entry = undoEntry(before, { ...before, reportAnswers: { "plan-ask-0": "keep" } }, { id: "u2", proposalId: "report:plan-ask-0", label: "x", at: 0 })!
-    expect(entry.reportAnswers).toEqual([{}, { "plan-ask-0": "keep" }])
+    expect(entry.reportAnswers).toEqual([["plan-ask-0", null, "keep"]])
     const answered: CaseWork = { ...before, reportAnswers: { "plan-ask-0": "keep" }, undo: [entry] }
     const r = undo(answered, "u2")!
     expect(r.work.reportAnswers).toEqual({})

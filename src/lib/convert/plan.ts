@@ -207,7 +207,9 @@ export function acceptAiPlan<F extends string>(
     const text = a.text.trim()
     const values = [...new Set(a.values.map(normalizeCell).filter(Boolean))].slice(0, MAX_ASK_VALUES)
     const ask = { kind: a.kind, text, column: a.column, values }
-    if (text && a.column >= 0 && a.column < nCols && asks.length < MAX_ASKS && dataCells.some((cells) => matchesValues(ask, cells))) asks.push(ask)
+    // 値の無い聞き返しの列をもう除外の列にしていれば、答えは決まっている（聞かない）
+    const decided = !values.length && wire.excludeColumns.includes(a.column)
+    if (text && !decided && a.column >= 0 && a.column < nCols && asks.length < MAX_ASKS && dataCells.some((cells) => matchesValues(ask, cells))) asks.push(ask)
     else if (text) askNotes.push(text)
   }
 

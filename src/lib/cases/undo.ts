@@ -54,7 +54,7 @@ export type UndoEntry = {
   /** 問い合わせの文面（この項目より前の記録には無い） */
   inquiryText?: InquiryTextDiff
   /** 変換の報告の聞き返しへの答え（この項目より前の記録には無い） */
-  reportAnswers?: Pair<Record<string, string>>
+  reportAnswers?: [string, string | null, string | null][]
   /** 戻さない外への書き込み */
   external: ("rule" | "location")[]
   /** 記録が大きすぎて中身を残さなかった（取り消せない） */
@@ -81,6 +81,10 @@ export function undoEntry(
   for (const [k, v] of after.manual) if (before.manual.get(k) !== v) manual.push([k, before.manual.get(k) ?? null, v])
   const had = new Set(before.added.map((a) => a.key))
   const added = after.added.filter((a) => !had.has(a.key))
+  // 聞き返しの答えは聞き返しごと（ほかの聞き返しにあとで答えても、この答えだけを戻せる）
+  const answers: [string, string | null, string | null][] = [...new Set([...Object.keys(before.reportAnswers), ...Object.keys(after.reportAnswers)])].flatMap((k) =>
+    before.reportAnswers[k] === after.reportAnswers[k] ? [] : [[k, before.reportAnswers[k] ?? null, after.reportAnswers[k] ?? null] as [string, string | null, string | null]],
+  )
   const text = before.inquiryText === after.inquiryText ? null : diffInquiryText(before.inquiryText, after.inquiryText)
   const entry: UndoEntry = {
     ...meta,
@@ -95,7 +99,7 @@ export function undoEntry(
     ...(!same(before.basis, after.basis) ? { basis: [before.basis, after.basis] as Pair<Basis> } : {}),
     ...(before.plan !== after.plan && !same(before.plan, after.plan) ? { plan: [before.plan, after.plan] as Pair<SavedPlan | null> } : {}),
     ...(text ? { inquiryText: text } : {}),
-    ...(!same(before.reportAnswers, after.reportAnswers) ? { reportAnswers: [before.reportAnswers, after.reportAnswers] as Pair<Record<string, string>> } : {}),
+    ...(answers.length ? { reportAnswers: answers } : {}),
   }
   const changed = edits.length || manual.length || added.length || entry.tax || entry.selection || entry.basis || entry.plan || entry.inquiryText || entry.reportAnswers
   if (!changed && !entry.external.length) return null
@@ -119,7 +123,7 @@ export function pushUndo(list: readonly UndoEntry[], entry: UndoEntry): UndoEntr
 
 /** 取り消せる記録か（取り消した・中身が無い・戻す値が無いものは取り消せない） */
 export const canUndo = (e: UndoEntry) =>
-  !e.undone && !e.tooLarge && (e.edits.length > 0 || e.manual.length > 0 || e.added.length > 0 || !!e.tax || !!e.selection || !!e.basis || !!e.plan || !!e.inquiryText || !!e.reportAnswers)
+  !e.undone && !e.tooLarge && (e.edits.length > 0 || e.manual.length > 0 || e.added.length > 0 || !!e.tax || !!e.selection || !!e.basis || !!e.plan || !!e.inquiryText || !!e.reportAnswers?.length)
 
 export type UndoResult<W> = { work: W; reverted: number; kept: number; planChanged: boolean }
 
@@ -173,6 +177,16 @@ export function undo<W extends Undoable & { undo: readonly UndoEntry[] }>(work: 
     reverted++
     return pair[0]
   }
+  const answersAfter = { ...work.reportAnswers }
+  for (const [k, before, after] of entry.reportAnswers ?? []) {
+    if ((answersAfter[k] ?? null) !== after) {
+      kept++
+      continue
+    }
+    if (before === null) delete answersAfter[k]
+    else answersAfter[k] = before
+    reverted++
+  }
   const plan = revert(entry.plan, work.plan)
   const tax = revert(entry.tax, { tax: work.tax, taxBy: work.taxBy })
   // 問い合わせの文面は質問ごと・件名・前置きごとに戻す（あとで直した文は残す）
@@ -188,7 +202,7 @@ export function undo<W extends Undoable & { undo: readonly UndoEntry[] }>(work: 
     basis: revert(entry.basis, work.basis),
     plan,
     inquiryText: text.text,
-    reportAnswers: revert(entry.reportAnswers, work.reportAnswers),
+    reportAnswers: answersAfter,
     undo: work.undo.map((e) => (e.id === entryId ? { ...e, undone: true as const } : e)),
   }
   return { work: setTax(next, tax.tax, tax.taxBy), reverted, kept, planChanged: plan !== work.plan }
@@ -210,7 +224,7 @@ export const undoEntrySchema: z.ZodType<UndoEntry> = z.object({
   basis: pair(basisSchema).optional(),
   plan: pair(savedPlanSchema.nullable()).optional(),
   inquiryText: inquiryTextDiffSchema.optional(),
-  reportAnswers: pair(z.record(z.string(), z.string().max(100))).optional(),
+  reportAnswers: z.array(z.tuple([z.string(), z.string().max(100).nullable(), z.string().max(100).nullable()])).optional(),
   external: z.array(z.enum(["rule", "location"])),
   tooLarge: z.literal(true).optional(),
   undone: z.literal(true).optional(),
