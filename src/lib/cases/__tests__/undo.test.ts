@@ -149,3 +149,25 @@ describe("問い合わせの文面の承認の取り消し", () => {
     expect(savedWorkSchema.parse(old).inquiryText).toEqual(EMPTY_INQUIRY_TEXT)
   })
 })
+
+describe("報告の聞き返しの答えの取り消し", () => {
+  test("答え（と答えで変えた税の設定）を記録し、取り消すと聞き返しを開き直す。開き直しても取り消せる", () => {
+    const before = newWork("f")
+    const after = { ...before, tax: "included" as const, taxBy: "staff" as const, reportAnswers: { tax: "included" } }
+    const entry = undoEntry(before, after, { id: "u1", proposalId: "report:tax", label: "report:tax", at: 0 })!
+    expect(canUndo(entry)).toBe(true)
+    const w = { ...after, undo: pushUndo([], entry) }
+    const r = undo(reopen(w), "u1")!
+    expect(r.work.reportAnswers).toEqual({})
+    expect(r.work.tax).toBe("unknown")
+    expect(r.work.taxBy).toBe(null)
+  })
+  test("何も変えない答え（「未成も載せる」）も記録し、取り消せる", () => {
+    const before = newWork("f")
+    const entry = undoEntry(before, { ...before, reportAnswers: { "plan-ask-0": "keep" } }, { id: "u2", proposalId: "report:plan-ask-0", label: "x", at: 0 })!
+    expect(entry.reportAnswers).toEqual([{}, { "plan-ask-0": "keep" }])
+    const answered: CaseWork = { ...before, reportAnswers: { "plan-ask-0": "keep" }, undo: [entry] }
+    const r = undo(answered, "u2")!
+    expect(r.work.reportAnswers).toEqual({})
+  })
+})

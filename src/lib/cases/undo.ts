@@ -27,6 +27,8 @@ export type Undoable = {
   basis: Basis
   plan: SavedPlan | null
   inquiryText: InquiryText
+  /** 変換の報告の聞き返しへの答え（答えを取り消すと聞き返しを開き直す） */
+  reportAnswers: Record<string, string>
 }
 
 type Pair<T> = [before: T, after: T]
@@ -51,6 +53,8 @@ export type UndoEntry = {
   plan?: Pair<SavedPlan | null>
   /** 問い合わせの文面（この項目より前の記録には無い） */
   inquiryText?: InquiryTextDiff
+  /** 変換の報告の聞き返しへの答え（この項目より前の記録には無い） */
+  reportAnswers?: Pair<Record<string, string>>
   /** 戻さない外への書き込み */
   external: ("rule" | "location")[]
   /** 記録が大きすぎて中身を残さなかった（取り消せない） */
@@ -91,8 +95,9 @@ export function undoEntry(
     ...(!same(before.basis, after.basis) ? { basis: [before.basis, after.basis] as Pair<Basis> } : {}),
     ...(before.plan !== after.plan && !same(before.plan, after.plan) ? { plan: [before.plan, after.plan] as Pair<SavedPlan | null> } : {}),
     ...(text ? { inquiryText: text } : {}),
+    ...(!same(before.reportAnswers, after.reportAnswers) ? { reportAnswers: [before.reportAnswers, after.reportAnswers] as Pair<Record<string, string>> } : {}),
   }
-  const changed = edits.length || manual.length || added.length || entry.tax || entry.selection || entry.basis || entry.plan || entry.inquiryText
+  const changed = edits.length || manual.length || added.length || entry.tax || entry.selection || entry.basis || entry.plan || entry.inquiryText || entry.reportAnswers
   if (!changed && !entry.external.length) return null
   return entry
 }
@@ -114,7 +119,7 @@ export function pushUndo(list: readonly UndoEntry[], entry: UndoEntry): UndoEntr
 
 /** 取り消せる記録か（取り消した・中身が無い・戻す値が無いものは取り消せない） */
 export const canUndo = (e: UndoEntry) =>
-  !e.undone && !e.tooLarge && (e.edits.length > 0 || e.manual.length > 0 || e.added.length > 0 || !!e.tax || !!e.selection || !!e.basis || !!e.plan || !!e.inquiryText)
+  !e.undone && !e.tooLarge && (e.edits.length > 0 || e.manual.length > 0 || e.added.length > 0 || !!e.tax || !!e.selection || !!e.basis || !!e.plan || !!e.inquiryText || !!e.reportAnswers)
 
 export type UndoResult<W> = { work: W; reverted: number; kept: number; planChanged: boolean }
 
@@ -183,6 +188,7 @@ export function undo<W extends Undoable & { undo: readonly UndoEntry[] }>(work: 
     basis: revert(entry.basis, work.basis),
     plan,
     inquiryText: text.text,
+    reportAnswers: revert(entry.reportAnswers, work.reportAnswers),
     undo: work.undo.map((e) => (e.id === entryId ? { ...e, undone: true as const } : e)),
   }
   return { work: setTax(next, tax.tax, tax.taxBy), reverted, kept, planChanged: plan !== work.plan }
@@ -204,6 +210,7 @@ export const undoEntrySchema: z.ZodType<UndoEntry> = z.object({
   basis: pair(basisSchema).optional(),
   plan: pair(savedPlanSchema.nullable()).optional(),
   inquiryText: inquiryTextDiffSchema.optional(),
+  reportAnswers: pair(z.record(z.string(), z.string().max(100))).optional(),
   external: z.array(z.enum(["rule", "location"])),
   tooLarge: z.literal(true).optional(),
   undone: z.literal(true).optional(),
