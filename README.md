@@ -293,7 +293,7 @@ src/
     convert/                  結果の表・業種ごとの合計・問い合わせのパネル
     cases/                    削除の確認・案件の状態の自動保存
     chat/                     チャット欄・変更案（承認の一覧・聞き返し）・返事の Markdown（Streamdown）
-    ui/                       shadcn/ui
+    ui/                       shadcn/ui（`bunx shadcn add` は base-nova の部品に `import { cn } from "cn"` を書き、`cn` の依存を足すので、`@/lib/utils` に直して依存は足さない）
   server/
     ai.ts                     Claude を呼ぶサーバー関数（列の計画・値の判断）
     cases.ts                  顧客・案件・削除のサーバー関数
