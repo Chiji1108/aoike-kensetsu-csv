@@ -20,7 +20,7 @@ const rows = [
   kojiRow({ ...base, client: suzuki, workName: `${suzuki}様邸改修工事`, amount: "3000" }, 2),
   kojiRow({ ...base, client: "株式会社　テスト", workName: "テストビル電気工事", amount: "1000" }, 3),
 ]
-const table = { rows, added: [], edits: new Map(), replacements: {}, manual: new Map(), tax: "excluded" as const, basis: {}, rule7Tax: "excluded" as const, selection: "all" as const, dismissed: new Set<string>(), inquiryText: EMPTY_INQUIRY_TEXT }
+const table = { rows, added: [], edits: new Map(), replacements: {}, manual: new Map(), tax: "excluded" as const, basis: {}, rule7Tax: "excluded" as const, selection: "all" as const, rounding: "floor" as const, dismissed: new Set<string>(), inquiryText: EMPTY_INQUIRY_TEXT }
 
 /** 匿名化の決まった応答（変換のテストと同じ）: 注文者は全体、工事名は「様邸」「邸」の前を個人名として印にする。asked に聞いた値を溜める */
 function cannedAnonymize(asked: string[] = []): AnonymizeCaller {
@@ -177,7 +177,7 @@ describe("チャットの道具（決まった入力で）", () => {
     expect(state.pending).toEqual([
       { kind: "rule", scope: "customer", text: "注文者の株式会社は㈱にする", source: "chat" },
       { kind: "rule", scope: "customer", text: "完成年月は引渡日", source: "chat" },
-      { kind: "settings", tax: "included", selection: "rule7", basis: undefined },
+      { kind: "settings", tax: "included", selection: "rule7" },
     ])
   })
 
@@ -303,6 +303,24 @@ describe("列の対応を直す（set_plan）・ボタン（offer_action）", ()
   }
   const shape = { rows: 21, columns: 8 }
 
+  test("set_selection の千円未満の扱いは変更案にするが、承認するまで案件の扱いは変えない（この指示の表も今の扱いのまま）。今と同じ値だけなら変更案にしない", async () => {
+    const state = newTurnState(table)
+    const tools = chatTools(state)
+    const res = await call(tools, "set_selection", { rounding: "round", selection: "rule7" })
+    expect(res).toMatchObject({ ok: true, applied: 1, note: expect.stringContaining("承認すると変換し直します") })
+    expect(state.pending).toEqual([{ kind: "settings", selection: "rule7", rounding: "round" }])
+    // ほかの設定はこの指示の表に重ねる。千円未満は重ねない（顧客の回答の変換なども案件の今の扱いのまま）
+    expect([state.current.selection, state.current.rounding]).toEqual(["rule7", "floor"])
+    expect(state.current.rows).toBe(table.rows)
+    // 今と同じ値（ほかの設定も）だけなら変更案にしない
+    expect(await call(tools, "set_selection", { rounding: "floor", tax: "excluded", selection: "rule7" })).toMatchObject({ ok: true, applied: 0, same: true })
+    expect(await call(tools, "set_selection", { basis: {} })).toMatchObject({ same: true })
+    // 一部だけ違えば、違う値だけを変更案にする
+    await call(tools, "set_selection", { tax: "included", selection: "rule7" })
+    expect(state.pending.at(-1)).toEqual({ kind: "settings", tax: "included" })
+    expect(state.pending).toHaveLength(2)
+  })
+
   test("合う差分は変更案にし、表は変えない。続けて出す差分は前の差分を重ねた計画で確かめる", async () => {
     const state = newTurnState(table, undefined, undefined, { plan, shape })
     const tools = chatTools(state)
@@ -343,7 +361,7 @@ describe("顧客の回答を読む（get_inquiries・record_answers）", () => {
     kojiRow({ ...base, client: "株式会社　テスト", workName: "テストビル電気工事", amount: "1000", prefecture: "", place: "" }, 3),
   ]
   const answering = { ...table, rows: asking }
-  const answers = { lookup: fileAddressLookup, rounding: "floor" as const }
+  const answers = { lookup: fileAddressLookup }
 
   test("get_inquiries は今聞いているセルを、行を見分ける値（個人名は記号）と一緒に返す", async () => {
     const out = await call(chatTools(newTurnState({ ...answering, tax: "unknown" }, undefined, undefined, null, answers)), "get_inquiries", {})
@@ -455,7 +473,7 @@ describe("問い合わせの文面（propose_inquiry）", () => {
 
   test("get_inquiries のメモは値と同じ記号で出し、分かっている名前も伏せる。今の質問の文も返す", async () => {
     const withNote = { ...asked, rows: asked.rows.map((r) => (r.key === "s!2" ? { ...r, cells: { ...r.cells, endYm: { ...r.cells.endYm, value: "202409", guessed: true as const, status: "warning" as const, message: `${yamada}様の引渡日から推定（担当 新顔一郎）` } } } : r)) }
-    const review = { turns: async () => [], names: async () => ["新顔一郎"], taken: async () => ({ rules: [], pending: [] }), rounding: "floor" as const }
+    const review = { turns: async () => [], names: async () => ["新顔一郎"], taken: async () => ({ rules: [], pending: [] }) }
     const out = await call(chatTools(newTurnState(withNote, undefined, undefined, null, null, review)), "get_inquiries", {})
     const c = out.cells.find((x: { key: string; field: string }) => x.key === "s!2" && x.field === "endYm")
     expect(c.note).toBe("〔Ａ〕様の引渡日から推定（担当 〔個人名〕）")

@@ -56,7 +56,7 @@ async function staffCheck(db: store.Db) {
       else if (field === "workName") works.push({ client: c.customerId, workName: k.data[2] })
     }
   }
-  const empty = { rows: [], added: [], edits: new Map(), replacements: {}, manual: new Map(), tax: "excluded", basis: {}, rule7Tax: "excluded", selection: "all", dismissed: new Set<string>(), inquiryText: EMPTY_INQUIRY_TEXT } as const
+  const empty = { rows: [], added: [], edits: new Map(), replacements: {}, manual: new Map(), tax: "excluded", basis: {}, rule7Tax: "excluded", selection: "all", rounding: "floor", dismissed: new Set<string>(), inquiryText: EMPTY_INQUIRY_TEXT } as const
   const guard = reviewGuard(empty, persons)
   const [customers, rules] = await Promise.all([store.listCustomers(db), store.rulesForAi(db, null)])
   const names = feedbackNameCheck({ names: [...customers.map((c) => c.name), ...clients], works, known: [rules.global] })

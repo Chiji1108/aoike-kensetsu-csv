@@ -144,7 +144,7 @@ function countKinds(changes: readonly ChatChange[]) {
     n.ask && `問い合わせ ${n.ask}`,
     n.include && `載せる・外す ${n.include}`,
     n.add && `工事を足す ${n.add}`,
-    n.settings && "7割の設定",
+    n.settings && "7割と金額の設定",
     n.rule && `ルールの項目 ${n.rule}`,
     n.location && `工事場所 ${n.location}現場`,
     n.plan && "列の対応",

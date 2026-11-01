@@ -3,7 +3,8 @@ import type { CellEdit, CellEdits } from "../convert/convert"
 import type { Basis, SelectionMode } from "../convert/koji-selection"
 import { savedPlanSchema, valueFilterSchema } from "../convert/plan-schema"
 import { hasExclusion, withExclusions, type ValueFilter } from "../convert/plan"
-import { basisSchema, cellEditSchema, selectionSchema } from "../schemas"
+import { basisSchema, cellEditSchema, roundingSchema, selectionSchema } from "../schemas"
+import type { Rounding } from "../convert/transforms"
 import { setTax, taxSettingSchema, type TaxBy, type TaxSetting } from "./tax"
 import type { AddedRow } from "./added"
 import { addedRowSchema } from "./added"
@@ -26,6 +27,8 @@ export type Undoable = {
   taxBy: TaxBy | null
   selection: SelectionMode
   basis: Basis
+  /** 金額の千円未満の扱い（戻すと変換し直す。行は作業の rounding から作るので、作業の値だけを戻す） */
+  rounding: Rounding
   plan: SavedPlan | null
   inquiryText: InquiryText
   /** 変換の報告の聞き返しへの答え（答えを取り消すと聞き返しを開き直す） */
@@ -51,6 +54,8 @@ export type UndoEntry = {
   tax?: Pair<TaxSetting>
   selection?: Pair<SelectionMode>
   basis?: Pair<Basis>
+  /** 千円未満の扱い（この項目より前の記録には無い） */
+  rounding?: Pair<Rounding>
   plan?: Pair<SavedPlan | null>
   /** 問い合わせの文面（この項目より前の記録には無い） */
   inquiryText?: InquiryTextDiff
@@ -105,11 +110,12 @@ export function undoEntry(
       : {}),
     ...(before.selection !== after.selection ? { selection: [before.selection, after.selection] as Pair<SelectionMode> } : {}),
     ...(!same(before.basis, after.basis) ? { basis: [before.basis, after.basis] as Pair<Basis> } : {}),
+    ...(before.rounding !== after.rounding ? { rounding: [before.rounding, after.rounding] as Pair<Rounding> } : {}),
     ...(before.plan !== after.plan && !same(before.plan, after.plan) ? { plan: [before.plan, after.plan] as Pair<SavedPlan | null> } : {}),
     ...(text ? { inquiryText: text } : {}),
     ...(answers.length ? { reportAnswers: answers } : {}),
   }
-  const changed = edits.length || manual.length || added.length || entry.tax || entry.selection || entry.basis || entry.plan || entry.inquiryText || entry.reportAnswers || entry.exclusions
+  const changed = edits.length || manual.length || added.length || entry.tax || entry.selection || entry.basis || entry.rounding || entry.plan || entry.inquiryText || entry.reportAnswers || entry.exclusions
   if (!changed && !entry.external.length) return null
   return entry
 }
@@ -131,7 +137,7 @@ export function pushUndo(list: readonly UndoEntry[], entry: UndoEntry): UndoEntr
 
 /** 取り消せる記録か（取り消した・中身が無い・戻す値が無いものは取り消せない） */
 export const canUndo = (e: UndoEntry) =>
-  !e.undone && !e.tooLarge && (e.edits.length > 0 || e.manual.length > 0 || e.added.length > 0 || !!e.tax || !!e.selection || !!e.basis || !!e.plan || !!e.inquiryText || !!e.reportAnswers?.length || !!e.exclusions?.length)
+  !e.undone && !e.tooLarge && (e.edits.length > 0 || e.manual.length > 0 || e.added.length > 0 || !!e.tax || !!e.selection || !!e.basis || !!e.rounding || !!e.plan || !!e.inquiryText || !!e.reportAnswers?.length || !!e.exclusions?.length)
 
 export type UndoResult<W> = { work: W; reverted: number; kept: number; planChanged: boolean }
 
@@ -215,6 +221,7 @@ export function undo<W extends Undoable & { undo: readonly UndoEntry[] }>(work: 
     added: work.added.filter((a) => !removed.has(a.key)),
     selection: revert(entry.selection, work.selection),
     basis: revert(entry.basis, work.basis),
+    rounding: revert(entry.rounding, work.rounding),
     plan,
     inquiryText: text.text,
     reportAnswers: answersAfter,
@@ -240,6 +247,7 @@ export const undoEntrySchema: z.ZodType<UndoEntry> = z.object({
   tax: pair(taxSettingSchema).optional(),
   selection: pair(selectionSchema).optional(),
   basis: pair(basisSchema).optional(),
+  rounding: pair(roundingSchema).optional(),
   plan: pair(savedPlanSchema.nullable()).optional(),
   inquiryText: inquiryTextDiffSchema.optional(),
   reportAnswers: z.array(z.tuple([z.string(), z.string().max(100).nullable(), z.string().max(100).nullable()])).optional(),

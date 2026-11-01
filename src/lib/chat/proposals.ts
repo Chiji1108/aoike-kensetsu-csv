@@ -2,7 +2,8 @@ import { z } from "zod"
 import { editKey, type CellEdit, type CellEdits, type RowResult } from "../convert/convert"
 import { addedRowSchema, type AddedRow } from "../cases/added"
 import type { Basis, SelectionMode, TaxMode } from "../convert/koji-selection"
-import { basisSchema, cellEditSchema, fieldIdSchema, legacySelection, selectionSchema, taxSchema } from "../schemas"
+import type { Rounding } from "../convert/transforms"
+import { basisSchema, cellEditSchema, fieldIdSchema, legacySelection, roundingSchema, selectionSchema, taxSchema } from "../schemas"
 import type { KojiFieldId } from "../spec/koji-keireki"
 import { foundSchema, siteRefSchema, SOURCE_LABELS, type Found } from "../location/sites"
 import { planPatchSchema, type PlanPatch } from "../convert/plan-patch"
@@ -28,7 +29,8 @@ export type ChatChange =
    * rowKey は足す行の key（変更案を作るときに決める。承認すると cases/added.ts の AddedRow になり、値は手直しとして重ねる）
    */
   | { kind: "add"; rowKey: string; by: AddedRow["by"]; cells: Partial<Record<KojiFieldId, CellEdit>> }
-  | { kind: "settings"; tax?: TaxMode; selection?: SelectionMode; basis?: Basis }
+  /** 7割と金額の設定（作業の画面の「7割と金額」のタブ）。rounding は金額の千円未満の扱い（承認すると変換し直す。前の変更案には無い） */
+  | { kind: "settings"; tax?: TaxMode; selection?: SelectionMode; basis?: Basis; rounding?: Rounding }
   /** 全体ルール・顧客ルールへの追記（承認すると保存する）。source は足した項目の由来（chat: 職員が頼んだ追記、review: 案件を終えるときの振り返り） */
   | { kind: "rule"; scope: RuleScope; text: string; source: ProposedRuleSource }
   /**
@@ -154,6 +156,8 @@ export type Overlay = {
   taxBy?: TaxBy | null
   basis: Basis
   selection: SelectionMode
+  /** 金額の千円未満の扱い（変えたら行を変換し直すのは重ねる側。案件の画面は作業から変換し直し、チャットの表は reroundRows） */
+  rounding: Rounding
   added: readonly AddedRow[]
   /** 問い合わせの文面（lib/inquiry/text.ts） */
   inquiryText: InquiryText
@@ -166,7 +170,7 @@ export function applyChanges<T extends Overlay>(target: T, edited: readonly RowR
   if (!changes.length) return target
   const edits = new Map(target.edits)
   const manual = new Map(target.manual)
-  let { basis, selection, inquiryText } = target
+  let { basis, selection, rounding, inquiryText } = target
   /** 承認した税の設定（職員が決めた値として、出どころと一緒に書く） */
   let tax: TaxMode | undefined
   const added = [...target.added]
@@ -194,6 +198,7 @@ export function applyChanges<T extends Overlay>(target: T, edited: readonly RowR
         tax = c.tax ?? tax
         selection = c.selection ?? selection
         basis = c.basis ? mergeBasis(basis, c.basis) : basis
+        rounding = c.rounding ?? rounding
         break
       case "location": {
         const message = locationMessage(c)
@@ -216,7 +221,7 @@ export function applyChanges<T extends Overlay>(target: T, edited: readonly RowR
         c satisfies never
     }
   }
-  const next = { ...target, edits, manual, basis, selection, added, inquiryText }
+  const next = { ...target, edits, manual, basis, selection, rounding, added, inquiryText }
   return tax === undefined ? next : setTax(next, tax, "staff")
 }
 
@@ -234,7 +239,14 @@ export const chatChangeSchema: z.ZodType<ChatChange> = z.discriminatedUnion("kin
   z.object({ kind: z.literal("add"), rowKey: addedRowSchema.shape.key, by: addedRowSchema.shape.by, cells: z.partialRecord(fieldIdSchema, cellEditSchema) }),
   // 前の形の変更案（alreadyApplied）も読む
   z
-    .object({ kind: z.literal("settings"), tax: taxSchema.optional(), selection: selectionSchema.optional(), alreadyApplied: z.boolean().optional(), basis: basisSchema.optional() })
+    .object({
+      kind: z.literal("settings"),
+      tax: taxSchema.optional(),
+      selection: selectionSchema.optional(),
+      alreadyApplied: z.boolean().optional(),
+      basis: basisSchema.optional(),
+      rounding: roundingSchema.optional(),
+    })
     .transform(({ alreadyApplied, selection, ...c }) => {
       const s = legacySelection(selection, alreadyApplied)
       return { ...c, ...(s ? { selection: s } : {}) }

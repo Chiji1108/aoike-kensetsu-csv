@@ -10,7 +10,7 @@ import { memoryFeedback } from "../memory"
 const yamada = personToken("山田太郎")
 const base = { gyoshu: "8", motoukeShitauke: "1", prefecture: "東京都", place: "千代田区", engineer: "試験　太郎", startYm: "202404", endYm: "202409", amount: "1000" }
 const rows = [kojiRow({ ...base, client: yamada, workName: `${yamada}邸新築工事` }, 1), kojiRow({ ...base, client: "株式会社　ミドリ商事", workName: "アオバ東ビル電気設備工事" }, 2)]
-const table = { rows, added: [], edits: new Map(), replacements: {}, manual: new Map(), tax: "excluded" as const, basis: {}, rule7Tax: "excluded" as const, selection: "all" as const, dismissed: new Set<string>(), inquiryText: EMPTY_INQUIRY_TEXT }
+const table = { rows, added: [], edits: new Map(), replacements: {}, manual: new Map(), tax: "excluded" as const, basis: {}, rule7Tax: "excluded" as const, selection: "all" as const, rounding: "floor" as const, dismissed: new Set<string>(), inquiryText: EMPTY_INQUIRY_TEXT }
 
 async function call(tools: ReturnType<typeof chatTools>, name: keyof ReturnType<typeof chatTools>, input: unknown) {
   const t = tools[name] as unknown as { execute: (input: unknown, options: unknown) => Promise<string> }

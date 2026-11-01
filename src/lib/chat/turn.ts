@@ -12,7 +12,7 @@ import { applyPlanPatch, beforeOf, describePlanPatch, patchFromInput, planPatchI
 import { CODE_SETS } from "../spec/code-sets"
 import { GYOSHU_GUESS_RULE } from "../convert/gyoshu-guess"
 import type { Basis, SelectionMode, TaxMode } from "../convert/koji-selection"
-import { basisSchema, fieldIdSchema, selectionSchema, taxSchema } from "../schemas"
+import { basisSchema, fieldIdSchema, roundingSchema, selectionSchema, taxSchema } from "../schemas"
 import { MODEL } from "../constants"
 import { fieldLabel, KOJI_ANONYMIZE, KOJI_KEIREKI, type KojiFieldId } from "../spec/koji-keireki"
 import { applyChanges, type ChatChange } from "./proposals"
@@ -79,7 +79,7 @@ ${fileLines || "（なし）"}
 - 変換の元のほかのファイル（技術者の一覧・別の年の表など）も読んで使ってよい（例: 技術者の一覧から配置技術者を埋める）。
 - 個人名は表では「〔Ａ〕」「〔未掲載１〕」の形の記号で出る。値に個人名を入れるときはこの形のまま書く（例:「〔Ａ〕邸新築工事」）。個人名をそのまま書かない。
 - 注文者・工事名に書いた値は、事務所の変換と同じ匿名化で確かめる（個人名は記号にする）。確かめられない値は受け取られない。
-- 7割の設定（税込/税抜・基準額・載せる工事の選び方＝7割ルールか全件か）は set_selection を直接呼ぶ。
+- 7割と金額の設定（税込/税抜・基準額・載せる工事の選び方＝7割ルールか全件か・金額の千円未満の切り捨て/四捨五入）は set_selection を直接呼ぶ。千円未満の扱いは承認すると変換し直す（この指示の get_table の金額は変わらない）。
 - 列の対応（どの列からどの項目を作るか・見出しの行・データの開始・飛ばす行・金額の単位）を変えるときは set_plan を直接呼ぶ（例:「金額は税込の列で」「工事名は B 列と C 列をつなげて」）。全行に同じ直しをセルの変更で当てるより、列の対応で直せるものは set_plan にする。承認すると変換し直す（この指示の get_table の表は変わらない）。使うシートは変えられないので、変えたいときは職員に作業の画面の上のシートの欄で選び直してもらう。職員にどの列を使っているか聞かれたら「この案件」の列の対応で答える。
 - 職員が CSV・Excel を出したい、問い合わせの Excel が欲しい、Excel で直したいと言ったら offer_action でボタンを出す（Excel で直すときも export。書き出した Excel を直してアップロードし直すと表に戻る。書き出す前の確認は画面が出す。あなたはファイルを作らない）。
 - 直したら await check_table({}) で決まった検査（エラー・警告・字数の上限・個人名らしい値・7割）を確かめ、直せるものは直す。
@@ -200,11 +200,10 @@ export type ReviewDeps = {
   turns: () => Promise<readonly ReviewTurn[] | string>
   names: () => Promise<Iterable<string>>
   taken: () => Promise<{ rules: string[]; pending: string[] }>
-  rounding: Rounding
 }
 
-/** record_answers が顧客の回答を値にするのに使うもの（記入用Excelの取り込みと同じ。AI は匿名化の AI を使う） */
-export type AnswerDeps = { lookup: AddressLookup; rounding: Rounding }
+/** record_answers が顧客の回答を値にするのに使うもの（記入用Excelの取り込みと同じ。AI は匿名化の AI を使う。千円未満の扱いは今の表の rounding） */
+export type AnswerDeps = { lookup: AddressLookup }
 
 
 /** 値の判断の AI（server/claude.ts の batchWithClaude と同じ形。usd はその呼び出しの費用） */
@@ -410,9 +409,10 @@ export function chatTools(state: TurnState) {
   const inquiriesOf = (v: TableView) => collectInquiries(v.output, { tax: state.current.tax }).filter((q) => !state.current.dismissed.has(inquiryKey(q)))
   const ruleItem = z.string().min(1).refine((s) => charCount(s) <= MAX_RULE_ITEM_LENGTH, `1項目は${MAX_RULE_ITEM_LENGTH}字まで`)
   const NAME_REFUSAL = "個人名か表の記号（〔Ａ〕〔個人名〕など）が入っている項目があります。何も出していません。名前を挙げずに決まりとして書き直してください。"
-  const push = (tool: string, changes: ChatChange[], summary: string, extra: object = {}) => {
+  /** shown はこの指示の表に重ねる変更（既定は changes。表に重ねない変更〔千円未満の扱い〕を除くときに渡す） */
+  const push = (tool: string, changes: ChatChange[], summary: string, extra: object = {}, shown: ChatChange[] = changes) => {
     state.pending.push(...changes)
-    state.current = applyChanges(state.current, view().edited, changes)
+    state.current = applyChanges(state.current, view().edited, shown)
     state.log.push({ tool, summary })
     return json({ ok: true, applied: changes.length, ...extra, report: checkReport(view(), state.letters) })
   }
@@ -521,15 +521,39 @@ export function chatTools(state: TurnState) {
     }),
     set_selection: tool({
       description:
-        "7割の設定を変える案を出す。tax: 元データの金額が税込(included)・税抜(excluded)・不明(unknown)。selection: 載せる工事の選び方。rule7＝記入例どおり（業種ごとに元請→全体の順に金額の大きい順で7割を超えるまで。軽微な工事は10件まで）、all＝全件を載せる（除外と手動で外した行のほか。7割以上なら件数は自由なので、7割を超えて多く載せてよいときや、顧客がすでに7割で絞ったデータのとき）。basis: 業種コード→{total, motouke}（千円、決算書の完成工事高。税抜・税込はこの案件の7割の計算に合わせる）。",
+        "7割と金額の設定を変える案を出す。tax: 元データの金額が税込(included)・税抜(excluded)・不明(unknown)。selection: 載せる工事の選び方。rule7＝記入例どおり（業種ごとに元請→全体の順に金額の大きい順で7割を超えるまで。軽微な工事は10件まで）、all＝全件を載せる（除外と手動で外した行のほか。7割以上なら件数は自由なので、7割を超えて多く載せてよいときや、顧客がすでに7割で絞ったデータのとき）。basis: 業種コード→{total, motouke}（千円、決算書の完成工事高。税抜・税込はこの案件の7割の計算に合わせる）。rounding: 円の金額を千円にするときの千円未満の扱い（floor＝切り捨て・round＝四捨五入）。",
       inputSchema: z.strictObject({
         tax: taxSchema.optional(),
         selection: selectionSchema.optional(),
         basis: basisSchema.optional(),
+        rounding: roundingSchema.optional(),
       }),
-      execute: counted<{ tax?: TaxMode; selection?: SelectionMode; basis?: Basis }>(({ tax, selection, basis }) =>
-        push("set_selection", [{ kind: "settings", tax, selection, basis }], json({ tax, selection, basis })),
-      ),
+      execute: counted<{ tax?: TaxMode; selection?: SelectionMode; basis?: Basis; rounding?: Rounding }>((input) => {
+        const now = state.current
+        // 今と同じ値は変更案にしない（基準額は重ねたあとが今と同じなら）
+        const basisChanged = !!input.basis && JSON.stringify(applyChanges(now, [], [{ kind: "settings", basis: input.basis }]).basis) !== JSON.stringify(now.basis)
+        const change: Extract<ChatChange, { kind: "settings" }> = {
+          kind: "settings",
+          ...(input.tax && input.tax !== now.tax ? { tax: input.tax } : {}),
+          ...(input.selection && input.selection !== now.selection ? { selection: input.selection } : {}),
+          ...(basisChanged ? { basis: input.basis } : {}),
+          ...(input.rounding && input.rounding !== now.rounding ? { rounding: input.rounding } : {}),
+        }
+        const { kind: _, ...changed } = change
+        if (!Object.keys(changed).length) {
+          state.log.push({ tool: "set_selection", summary: "今と同じ" })
+          return json({ ok: true, applied: 0, same: true, message: "今と同じ設定なので変更案にしていません" })
+        }
+        // 千円未満の扱いは承認するまで案件の扱いを変えない（この指示の表は今の扱いのまま。承認すると画面が変換し直す）
+        const { rounding, ...shown } = change
+        return push(
+          "set_selection",
+          [change],
+          json(changed),
+          rounding ? { note: "千円未満の扱いは承認すると変換し直します（この指示の get_table の表は変わりません）" } : {},
+          Object.keys(shown).length > 1 ? [shown] : [],
+        )
+      }),
     }),
     get_inquiries: tool({
       description:
@@ -611,7 +635,7 @@ export function chatTools(state: TurnState) {
         const report = await readAiAnswers(
           items.map((i) => ({ rowKey: i.key, field: i.field, ...(i.confirm ? { confirm: true as const } : { answer: i.answer! }) })),
           view().shown,
-          { ctx: { rounding: deps.rounding }, lookup: deps.lookup, cache: state.answerCache, callAi, fields: state.plan?.plan.fields ?? {} },
+          { ctx: { rounding: state.current.rounding }, lookup: deps.lookup, cache: state.answerCache, callAi, fields: state.plan?.plan.fields ?? {} },
         )
         const changes = report.edits.map(([key, edit]): ChatChange => {
           const at = key.lastIndexOf(":")
@@ -861,7 +885,7 @@ export function chatTools(state: TurnState) {
         return guarded(async () => {
           state.log.push({ tool: "get_review", summary: `${turns.length}回の指示` })
           const { pending } = await review!.taken()
-          return json({ ...reviewMaterial({ turns, table: state.current, view: view(), rounding: review!.rounding, hide: (await guard()).hide }), pendingReview: pending })
+          return json({ ...reviewMaterial({ turns, table: state.current, view: view(), hide: (await guard()).hide }), pendingReview: pending })
         })
       }),
     }),

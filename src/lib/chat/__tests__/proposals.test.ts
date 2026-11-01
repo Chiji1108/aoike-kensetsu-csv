@@ -8,13 +8,15 @@ import { collectInquiries } from "../../inquiry/inquiry"
 import { z } from "zod"
 import { addedCountAfter, answer, applyChanges, chatChangeSchema, decide, decisionOf, discard, newProposal, proposalRecordSchema, withRecorded, type ChatChange } from "../proposals"
 import { MAX_ADDED_ROWS } from "../../cases/added"
+import { describeChange, describeSettings } from "../describe"
+import type { Rounding } from "../../convert/transforms"
 
 const yamada = personToken("山田太郎")
 const rows = [
   kojiRow({ gyoshu: "8", motoukeShitauke: "1", client: "株式会社テスト", workName: "テストビル電気工事", prefecture: "東京都", place: "千代田区", amount: "5000", engineer: "試験　太郎", startYm: "202404", endYm: "202409" }, 1),
   kojiRow({ gyoshu: "8", motoukeShitauke: "1", client: yamada, workName: `${yamada}邸新築工事`, prefecture: "東京都", place: "港区", amount: "3000", engineer: "試験　太郎", startYm: "202404", endYm: "202409" }, 2),
 ]
-const table = { rows, added: [], edits: new Map(), replacements: {}, manual: new Map(), tax: "excluded" as const, basis: {}, rule7Tax: "excluded" as const, selection: "all" as const, dismissed: new Set<string>(), inquiryText: EMPTY_INQUIRY_TEXT }
+const table = { rows, added: [], edits: new Map(), replacements: {}, manual: new Map(), tax: "excluded" as const, basis: {}, rule7Tax: "excluded" as const, selection: "all" as const, rounding: "floor" as const, dismissed: new Set<string>(), inquiryText: EMPTY_INQUIRY_TEXT }
 
 describe("変更案を表に重ねる", () => {
   test("セル・問い合わせ・入れ外し・7割の設定を、手直し・手動の入れ外し・設定として重ねる（ルールの追記は表を変えない）", () => {
@@ -50,6 +52,24 @@ describe("変更案を表に重ねる", () => {
     const withBasis = { ...table, basis: { "8": { total: 9000, motouke: 7000 }, "9": { total: 100 } } }
     const next = applyChanges(withBasis, deriveTable(withBasis).edited, [{ kind: "settings", basis: { "8": { motouke: 6000 } } }])
     expect(next.basis).toEqual({ "8": { total: 9000, motouke: 6000 }, "9": { total: 100 } })
+  })
+
+  test("千円未満の扱いは設定として重ねる（送られなかった設定は今のまま）。前の変更案（rounding の無い settings）も読める", () => {
+    const floor = { ...table, rounding: "floor" as Rounding }
+    const next = applyChanges(floor, deriveTable(floor).edited, [{ kind: "settings", rounding: "round" }])
+    expect([next.rounding, next.tax, next.selection]).toEqual(["round", "excluded", "all"])
+    expect(applyChanges(next, deriveTable(next).edited, [{ kind: "settings", tax: "included" }]).rounding).toBe("round")
+    expect(chatChangeSchema.parse({ kind: "settings", tax: "included" })).toEqual({ kind: "settings", tax: "included" })
+    expect(chatChangeSchema.parse({ kind: "settings", rounding: "round" })).toEqual({ kind: "settings", rounding: "round" })
+    expect(chatChangeSchema.safeParse({ kind: "settings", rounding: "ceil" }).success).toBe(false)
+    const record = { proposal: newProposal("p0", { kind: "chat", messageId: "m0" }, [], null), changes: [{ kind: "settings", tax: "excluded", selection: "rule7" }] }
+    expect(proposalRecordSchema.parse(JSON.parse(JSON.stringify(record))).changes).toEqual([{ kind: "settings", tax: "excluded", selection: "rule7" }])
+  })
+
+  test("変更案の言葉: 千円未満の扱いを「千円未満: 四捨五入」で出す", () => {
+    expect(describeSettings({ rounding: "round" })).toEqual(["千円未満: 四捨五入"])
+    expect(describeSettings({ tax: "included", rounding: "floor" })).toEqual(["Excel の金額: 税込", "千円未満: 切り捨て"])
+    expect(describeChange({ kind: "settings", rounding: "round" }, deriveTable(table), new Map()).to).toBe("千円未満: 四捨五入")
   })
 
   test("個人名は印のまま持つので、承認する前に記号が付け直されても同じ人になる", () => {
@@ -147,7 +167,7 @@ describe("問い合わせの文面の変更案", () => {
     ]
     expect(z.array(chatChangeSchema).parse(JSON.parse(JSON.stringify(changes)))).toEqual(changes)
     expect(chatChangeSchema.safeParse({ kind: "inquiry", id: "q", text: "", targets: [{ field: "endYm" }] }).success).toBe(false)
-    const target = { edits: new Map(), manual: new Map(), tax: "unknown" as const, basis: {}, selection: "rule7" as const, added: [], inquiryText: EMPTY_INQUIRY_TEXT }
+    const target = { edits: new Map(), manual: new Map(), tax: "unknown" as const, basis: {}, selection: "rule7" as const, rounding: "floor" as const, added: [], inquiryText: EMPTY_INQUIRY_TEXT }
     const applied = applyChanges(target, [], changes)
     expect({ ...applied, inquiryText: target.inquiryText }).toEqual(target)
     expect(applied.inquiryText).toEqual({ subject: "件名", intro: "前置き", questions: [{ id: "q1", text: "この工事は引渡日を完成日としてよいですか。", targets: [{ field: "endYm", reason: "needsReview", keys: ["s!2"] }, { topic: "tax" }], by: "ai" }] })

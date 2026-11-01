@@ -5,9 +5,9 @@ import type { CellEdit } from "../convert/convert"
 import { RULE7_TAX_LABELS, SELECTION_LABELS, TAX_LABELS } from "../convert/koji-selection"
 import { nfkc, removeSpaces } from "../convert/text"
 import { withNames } from "../convert/persons"
-import type { Rounding } from "../convert/transforms"
+import { ROUNDING_LABELS } from "../convert/transforms"
 import { tryParseJson } from "../json"
-import { basisSchema, selectionSchema, taxSchema } from "../schemas"
+import { basisSchema, roundingSchema, selectionSchema, taxSchema } from "../schemas"
 import { KOJI_KEIREKI, type KojiFieldId } from "../spec/koji-keireki"
 import { appliedCount, nameScrubber, namesForCarryover, namesOfCase, NAME_MARK, personalNameTest } from "./carryover"
 import { describeSettings } from "./describe"
@@ -50,9 +50,9 @@ export type ReviewTurn = {
 export const QUIET_TOOLS: ReadonlySet<string> = new Set(["code_execution", "get_table", "check_table", "get_inquiries", "get_review", "list_feedback", "record_feedback"])
 
 const planOutput = z.object({ ok: z.literal(true), changes: z.array(z.string()) })
-const selectionInput = z.object({ tax: taxSchema.optional(), selection: selectionSchema.optional(), basis: basisSchema.optional() })
+const selectionInput = z.object({ tax: taxSchema.optional(), selection: selectionSchema.optional(), basis: basisSchema.optional(), rounding: roundingSchema.optional() })
 /** 変更案を溜めた道具の結果（set_selection。断った結果は記録しない） */
-const pushedOutput = z.object({ ok: z.literal(true) })
+const pushedOutput = z.object({ ok: z.literal(true), applied: z.number().int().positive() })
 const outputOf = (output: unknown) => (typeof output === "string" ? tryParseJson(output) : output)
 
 /** 変更案の承認の数（undo は承認の取り消しの記録。取り消した項目を項目ごとに数える） */
@@ -164,7 +164,7 @@ export const MARK_RE = new RegExp(`〔(?:[Ａ-Ｚ]+|未掲載[０-９0-9]+)〕|$
 /**
  * get_review が AI に返す材料（JSON にする）。turns は reviewTurnsFromUi（照合は指示の記録から作る）。view は table の表（作り直さない）。hide は reviewGuard の hide
  */
-export function reviewMaterial(input: { turns: readonly ReviewTurn[]; table: CaseTable; view: Pick<TableView, "shown" | "output">; rounding: Rounding; hide: (s: string) => string }) {
+export function reviewMaterial(input: { turns: readonly ReviewTurn[]; table: CaseTable; view: Pick<TableView, "shown" | "output">; hide: (s: string) => string }) {
   const { table } = input
   const hide = (s: string, n = MAX_VALUE_CHARS) => cut(input.hide(s), n)
   const turns = input.turns.slice(-MAX_TURNS)
@@ -228,7 +228,7 @@ export function reviewMaterial(input: { turns: readonly ReviewTurn[]; table: Cas
       tax: TAX_LABELS[table.tax],
       selection: SELECTION_LABELS[table.selection],
       rule7Tax: RULE7_TAX_LABELS[table.rule7Tax],
-      rounding: input.rounding === "round" ? "四捨五入" : "切り捨て",
+      rounding: ROUNDING_LABELS[table.rounding],
       basis: Object.keys(table.basis),
     },
     rows: { all: input.view.shown.length, output: input.view.output.length },

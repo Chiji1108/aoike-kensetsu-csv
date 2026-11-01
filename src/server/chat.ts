@@ -12,7 +12,6 @@ import { tryParseJson } from "@/lib/json"
 import { savedAiCacheSchema, savedWorkSchema } from "@/lib/cases/state"
 import { mappingPlanSchema } from "@/lib/convert/plan-schema"
 import { sheetShapeSchema } from "@/lib/convert/plan-patch"
-import { roundingSchema } from "@/lib/schemas"
 import { decisionOf, newProposal, proposalKey, proposalPrefix, proposalRecordSchema, type ProposalRecord } from "@/lib/chat/proposals"
 import { newTurnState, startTurn, systemPrompt, type ContainerFile, type TurnStep } from "@/lib/chat/turn"
 import { tokensOfAiSdk, usdOf } from "@/lib/cost"
@@ -55,8 +54,6 @@ const requestSchema = z.object({
   sourceFileId: z.string().max(64).nullable(),
   /** 今の列の対応と計画の元のシートの大きさ（チャットの set_plan の確かめ。変換の元の表が無い案件は null） */
   plan: z.object({ plan: mappingPlanSchema, shape: sheetShapeSchema }).nullable().default(null),
-  /** 金額の千円未満の扱い（顧客の回答を値にするときの変換の設定。この項目より前の画面は送らないので切り捨て＝新しい案件の初期値） */
-  rounding: roundingSchema.default("floor"),
   carryover: z.boolean().optional(),
   /** 去年の元の Excel の配置技術者の列の値（画面が去年の Excel から読む。去年のコードの個人名を消すのに使う） */
   // 値の長さでは断らない（長い値は名前にしないだけ。lib/chat/carryover.ts の collectNames）
@@ -234,7 +231,7 @@ async function runTurn(request: Request, caseId: string): Promise<Response> {
       guard,
     },
     body.plan,
-    { lookup: serverAddressLookup, rounding: body.rounding },
+    { lookup: serverAddressLookup },
     {
       // 会話は、この指示を受けたときの画面の会話（会話を終えても残る）
       // 保存した作業（画面は振り返りを送る前に保存し終える）の変更案の状態・取り消しの記録と、この指示を受けたときの画面の会話（会話を終えても残る）
@@ -244,7 +241,6 @@ async function runTurn(request: Request, caseId: string): Promise<Response> {
       },
       names: async () => namesOfSaved(await saved()),
       taken: () => takenRules(db, kase.customerId, caseId, saved),
-      rounding: body.rounding,
     },
     { customerName: customer?.name ?? "", otherCustomers },
     {

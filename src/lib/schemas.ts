@@ -1,6 +1,6 @@
 import { z } from "zod"
-import type { CellEdit, Replacements } from "./convert/convert"
-import type { Rounding } from "./convert/transforms"
+import { AMOUNT_TRANSFORMS, type CellEdit, type Replacements } from "./convert/convert"
+import { ROUNDINGS, type Rounding } from "./convert/transforms"
 import { RULE7_TAXES, SELECTION_MODES, type Basis, type Rule7Tax, type SelectionMode, type TaxMode } from "./convert/koji-selection"
 import { KOJI_KEIREKI, type KojiFieldId } from "./spec/koji-keireki"
 
@@ -18,7 +18,7 @@ export const rule7TaxSchema: z.ZodType<Rule7Tax> = z.enum(RULE7_TAXES)
 export const selectionSchema: z.ZodType<SelectionMode> = z.enum(SELECTION_MODES)
 
 /** 金額の千円未満の扱い（切り捨て・四捨五入） */
-export const roundingSchema: z.ZodType<Rounding> = z.enum(["floor", "round"])
+export const roundingSchema: z.ZodType<Rounding> = z.enum(ROUNDINGS)
 
 /**
  * 載せる工事の選び方の、前の保存の形（alreadyApplied: 7割適用済み＝全行を載せる）を今の形（selection）にそろえる。
@@ -38,6 +38,8 @@ export const cellEditSchema: z.ZodType<CellEdit> = z.object({
   guessed: z.literal(true).optional(),
   byAi: z.literal(true).optional(),
   ask: z.literal(true).optional(),
+  // 前の手直しには無い
+  amount: z.object({ raw: z.string().max(100), transform: z.enum(AMOUNT_TRANSFORMS) }).optional(),
 })
 
 export const replacementsSchema: z.ZodType<Replacements<KojiFieldId>> = z.partialRecord(fieldIdSchema, z.record(z.string(), cellEditSchema))

@@ -35,6 +35,7 @@ const table: CaseTable = {
   basis: {},
   rule7Tax: "excluded",
   selection: "all",
+  rounding: "floor",
   dismissed: new Set<string>(),
   inquiryText: EMPTY_INQUIRY_TEXT,
 }
@@ -52,9 +53,11 @@ describe("振り返る指示（画面の会話から）", () => {
       { id: "s1", role: "system", parts: [{ type: "text", text: "会話を終えました" }] },
       user("u2", "全部載せて"),
       assistant("a2", [
-        tool("set_selection", { selection: "all", tax: "excluded" }, JSON.stringify({ ok: true, applied: 1 })),
+        tool("set_selection", { selection: "all", tax: "excluded", rounding: "round" }, JSON.stringify({ ok: true, applied: 1 })),
         // 断られた set_selection（道具の回数を使い切った）は記録しない
         tool("set_selection", { tax: "included" }, JSON.stringify({ ok: false, error: "使い切りました" })),
+        // 今と同じで変更案にしなかった set_selection も記録しない
+        tool("set_selection", { tax: "unknown" }, JSON.stringify({ ok: true, applied: 0, same: true })),
         tool("set_include", {}),
         tool("set_include", {}),
         { type: "data-proposal", data: { id: "p2" } },
@@ -73,7 +76,7 @@ describe("振り返る指示（画面の会話から）", () => {
     const known = (applied: number, count: number, undone = 0) => ({ applied, undone, undoneUnknown: false, count, open: false })
     expect(turns).toEqual([
       { instruction: "完成年月は引渡日にして", proposal: known(1, 1), question: null, plan: ["完成年月: J列（年月）"], selection: [], tools: ["set_plan"] },
-      { instruction: "全部載せて", proposal: known(2, 2, 2), question: null, plan: [], selection: ["Excel の金額: 税抜", "載せる工事: 全件"], tools: ["set_selection", "set_include"] },
+      { instruction: "全部載せて", proposal: known(2, 2, 2), question: null, plan: [], selection: ["Excel の金額: 税抜", "載せる工事: 全件", "千円未満: 四捨五入"], tools: ["set_selection", "set_include"] },
       { instruction: "(仮称)を取って", proposal: known(0, 3), question: { text: "工事名の(仮称)も取ってよいですか", answer: "no" }, plan: [], selection: [], tools: ["ask_staff"] },
       { instruction: "これは何？", proposal: null, question: null, plan: [], selection: [], tools: ["set_plan"] },
       { instruction: "止めた指示", proposal: null, question: null, plan: [], selection: [], tools: [] },
@@ -89,10 +92,10 @@ describe("振り返る指示（画面の会話から）", () => {
     ]
     const [t] = reviewTurnsFromUi(ui, [closed("p1", 3, 1)], undo)
     expect(t!.proposal).toEqual({ applied: 3, undone: 1, undoneUnknown: false, count: 4, open: false })
-    const m = reviewMaterial({ turns: [t!], table, view: deriveTable(table), rounding: "floor", hide: reviewGuard(table).hide })
+    const m = reviewMaterial({ turns: [t!], table, view: deriveTable(table), hide: reviewGuard(table).hide })
     expect(m.instructions[0]!.result).toBe("承認 2/4（1 件は承認を取り消した）")
     const [old] = reviewTurnsFromUi(ui, [closed("p1", 3, 1)], [{ proposalId: "p1", undone: true }])
-    expect(reviewMaterial({ turns: [old!], table, view: deriveTable(table), rounding: "floor", hide: reviewGuard(table).hide }).instructions[0]!.result).toBe("承認 3/4（取り消した項目があるが数は不明）")
+    expect(reviewMaterial({ turns: [old!], table, view: deriveTable(table), hide: reviewGuard(table).hide }).instructions[0]!.result).toBe("承認 3/4（取り消した項目があるが数は不明）")
   })
 })
 
@@ -106,7 +109,7 @@ describe("振り返りの材料", () => {
   ]
 
   test("指示と承認の結果、手直しの項目ごとの数と例（職員・チャットの直しを先に）、置換・入れ外し・設定をまとめ、個人名を伏せる", () => {
-    const m = reviewMaterial({ turns, table, view: deriveTable(table), rounding: "round", hide: reviewGuard(table, ["山田太郎"]).hide })
+    const m = reviewMaterial({ turns, table: { ...table, rounding: "round" }, view: deriveTable(table), hide: reviewGuard(table, ["山田太郎"]).hide })
     expect(m.instructions).toEqual([
       { n: 1, text: "注文者の株式会社は㈱にして（〔個人名〕さんの件も）", result: "承認 2/2", tools: ["set_cells"] },
       { n: 2, text: "配置技術者は〔個人名〕に", result: "却下した", question: "〔個人名〕さんでよいですか", answer: "はい" },
@@ -133,7 +136,7 @@ describe("振り返りの材料", () => {
 
   test("指示が多ければ後ろの分だけ（番号は会話の順のまま）、長い指示は切る", () => {
     const many = Array.from({ length: 70 }, (_, i): ReviewTurn => ({ instruction: i === 69 ? "あ".repeat(2000) : `指示${i + 1}`, proposal: null, question: null, plan: [], selection: [], tools: [] }))
-    const m = reviewMaterial({ turns: many, table, view: deriveTable(table), rounding: "floor", hide: reviewGuard(table).hide })
+    const m = reviewMaterial({ turns: many, table, view: deriveTable(table), hide: reviewGuard(table).hide })
     expect(m.instructions).toHaveLength(60)
     expect(m.instructions[0]!.n).toBe(11)
     expect([...m.instructions.at(-1)!.text].length).toBe(601)
@@ -163,7 +166,6 @@ describe("振り返りの道具（get_review・propose_review）", () => {
     ],
     names: async () => ["佐藤　次郎"],
     taken: async () => ({ rules: ["注文者の株式会社は㈱にする"], pending: ["工事名の読点は取る。"] }),
-    rounding: "floor",
     ...over,
   })
   async function call(tools: ReturnType<typeof chatTools>, name: keyof ReturnType<typeof chatTools>, input: unknown) {

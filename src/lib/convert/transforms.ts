@@ -7,7 +7,11 @@ import { formatYearMonth, parsePeriod, parseYearMonth } from "./dates"
 import { placePersons } from "./persons"
 import { collapseSpaces, matchKey, nfkc, removeSpaces, toFullWidth } from "./text"
 
-export type Rounding = "floor" | "round"
+/** 金額の千円未満の扱い（切り捨て・四捨五入）。並びは作業の画面の選ぶ欄の順 */
+export const ROUNDINGS = ["floor", "round"] as const
+export type Rounding = (typeof ROUNDINGS)[number]
+/** 千円未満の端数の扱いの名前（作業の画面・チャットの変更案・振り返りで同じ言葉） */
+export const ROUNDING_LABELS: Record<Rounding, string> = { floor: "切り捨て", round: "四捨五入" }
 export type TransformContext = {
   rounding: Rounding
   /** 住所の値を引いた結果（address.ts の lookupAddresses）。引いていない値の住所の変換は AI に回す */
@@ -206,7 +210,7 @@ function yenToThousand(yen: number, ctx: TransformContext): RuleOutcome {
   const message =
     remainder === 0
       ? undefined
-      : `千円未満（${remainder}円）を${ctx.rounding === "floor" ? "切り捨て" : "四捨五入"}`
+      : `千円未満（${remainder}円）を${ROUNDING_LABELS[ctx.rounding]}`
   return value(String(thousand), message)
 }
 

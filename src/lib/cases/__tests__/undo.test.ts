@@ -61,6 +61,22 @@ describe("承認の取り消し", () => {
     expect(r2.work.edits.get(editKey("r2", "client"))).toEqual(chat("㈲青池"))
   })
 
+  test("千円未満の扱いの承認も取り消せる（開き直しても）。承認のあとに職員が変えていれば戻さずに数える", () => {
+    const amount = { value: "3500", by: "excel" as const, amount: { raw: "3500.6", transform: "rule.thousandYen" as const } }
+    const w = approve(base, "p1", [{ kind: "settings", rounding: "round" }, { kind: "cell", rowKey: "r1", field: "amount", edit: amount }])
+    expect(w.rounding).toBe("round")
+    // 金額の手直しの千円にする前の値も保存して読み直せる（前の保存の手直しには無い）
+    expect(reopen(w).edits.get(editKey("r1", "amount"))).toEqual(amount)
+    expect(w.undo[0]!.rounding).toEqual(["floor", "round"])
+    expect(canUndo(w.undo[0]!)).toBe(true)
+    const r = undo(reopen(w), "u-p1")!
+    expect([r.work.rounding, r.reverted, r.kept]).toEqual(["floor", 2, 0])
+    const changed = undo({ ...w, rounding: "floor" }, "u-p1")!
+    expect([changed.work.rounding, changed.kept]).toEqual(["floor", 1])
+    // 同じ扱いの承認は記録に残さない
+    expect(approve(base, "p2", [{ kind: "settings", rounding: "floor" }]).undo).toEqual([])
+  })
+
   test("足した行のセルを後から変えていれば、行は外さない", () => {
     let w = approve(base, "p1", [{ kind: "add", rowKey: "add-1", by: "chat", cells: { workName: chat("足した工事") } }])
     w = { ...w, edits: new Map(w.edits).set(editKey("add-1", "workName"), staff("直した")) }
