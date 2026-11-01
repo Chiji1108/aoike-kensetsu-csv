@@ -101,6 +101,8 @@ test("計画の聞き返しに答えると表と載せる件数が変わり、�
     await question(page).locator('[data-value="exclude"]').click()
     await expect(question(page)).toHaveAttribute("data-answered", "載せない")
     await expect.poll(() => csvCount(page), { timeout: 60_000 }).toBe(6)
+    // 答えたあとは件数の説明を出さない（答えたあとの見込みは「どちらでも変わらない」になり、事実と合わない）
+    await expect(question(page).getByTestId("report-question-detail")).toHaveText("該当 1 行")
     await expect(page.getByTestId("next-step-answer")).toHaveAttribute("data-done", "1")
     await openTab(page, "table")
     await question(page).getByTestId("report-question-view").click()

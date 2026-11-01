@@ -114,7 +114,7 @@ test("聞き返しの「AI に聞く」で、聞き返しを特定できる質�
     await expect(page.getByTestId("chat-messages")).toContainText(ANSWER)
     await expect(ask).toBeEnabled()
     expect(texts).toHaveLength(1)
-    expect(texts[0]).toMatch(/^計画の聞き返し「備考（K列）に注記のある行があります。」は、どういうことですか？ 対象は元の Excel の「工事経歴」\d+行目（1 行。今載せているのは \d 行）です。/)
+    expect(texts[0]).toMatch(/^計画の聞き返し「備考（K列）に注記のある行があります。」は、どういうことですか？ 対象は表の 1 行（元の Excel の「工事経歴」\d+行目。今載せているのは \d 行）です。/)
     // 答えではないので聞き返しは開いたまま。入力欄の書きかけは消さない
     await expect(question(page)).toHaveAttribute("data-pending", "1")
   })
@@ -135,6 +135,8 @@ test("聞き返しの「AI に聞く」で、聞き返しを特定できる質�
     await question(page).locator('[data-value="keep"]').click()
     await expect(question(page)).toHaveAttribute("data-answered", "載せる")
     await expect(question(page).getByTestId("report-question-ask")).toHaveCount(0)
+    // 答えたあとは件数の説明を出さない（答えで載せ方が変わると事実と合わない）
+    await expect(question(page).getByTestId("report-question-detail")).toHaveText("該当 1 行")
   })
 })
 

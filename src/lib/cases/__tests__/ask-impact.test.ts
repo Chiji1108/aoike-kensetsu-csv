@@ -80,11 +80,29 @@ describe("計画の聞き返しの答えの見込み", () => {
     expect(askWording(m, 1).detail).toBe("該当 1 行（今載せているのは 1 行）。どちらでも載せる件数は変わりません（手で載せた行は答えでは外れません）")
   })
 
-  test("「AI に聞く」の質問は聞き返しの文と元の Excel の行番号（シートごと・重ねない・多ければ残りの数）を入れる", () => {
-    expect(askPrompt("備考に注記のある行があります。", [{ sheet: "一覧", row: 11 }, { sheet: "一覧", row: 4 }, { sheet: "一覧", row: 4 }, { sheet: "別", row: 2 }], 1)).toBe(
-      "計画の聞き返し「備考に注記のある行があります。」は、どういうことですか？ 対象は元の Excel の「一覧」5・12行目、「別」3行目（3 行。今載せているのは 1 行）です。中身を見て、判断に要ることを教えてください。",
+  test("「AI に聞く」の質問は聞き返しの文と、カードと同じ表の行の数・元の Excel の行番号（シートごと・重ねない・多ければ残りの数）を入れる", () => {
+    // 記号の列で分けた行（同じ元の行が表の2行）も表の行で数える。行番号は場所なので重ねない
+    expect(askPrompt("備考に注記のある行があります。", [{ sheet: "一覧", row: 11 }, { sheet: "一覧", row: 4 }, { sheet: "一覧", row: 4 }, { sheet: "別", row: 2 }], 2)).toBe(
+      "計画の聞き返し「備考に注記のある行があります。」は、どういうことですか？ 対象は表の 4 行（元の Excel の「一覧」5・12行目、「別」3行目。今載せているのは 2 行）です。中身を見て、判断に要ることを教えてください。",
     )
-    const many = Array.from({ length: 25 }, (_, row) => ({ sheet: "一覧", row }))
-    expect(askPrompt("x", many, null)).toContain("「一覧」1・2・3・4・5・6・7・8・9・10・11・12・13・14・15・16・17・18・19・20行目、ほか 5 行（25 行）です。")
+    const many = [...Array.from({ length: 18 }, (_, row) => ({ sheet: "一覧", row })), ...Array.from({ length: 7 }, (_, row) => ({ sheet: "別", row }))]
+    expect(askPrompt("x", many, null)).toContain("対象は表の 25 行（元の Excel の「一覧」1・2・3・4・5・6・7・8・9・10・11・12・13・14・15・16・17・18行目、「別」1・2行目、ほか 5 行）です。")
+  })
+
+  test("対象の行が無ければ質問を作らない（「AI に聞く」を出さない）", () => {
+    expect(askPrompt("x", [], 0)).toBeUndefined()
+  })
+
+  test("表をまだ作っていない（見込みが無い）ときは数だけ。答えたあとのカードに出す count も数だけ", () => {
+    const w = askWording(null, 3)
+    expect([w.count, w.detail, w.label("exclude", "載せない")]).toEqual(["該当 3 行", "該当 3 行", "載せない"])
+    expect(askWording(askImpact(rows, all, unfinished), 8).count).toBe("該当 8 行")
+  })
+
+  test("件数が変わらなくても、ほかの行が外れて代わりにほかの行が選ばれるなら両方書く", () => {
+    const i = { before: 5, after: 5, shortBefore: [], shortAfter: [], targets: 1, dropped: 1, othersDropped: 1, swapped: 2 }
+    expect(askWording(i, 1).detail).toBe(
+      "該当 1 行（今載せているのは 1 行）。外すと7割の元の合計も減るので、ほかの 1 行も載らなくなります。代わりにほかの 2 行が7割に選ばれます（載せる件数は 5 件のまま）",
+    )
   })
 })

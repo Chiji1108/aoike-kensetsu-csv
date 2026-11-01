@@ -669,14 +669,19 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
    */
   const askEffects = useMemo(
     () =>
-      edited && shown && selected
-        ? askRows.map((r, i) => ({
-            impact: askImpact(edited, { manual, tax, basis, rule7Tax, selection: selectionMode }, r.keys, { inclusion: selected, summary }),
-            facts: askFacts(planAsks[i]!.kind, shown, r.keys),
-          }))
-        : [],
+      askRows.map((r, i) => {
+        const impact = edited && shown && selected ? askImpact(edited, { manual, tax, basis, rule7Tax, selection: selectionMode }, r.keys, { inclusion: selected, summary }) : null
+        return {
+          impact,
+          facts: shown ? askFacts(planAsks[i]!.kind, shown, r.keys) : undefined,
+          // カードの言葉と「AI に聞く」の質問（行や設定が変わったときだけ作り直す）
+          wording: askWording(impact, r.keys.size),
+          prompt: askPrompt(planAsks[i]!.text, r.rows, impact?.targets ?? null),
+        }
+      }),
     [askRows, edited, shown, selected, summary, planAsks, manual, tax, basis, rule7Tax, selectionMode],
   )
+
   /** 載せる件数が大きく減る答えを押したときの確かめ（押す前に何件減るか・7割に届くかを出す） */
   const [confirmAsk, setConfirmAsk] = useState<{ id: string; option: string; title: string; lines: string[] } | null>(null)
 
@@ -1126,17 +1131,17 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
           const kind = ASK_KINDS[ask.kind]
           // 答えは聞き返しの答えとして記録したものだけ（チャットなどで入れた除外は答えと見なさない）
           const answered = kind.options.find((o) => o.value === work.reportAnswers[r.id])?.label ?? null
-          const effect = askEffects[i]
-          const wording = effect ? askWording(effect.impact, r.keys.size) : null
+          const { wording, facts, prompt } = askEffects[i]!
           return {
             id: r.id,
             text: ask.text,
-            detail: [wording?.detail ?? `該当 ${r.keys.size} 行`, effect?.facts].filter(Boolean).join("。"),
+            // 答えたあとは数だけ（答えで載せ方が変わったあとの件数の説明は事実と合わない）
+            detail: [answered === null ? wording.detail : wording.count, facts].filter(Boolean).join("。"),
             // 押すとどう変わるか（載せる件数）を答えに添える（変わらないときは detail に理由を書き、ボタンには付けない）
-            options: kind.options.map((o) => ({ value: o.value, label: wording ? wording.label(o.value, o.label) : o.label })),
+            options: kind.options.map((o) => ({ value: o.value, label: wording.label(o.value, o.label) })),
             answered,
             // まだ答えていない聞き返しだけ、チャットの AI に説明を頼める（決まった質問を職員の発言として送る）
-            prompt: answered === null ? askPrompt(ask.text, r.rows, effect?.impact.targets ?? null) : undefined,
+            prompt: answered === null ? prompt : undefined,
             view: () => {
               setFilter({ kind: "all", ask: r.id })
               showTab("table")
@@ -1160,7 +1165,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
     if (value !== "exclude") return
     const i = askRows.findIndex((r) => r.id === id)
     const effect = askEffects[i]
-    if (effect && needsConfirm(effect.impact)) {
+    if (effect?.impact && needsConfirm(effect.impact)) {
       const { before, after, shortBefore, shortAfter } = effect.impact
       const newlyShort = shortAfter.filter((g) => !shortBefore.includes(g))
       setConfirmAsk({
