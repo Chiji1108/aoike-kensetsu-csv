@@ -50,9 +50,10 @@ async function staffCheck(db: store.Db) {
       const k = aiKeySchema.safeParse(tryParseJson(key))
       if (!k.success || !Object.hasOwn(NAME_TASKS, k.data[0])) continue
       const field = NAME_TASKS[k.data[0] as keyof typeof NAME_TASKS]
-      // AI の結果からは工事名の注文者が分からないので、一般の語かは「いくつの案件の工事名に出るか」で数える（案件の id を注文者の代わりにする）
+      // AI の結果からは工事名の注文者が分からないので、一般の語かは「いくつの顧客の工事名に出るか」で数える（顧客の id を注文者の代わりにする。
+      // 案件の id にすると、同じ顧客の毎年の案件に出る現場名などが一般の語と見なされて通ってしまう）
       if (field === "client") clients.push(k.data[2])
-      else if (field === "workName") works.push({ client: c.id, workName: k.data[2] })
+      else if (field === "workName") works.push({ client: c.customerId, workName: k.data[2] })
     }
   }
   const empty = { rows: [], added: [], edits: new Map(), replacements: {}, manual: new Map(), tax: "excluded", basis: {}, rule7Tax: "excluded", selection: "all", dismissed: new Set<string>(), inquiryText: EMPTY_INQUIRY_TEXT } as const
