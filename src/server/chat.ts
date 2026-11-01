@@ -39,6 +39,7 @@ import { finishTurn, watchStop } from "./turn-close"
 import { searchLocation } from "./location"
 import { locateOne } from "./location-run"
 import * as loc from "./location-store"
+import * as feedback from "./feedback-store"
 import { serverAddressLookup, serverPlaceIndex } from "./place-index"
 import { personalChecker } from "./location-guard"
 import { namesOfSaved, readSavedCase } from "./case-names"
@@ -243,6 +244,12 @@ async function runTurn(request: Request, caseId: string): Promise<Response> {
       rounding: body.rounding,
     },
     { customerName: customer?.name ?? "", otherCustomers: () => store.otherCustomerNames(db, kase.customerId) },
+    {
+      list: () => feedback.openFeedbackSummaries(db),
+      add: (input) => feedback.addFeedback(db, { ...input, caseId, source: "ai" }),
+      bump: (id) => feedback.bumpFeedback(db, id),
+      names: async () => [customer?.name ?? "", ...(await store.otherCustomerNames(db, kase.customerId))],
+    },
   )
   /** 履歴・作ったファイル・費用を書き終えたら resolve する。印がまだ自分のもの（画面の会話を書いて下ろしてよい）なら true */
   const recorded = Promise.withResolvers<boolean>()
@@ -312,6 +319,8 @@ async function runTurn(request: Request, caseId: string): Promise<Response> {
         writer.write({ type: "data-carryover", data: { fiscalYear: carryover.fiscalYear, codes: carryText.included, ...(carryover.skipped ? { skipped: carryover.skipped } : {}) } })
       // 一括調査を始めるボタン（検索は職員が押してから。件数と費用の目安を添える）
       if (state.locationOffer) writer.write({ type: "data-location-offer", data: state.locationOffer })
+      // 要望を残した印（止めた・失敗した回でも、残したものは残っているので出す）
+      if (state.feedbackRecorded.length) writer.write({ type: "data-feedback", data: { count: state.feedbackRecorded.length } })
       // 画面の決まった処理を始めるボタン（書き出す前の確認・問い合わせの Excel）。止めた・失敗した回は出さない
       if (!failure) for (const action of state.actions) writer.write({ type: "data-action", data: { action } })
       // 置いた変更案は、後始末のほかの失敗があっても画面に出す（開き直したときと同じに見せる）

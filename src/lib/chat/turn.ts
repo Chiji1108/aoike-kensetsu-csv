@@ -20,6 +20,7 @@ import { charCount, MAX_RULE_ITEM_LENGTH, RULE7_TAX_LABELS, ruleScopeSchema, typ
 import { MAX_REVIEW_NOTES, MAX_REVIEW_RULES, reviewGuard, reviewMaterial, sameRuleText, UNKNOWN_RESULT, type ReviewGuard, type ReviewTurn } from "./review"
 import { CHAT_ACTIONS, type ChatAction } from "./messages"
 import { outcomeChanges } from "../location/changes"
+import { FEEDBACK_KIND_LABELS, feedbackInputSchema, feedbackTexts, MAX_FEEDBACK_PER_TURN, properNameHits, type FeedbackInput, type FeedbackSummary } from "../feedback/feedback"
 import { askReason, estimateUsd, MAX_SITES_PER_RUN, runSitesOf, siteOfRow, SOURCE_LABELS, type Outcome, type Site } from "../location/sites"
 import { ANSWER_FIELDS, collectInquiries, inquiryKey, QUESTION_HEADER, readAiAnswers, REASONS, type AiAnswerReport } from "../inquiry/inquiry"
 import { checkQuestions, newQuestionId, questionGroups, introSchema, MAX_QUESTION_KEYS, MAX_QUESTIONS, MAX_TOTAL_KEYS, MAX_QUESTION_LENGTH, otherCustomerTest, questionTargetsSchema, questionTextSchema, subjectSchema, type QuestionTarget } from "../inquiry/text"
@@ -102,6 +103,10 @@ ${fileLines || "（なし）"}
   - 決まりは来年のファイルでも読めるように書く: 列記号・行番号・シート名でなく見出しの名前や中身で書く（例「完成年月は引渡日の列」）。特定の工事名・注文者名を挙げず、決まりとして一般化する。個人名と表の記号（〔Ａ〕〔個人名〕）は書かない。1つの決まりを1項目（1〜2文）。
   - 返事では、足す案の数と、今年だけの事情（ルールにしないもの）を短く箇条書きで分けて伝える。
 - 工事場所（都道府県・場所名）を調べるときは find_location を直接呼ぶ（コードからは呼ばない）。「この現場ってどこ？」のように1件なら key を渡す。「場所が空いている行を調べて」のようにまとめてなら key を省き、返った件数と費用の目安を職員に伝える（一括の検索は職員が画面のボタンで始める）。自分で Web の知識から場所を書き込まない。
+- 職員の頼みが今の道具ではできなかった（missing）・コード実行で遠回りしないとできなかった（detour）・同じ手直しを何度も頼まれた（repeat）ときは、開発者への要望として残す。list_feedback で今の要望を読み、同じ要望があればその id を same_as に書いて record_feedback を呼ぶ（どちらも直接呼ぶ。1回の指示で${MAX_FEEDBACK_PER_TURN}件まで）。
+  - 細かいこと・この案件だけの事情・今の道具でそのままできたこと・職員の好みは残さない。
+  - want（何をしたかったか）・did（今どうしたか）・idea（あると良い機能）はそれぞれ短い1文。顧客名・注文者・工事名・個人名・表の記号・金額は書かず、一般化して書く（入っていれば受け取らない）。
+  - 要望を残しても職員への返事と作業は続ける。できないことはその場で職員に伝える（残したことは画面が知らせる）。
 - CSV は書かない（CSV の形式・7割の計算・字数・個人名の検査は決まった処理がやる）。
 - 最後に、何を何件変えたか、残った問題、職員に確かめたいことを短い日本語で返す。コードや JSON は返事に貼らない。
 - 道具を呼べるのは1回の指示で${MAX_TOOL_CALLS}回まで（コード実行は数えない）。表は get_table でまとめて読み、変更はまとめて送る。
@@ -173,6 +178,23 @@ export type TurnState = {
   oneOff: string[]
   /** 問い合わせの文面の確かめに使うもの（propose_inquiry）。無ければほかの顧客の名前は確かめない */
   inquiry: InquiryDeps | null
+  /** 要望を読み書きするもの（list_feedback・record_feedback）。無ければ道具は使えない */
+  feedback: FeedbackDeps | null
+  /** この指示で list_feedback が見せた要望の id（読む前は null。record_feedback の same_as はここにあるものだけ） */
+  feedbackListed: Set<string> | null
+  /** この指示で残した要望（新しい要望と、件数を足した要望） */
+  feedbackRecorded: { id: string; kind: FeedbackInput["kind"]; added: boolean }[]
+}
+
+/**
+ * 要望の読み書き（server/feedback-store.ts。案件の id は書く側で付ける）。names は要望に入れない名前（この案件の顧客名・ほかの顧客の名前）。
+ * add は新しい要望の id、bump は未対応の要望の件数を足せたか（無ければ false）
+ */
+export type FeedbackDeps = {
+  list: () => Promise<readonly FeedbackSummary[]>
+  add: (input: FeedbackInput) => Promise<string>
+  bump: (id: string) => Promise<boolean>
+  names: () => Promise<readonly string[]>
 }
 
 /** 問い合わせの文面の確かめ。otherCustomers はほかの顧客の名前（文に入れない）、customerName はこの案件の顧客の名前（件名などに書いてよい） */
@@ -205,6 +227,7 @@ export function newTurnState(
   answers: AnswerDeps | null = null,
   review: ReviewDeps | null = null,
   inquiry: InquiryDeps | null = null,
+  feedback: FeedbackDeps | null = null,
 ): TurnState {
   return {
     start: table,
@@ -227,6 +250,9 @@ export function newTurnState(
     review,
     oneOff: [],
     inquiry,
+    feedback,
+    feedbackListed: null,
+    feedbackRecorded: [],
   }
 }
 
@@ -706,6 +732,56 @@ export function chatTools(state: TurnState) {
         }),
       ),
     }),
+    list_feedback: tool({
+      description: "今の未対応の要望（開発者への「あると良い機能」）を件数の多い順に返す: {ok, items:[{id, kind, want, idea, count}]}。record_feedback の前に読む。",
+      inputSchema: z.strictObject({}),
+      execute: counted<object>(async () => {
+        if (!state.feedback) return json({ ok: false, error: "要望の道具は今使えません" })
+        const items = await state.feedback.list()
+        state.feedbackListed = new Set(items.map((i) => i.id))
+        state.log.push({ tool: "list_feedback", summary: `${items.length}件` })
+        return json({ ok: true, items })
+      }),
+    }),
+    record_feedback: tool({
+      description:
+        `開発者への要望を残す（変更案ではなく承認は要らない。表は変えない）。items: [{kind: missing（今の道具ではできない）| detour（コード実行で遠回りした）| repeat（同じ手直しを何度も頼まれた）| other, want, did, idea, same_as?}]。` +
+        `want・did・idea は短い1文（それぞれ200字まで）。list_feedback の要望と同じなら same_as にその id を書く（件数を足す。文は残さない）。1回の指示で${MAX_FEEDBACK_PER_TURN}件まで。` +
+        "顧客名・注文者・工事名・個人名・表の記号が入っていれば何も残さず理由を返す。",
+      inputSchema: z.strictObject({
+        items: z
+          .array(feedbackInputSchema.extend({ same_as: z.string().max(64).optional() }))
+          .min(1)
+          .max(MAX_FEEDBACK_PER_TURN),
+      }),
+      execute: counted<{ items: (FeedbackInput & { same_as?: string })[] }>(async ({ items }) => {
+        const deps = state.feedback
+        if (!deps) return json({ ok: false, error: "要望の道具は今使えません" })
+        const listed = state.feedbackListed
+        if (!listed) return json({ ok: false, error: "先に list_feedback で今の要望を読んでください（同じ要望なら same_as で件数を足す）。" })
+        const left = MAX_FEEDBACK_PER_TURN - state.feedbackRecorded.length
+        if (items.length > left) return json({ ok: false, error: `要望は1回の指示で${MAX_FEEDBACK_PER_TURN}件までです（あと${left}件）。` })
+        const ids = items.flatMap((i) => (i.same_as === undefined ? [] : [i.same_as]))
+        const unknown = ids.filter((id) => !listed.has(id) || state.feedbackRecorded.some((r) => r.id === id))
+        if (unknown.length || new Set(ids).size !== ids.length) return json({ ok: false, error: "same_as は list_feedback の要望の id を1回ずつ（この指示でまだ残していないもの）にしてください。", same_as: unknown })
+        return guarded(async () => {
+          const texts = items.flatMap(feedbackTexts)
+          const named = await personal(texts)
+          const values = [...(await deps.names()), ...caseNameValues(view())]
+          const proper = [...new Set(texts.flatMap((t) => properNameHits(t, values)))]
+          if (named.length || proper.length)
+            return json({ ok: false, error: "個人名・表の記号か、顧客名・注文者・工事名の語が入っています。何も残していません。名前を挙げずに一般化して書き直してください。", words: proper })
+          for (const { same_as, ...input } of items) {
+            const bumped = same_as !== undefined && (await deps.bump(same_as))
+            const id = bumped ? same_as : await deps.add(input)
+            state.feedbackRecorded.push({ id, kind: input.kind, added: !bumped })
+          }
+          const done = state.feedbackRecorded.slice(-items.length)
+          state.log.push({ tool: "record_feedback", summary: done.map((r, i) => `${FEEDBACK_KIND_LABELS[r.kind]}${r.added ? "" : "（件数を足す）"}: ${items[i]!.want}`).join(" / ") })
+          return json({ ok: true, added: done.filter((r) => r.added).length, counted: done.filter((r) => !r.added).length, note: "要望として残しました。職員への返事を続けてください。" })
+        })
+      }),
+    }),
     propose_inquiry: tool({
       description:
         `顧客への問い合わせの文面の案を出す（表は変えない）。questions: [{text: 顧客に送る質問の文（${MAX_QUESTION_LENGTH}字まで）, targets: [{field, reasonId?, keys?: [行の key]} | {topic:'tax'}]}]（get_inquiries の問い合わせをどの文で聞くか。reasonId を省くとその項目のすべて、keys を書くとその行だけ。1つの問い合わせは1つの質問）、` +
@@ -809,6 +885,11 @@ export function chatTools(state: TurnState) {
       ),
     }),
   }
+}
+
+/** 要望に入れない、案件の名前の値（注文者・工事名。個人名の記号は除く） */
+function caseNameValues(view: TableView) {
+  return view.shown.flatMap((r) => (["client", "workName"] as const).map((f) => withNames(r.cells[f].value, () => " ")))
 }
 
 /** propose_inquiry の文の番号（0 は件名、1 は前置き、2 から質問）を AI に返す名前にする */

@@ -46,8 +46,8 @@ export type ReviewTurn = {
   tools: string[]
 }
 
-/** 振り返りに名前を出さない道具（読むだけ・コード実行・振り返りそのもの。照合も同じものを使う） */
-export const QUIET_TOOLS: ReadonlySet<string> = new Set(["code_execution", "get_table", "check_table", "get_inquiries", "get_review"])
+/** 振り返りに名前を出さない道具（読むだけ・コード実行・振り返りそのもの・開発者への要望。照合も同じものを使う） */
+export const QUIET_TOOLS: ReadonlySet<string> = new Set(["code_execution", "get_table", "check_table", "get_inquiries", "get_review", "list_feedback", "record_feedback"])
 
 const planOutput = z.object({ ok: z.literal(true), changes: z.array(z.string()) })
 const selectionInput = z.object({ tax: taxSchema.optional(), selection: selectionSchema.optional(), basis: basisSchema.optional() })

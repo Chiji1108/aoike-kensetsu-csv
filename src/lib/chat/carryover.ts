@@ -251,10 +251,10 @@ export function personalNameTest(names: Iterable<string>): (text: string) => boo
 export const MASKED = "〔伏せた語〕"
 
 /** 固有名になりうる語: 漢字の続き・カタカナの続き（ひらがなは区切りとみなす） */
-const PROPER_RE = /[\p{Script=Han}々〆ヵヶ]+|[\p{Script=Katakana}ー]+/gu
+export const PROPER_RE = /[\p{Script=Han}々〆ヵヶ]+|[\p{Script=Katakana}ー]+/gu
 
 /** 書式の決まり（14列の名前・説明・公式の記載ルール・コードの名前）。ルールと一緒に、知っている語に入れる */
-const SPEC_TEXT = [
+export const SPEC_TEXT = [
   ...KOJI_KEIREKI.fields.flatMap((f) => [f.label, f.description]),
   ...KOJI_KEIREKI.writingRules,
   ...Object.values(CODE_SETS).flatMap((set) => set.map((c) => c.label)),

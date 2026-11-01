@@ -20,6 +20,8 @@ type Reply = (body: { text: string; table: { rows: WireRow[] } }) => {
   action?: "export" | "inquiry_excel"
   /** 呼んだことにする道具（結果まで届ける） */
   tool?: string
+  /** 残したことにする要望の数（record_feedback） */
+  feedback?: number
 }
 
 /**
@@ -54,6 +56,7 @@ async function fakeChat(page: Page, replies: Reply[]) {
           writer.write({ type: "tool-input-available", toolCallId: `call-${n}`, toolName: reply.tool, input: {} })
           writer.write({ type: "tool-output-available", toolCallId: `call-${n}`, output: { ok: true } })
         }
+        if (reply.feedback) writer.write({ type: "data-feedback", data: { count: reply.feedback } })
         if (reply.action) writer.write({ type: "data-action", data: { action: reply.action } })
         if (reply.changes.length || reply.question) {
           writer.write({ type: "data-proposal", data: { id: proposal.id } })
@@ -115,7 +118,7 @@ test("チャットの変更案を一覧で確かめて承認すると、表と C
     ({ table }) => {
       const row = companyRow(table.rows)
       target = { key: row.key, from: row.cells.client!.value, to: row.cells.client!.value.replace("株式会社", "㈱").replace(/[\s　]/g, "") }
-      return { text: MARKDOWN, changes: [{ kind: "cell", rowKey: row.key, field: "client", edit: { value: target.to, by: "chat" } }] }
+      return { text: MARKDOWN, changes: [{ kind: "cell", rowKey: row.key, field: "client", edit: { value: target.to, by: "chat" } }], feedback: 1 }
     },
   ])
   await send(page, "注文者の株式会社は㈱にして")
@@ -129,6 +132,9 @@ test("チャットの変更案を一覧で確かめて承認すると、表と C
   await expect(reply.locator('a[href="https://example.com/"], a[href="https://example.com"]')).toHaveCount(1)
   await expect(reply.locator('a[href^="javascript"]')).toHaveCount(0)
   await expect(page.getByTestId("chat-reply-cost")).toContainText("$0.012")
+  // 要望を残した印（変更案ではないので承認は無い）と、要望の画面へのリンク
+  await expect(reply.getByTestId("chat-feedback-note")).toContainText("要望として残しました")
+  await expect(reply.getByTestId("chat-feedback-note").getByRole("link", { name: "要望を見る" })).toHaveAttribute("href", "/feedback")
   // 案件の費用は見出しの「…」に出す（チャットの見出しには出さない）
   await expect(page.getByTestId("chat-cost")).toHaveCount(0)
   await expect.poll(() => caseCostText(page)).toContain("$0.500")
