@@ -260,7 +260,8 @@ export const SPEC_TEXT = [
   ...Object.values(CODE_SETS).flatMap((set) => set.map((c) => c.label)),
 ].join("\n")
 
-const norm = (s: string) => removeSpaces(s.normalize("NFKC"))
+/** 語の比べ方（NFKC にして空白を除く。知っている語・要望の固有名の確かめで同じもの） */
+export const norm = (s: string) => removeSpaces(s.normalize("NFKC"))
 
 /**
  * 去年のコードに残してよい語（知っている語）: 今年の表の値（個人名の項目と印の人は除く）・手直し、全体ルールと顧客ルール、去年と今年の見出し、書式の決まり

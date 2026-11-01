@@ -20,7 +20,7 @@ import { charCount, MAX_RULE_ITEM_LENGTH, RULE7_TAX_LABELS, ruleScopeSchema, typ
 import { MAX_REVIEW_NOTES, MAX_REVIEW_RULES, reviewGuard, reviewMaterial, sameRuleText, UNKNOWN_RESULT, type ReviewGuard, type ReviewTurn } from "./review"
 import { CHAT_ACTIONS, type ChatAction } from "./messages"
 import { outcomeChanges } from "../location/changes"
-import { FEEDBACK_KIND_LABELS, feedbackInputSchema, feedbackTexts, MAX_FEEDBACK_PER_TURN, properNameHits, type FeedbackInput, type FeedbackSummary } from "../feedback/feedback"
+import { FEEDBACK_KIND_LABELS, feedbackInputSchema, feedbackNameCheck, feedbackTexts, MASKED_FEEDBACK, MAX_FEEDBACK_PER_TURN, type FeedbackDeps, type FeedbackInput } from "../feedback/feedback"
 import { askReason, estimateUsd, MAX_SITES_PER_RUN, runSitesOf, siteOfRow, SOURCE_LABELS, type Outcome, type Site } from "../location/sites"
 import { ANSWER_FIELDS, collectInquiries, inquiryKey, QUESTION_HEADER, readAiAnswers, REASONS, type AiAnswerReport } from "../inquiry/inquiry"
 import { checkQuestions, newQuestionId, questionGroups, introSchema, MAX_QUESTION_KEYS, MAX_QUESTIONS, MAX_TOTAL_KEYS, MAX_QUESTION_LENGTH, otherCustomerTest, questionTargetsSchema, questionTextSchema, subjectSchema, type QuestionTarget } from "../inquiry/text"
@@ -186,16 +186,7 @@ export type TurnState = {
   feedbackRecorded: { id: string; kind: FeedbackInput["kind"]; added: boolean }[]
 }
 
-/**
- * 要望の読み書き（server/feedback-store.ts。案件の id は書く側で付ける）。names は要望に入れない名前（この案件の顧客名・ほかの顧客の名前）。
- * add は新しい要望の id、bump は未対応の要望の件数を足せたか（無ければ false）
- */
-export type FeedbackDeps = {
-  list: () => Promise<readonly FeedbackSummary[]>
-  add: (input: FeedbackInput) => Promise<string>
-  bump: (id: string) => Promise<boolean>
-  names: () => Promise<readonly string[]>
-}
+export type { FeedbackDeps }
 
 /** 問い合わせの文面の確かめ。otherCustomers はほかの顧客の名前（文に入れない）、customerName はこの案件の顧客の名前（件名などに書いてよい） */
 export type InquiryDeps = { customerName: string; otherCustomers: () => Promise<readonly string[]> }
@@ -405,6 +396,15 @@ export function chatTools(state: TurnState) {
       return json({ ok: false, error: `個人名を確かめられないので、何も出していません: ${e instanceof Error ? e.message : String(e)}` })
     }
     return run()
+  }
+  /**
+   * 要望の文の確かめ（入っていた語を返す）: 個人名・表の記号（ルールの案と同じ）と、顧客名・この案件の注文者と工事名（lib/feedback の feedbackNameCheck）。
+   * 名前を確かめられないとき（保存した作業を読めない）は投げる（guarded の中で使う）
+   */
+  const feedbackCheck = async (deps: FeedbackDeps) => {
+    const g = await guard()
+    const names = feedbackNameCheck({ names: [...(await deps.names()), ...view().shown.map((r) => r.cells.client.value)], works: caseWorks(view()), known: deps.known })
+    return (text: string) => [...(g.has(text) ? ["個人名・表の記号"] : []), ...names(text)]
   }
   /** 今の問い合わせ（職員が外したものは除く。画面の問い合わせの欄と同じ） */
   const inquiriesOf = (v: TableView) => collectInquiries(v.output, { tax: state.current.tax }).filter((q) => !state.current.dismissed.has(inquiryKey(q)))
@@ -736,11 +736,17 @@ export function chatTools(state: TurnState) {
       description: "今の未対応の要望（開発者への「あると良い機能」）を件数の多い順に返す: {ok, items:[{id, kind, want, idea, count}]}。record_feedback の前に読む。",
       inputSchema: z.strictObject({}),
       execute: counted<object>(async () => {
-        if (!state.feedback) return json({ ok: false, error: "要望の道具は今使えません" })
-        const items = await state.feedback.list()
-        state.feedbackListed = new Set(items.map((i) => i.id))
-        state.log.push({ tool: "list_feedback", summary: `${items.length}件` })
-        return json({ ok: true, items })
+        const deps = state.feedback
+        if (!deps) return json({ ok: false, error: "要望の道具は今使えません" })
+        return guarded(async () => {
+          const items = await deps.list()
+          // 残すときに確かめているが、ほかの案件で残した要望・職員が書いた要望もあるので、この案件の名前で確かめ直す（当たれば中身を見せない）
+          const check = await feedbackCheck(deps)
+          const shown = items.map((i) => (check(i.want).length || check(i.idea).length ? { ...i, want: MASKED_FEEDBACK, idea: MASKED_FEEDBACK } : i))
+          state.feedbackListed = new Set(items.map((i) => i.id))
+          state.log.push({ tool: "list_feedback", summary: `${items.length}件` })
+          return json({ ok: true, items: shown })
+        })
       }),
     }),
     record_feedback: tool({
@@ -765,20 +771,32 @@ export function chatTools(state: TurnState) {
         const unknown = ids.filter((id) => !listed.has(id) || state.feedbackRecorded.some((r) => r.id === id))
         if (unknown.length || new Set(ids).size !== ids.length) return json({ ok: false, error: "same_as は list_feedback の要望の id を1回ずつ（この指示でまだ残していないもの）にしてください。", same_as: unknown })
         return guarded(async () => {
-          const texts = items.flatMap(feedbackTexts)
-          const named = await personal(texts)
-          const values = [...(await deps.names()), ...caseNameValues(view())]
-          const proper = [...new Set(texts.flatMap((t) => properNameHits(t, values)))]
-          if (named.length || proper.length)
-            return json({ ok: false, error: "個人名・表の記号か、顧客名・注文者・工事名の語が入っています。何も残していません。名前を挙げずに一般化して書き直してください。", words: proper })
+          const check = await feedbackCheck(deps)
+          const words = [...new Set(items.flatMap(feedbackTexts).flatMap(check))]
+          if (words.length)
+            return json({ ok: false, error: "個人名・表の記号か、顧客名・注文者・工事名の語が入っています。何も残していません。名前を挙げずに一般化して書き直してください。", words })
+          const done: { kind: FeedbackInput["kind"]; want: string; added: boolean }[] = []
+          const closed: string[] = []
           for (const { same_as, ...input } of items) {
-            const bumped = same_as !== undefined && (await deps.bump(same_as))
-            const id = bumped ? same_as : await deps.add(input)
-            state.feedbackRecorded.push({ id, kind: input.kind, added: !bumped })
+            if (same_as !== undefined) {
+              // 閉じた（対応した・しない）要望には足さない。仮の文のまま新しい行にもしない（AI に書き直してもらう）
+              if (!(await deps.bump(same_as))) {
+                closed.push(same_as)
+                continue
+              }
+              state.feedbackRecorded.push({ id: same_as, kind: input.kind, added: false })
+            } else state.feedbackRecorded.push({ id: await deps.add(input), kind: input.kind, added: true })
+            done.push({ kind: input.kind, want: input.want, added: same_as === undefined })
           }
-          const done = state.feedbackRecorded.slice(-items.length)
-          state.log.push({ tool: "record_feedback", summary: done.map((r, i) => `${FEEDBACK_KIND_LABELS[r.kind]}${r.added ? "" : "（件数を足す）"}: ${items[i]!.want}`).join(" / ") })
-          return json({ ok: true, added: done.filter((r) => r.added).length, counted: done.filter((r) => !r.added).length, note: "要望として残しました。職員への返事を続けてください。" })
+          if (done.length) state.log.push({ tool: "record_feedback", summary: done.map((r) => `${FEEDBACK_KIND_LABELS[r.kind]}${r.added ? "" : "（件数を足す）"}: ${r.want}`).join(" / ") })
+          return json({
+            ok: closed.length === 0,
+            added: done.filter((r) => r.added).length,
+            counted: done.filter((r) => !r.added).length,
+            ...(closed.length
+              ? { closed, error: "same_as の要望はもう閉じています（対応した・しない）。新しい要望として残すなら、same_as を外して want・did・idea を書いて送り直してください。" }
+              : { note: "要望として残しました。職員への返事を続けてください。" }),
+          })
         })
       }),
     }),
@@ -887,10 +905,8 @@ export function chatTools(state: TurnState) {
   }
 }
 
-/** 要望に入れない、案件の名前の値（注文者・工事名。個人名の記号は除く） */
-function caseNameValues(view: TableView) {
-  return view.shown.flatMap((r) => (["client", "workName"] as const).map((f) => withNames(r.cells[f].value, () => " ")))
-}
+/** 要望に入れない、案件の工事名とその注文者 */
+const caseWorks = (view: TableView) => view.shown.map((r) => ({ client: r.cells.client.value, workName: r.cells.workName.value }))
 
 /** propose_inquiry の文の番号（0 は件名、1 は前置き、2 から質問）を AI に返す名前にする */
 const textName = (i: number) => (i === 0 ? "subject" : i === 1 ? "intro" : `questions[${i - 2}]`)

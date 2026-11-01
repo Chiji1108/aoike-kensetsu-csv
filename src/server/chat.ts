@@ -211,6 +211,9 @@ async function runTurn(request: Request, caseId: string): Promise<Response> {
   /** 保存した作業（振り返りと名前の確かめで、指示の間に1回だけ読む） */
   let savedCase: ReturnType<typeof readSavedCase> | undefined
   const saved = () => (savedCase ??= readSavedCase(db, caseId))
+  /** ほかの顧客の名前（問い合わせの文と要望に入れない。指示の間で1回だけ読む） */
+  let others: Promise<readonly string[]> | undefined
+  const otherCustomers = () => (others ??= store.otherCustomerNames(db, kase.customerId))
   // 注文者・工事名に AI が書いた値は、変換と同じ匿名化の AI に通す（lib/chat/turn.ts の anonymizeChanges）
   const state = newTurnState(
     fromWire(body.table),
@@ -243,12 +246,13 @@ async function runTurn(request: Request, caseId: string): Promise<Response> {
       taken: () => takenRules(db, kase.customerId, caseId, saved),
       rounding: body.rounding,
     },
-    { customerName: customer?.name ?? "", otherCustomers: () => store.otherCustomerNames(db, kase.customerId) },
+    { customerName: customer?.name ?? "", otherCustomers },
     {
       list: () => feedback.openFeedbackSummaries(db),
       add: (input) => feedback.addFeedback(db, { ...input, caseId, source: "ai" }),
       bump: (id) => feedback.bumpFeedback(db, id),
-      names: async () => [customer?.name ?? "", ...(await store.otherCustomerNames(db, kase.customerId))],
+      names: async () => [customer?.name ?? "", ...(await otherCustomers())],
+      known: [rules.global, rules.customer],
     },
   )
   /** 履歴・作ったファイル・費用を書き終えたら resolve する。印がまだ自分のもの（画面の会話を書いて下ろしてよい）なら true */

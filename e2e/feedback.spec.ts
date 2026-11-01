@@ -25,14 +25,14 @@ test("要望: メニューから開き、職員が書き足す（顧客名は断
   await expect(page.getByRole("heading", { name: "要望" })).toBeVisible()
   await expect(page.getByTestId("feedback-filter-open")).toHaveAttribute("aria-pressed", "true")
 
-  const want = `元の Excel の列を並べ替えたい E2E-${Date.now()}`
+  const want = `元の Excel の列を並べ替えたい 試験-${Date.now()}`
   await page.getByTestId("feedback-new").click()
   await page.getByTestId("feedback-form-kind-repeat").click()
   await page.getByTestId("feedback-form-want").fill(`${customer} の件で困った`)
   await page.getByTestId("feedback-form-did").fill("Excel で並べ替えてから上げ直した")
   await page.getByTestId("feedback-form-idea").fill("列の並べ替えの道具")
   await page.getByTestId("feedback-form-submit").click()
-  await expect(page.getByText("顧客の名前が入っています")).toBeVisible()
+  await expect(page.getByText("名前が入っています")).toBeVisible()
   await expect(page.getByTestId("feedback-form")).toBeVisible()
   await page.getByTestId("feedback-form-want").fill(want)
   await page.getByTestId("feedback-form-submit").click()
@@ -45,8 +45,22 @@ test("要望: メニューから開き、職員が書き足す（顧客名は断
   await row.getByTestId("feedback-status-done").click()
   await expect(row).toHaveCount(0)
   await page.getByTestId("feedback-filter-done").click()
+  await expect(page).toHaveURL(/status=done/)
   await expect(item(page, want).getByTestId("feedback-status-done")).toHaveAttribute("aria-pressed", "true")
+  // 絞り込みは URL にあるので、開き直しても同じ絞り込みで同じ行
   await reload(page)
+  await expect(page.getByTestId("feedback-filter-done")).toHaveAttribute("aria-pressed", "true")
+  await expect(item(page, want)).toHaveCount(1)
+
+  // 対応済みで絞っているときに書き足すと、未対応に切り替えて足した行を見せる
+  const second = `CSV の列の順を変えたい 試験-${Date.now()}`
+  await page.getByTestId("feedback-new").click()
+  await page.getByTestId("feedback-form-want").fill(second)
+  await page.getByTestId("feedback-form-did").fill("手で直した")
+  await page.getByTestId("feedback-form-idea").fill("列の順の設定")
+  await page.getByTestId("feedback-form-submit").click()
+  await expect(page.getByTestId("feedback-filter-open")).toHaveAttribute("aria-pressed", "true")
+  await expect(item(page, second)).toHaveCount(1)
   await expect(item(page, want)).toHaveCount(0)
   await page.getByTestId("feedback-filter-all").click()
   await expect(item(page, want)).toHaveCount(1)
@@ -61,7 +75,7 @@ test("要望: AI が案件で残した要望は案件へのリンクを出し、
   const { customer, caseUrl } = await openNewCase(page)
   created.push(customer)
   const caseId = new URL(caseUrl).pathname.split("/").pop()!
-  const want = `業種をまとめて直したい E2E-${Date.now()}`
+  const want = `業種をまとめて直したい 試験-${Date.now()}`
   insertAiFeedback(caseId, want)
   await open(page, "/feedback")
   const link = item(page, want).getByTestId("feedback-case")

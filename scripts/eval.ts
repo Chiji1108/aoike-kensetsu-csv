@@ -35,8 +35,8 @@ import { describeSettings } from "../src/lib/chat/describe"
 import { carryoverPrompt, cleanCarryoverCodes, codesFromModel, knownWords, namesForCarryover } from "../src/lib/chat/carryover"
 import { compareFormats, describeFormatDiff, similarity } from "../src/lib/convert/format-diff"
 import { DEFAULT_GLOBAL_RULE_ITEMS, rulesText, ruleTextSchema } from "../src/lib/chat/rules"
-import { checkReport, newTurnState, startTurn, systemPrompt, type FeedbackDeps, type InquiryDeps, type ReviewDeps, type TurnState } from "../src/lib/chat/turn"
-import type { FeedbackSummary } from "../src/lib/feedback/feedback"
+import { checkReport, newTurnState, startTurn, systemPrompt, type InquiryDeps, type ReviewDeps, type TurnState } from "../src/lib/chat/turn"
+import { memoryFeedback } from "../src/lib/feedback/memory"
 import type { RowResult } from "../src/lib/convert/convert"
 import { heuristicPlan, planSheets, sheetByNames } from "../src/lib/convert/heuristic-plan"
 import { runConversion } from "../src/lib/convert/pipeline"
@@ -357,21 +357,7 @@ async function chatPhase(p: {
   const log: TurnLogEntry[] = []
   const generated = new Set<string>()
   /** 要望（本番の csv_feedback の代わり。この会話の間だけ持つ。同じ要望は件数を足す） */
-  const feedbackStore: (FeedbackSummary & { did: string })[] = []
-  const feedback: FeedbackDeps = {
-    list: async () => feedbackStore.map(({ did: _, ...f }) => f),
-    add: async (input) => {
-      const id = `fb${feedbackStore.length + 1}`
-      feedbackStore.push({ id, kind: input.kind, want: input.want, idea: input.idea, did: input.did, count: 1 })
-      return id
-    },
-    bump: async (id) => {
-      const f = feedbackStore.find((x) => x.id === id)
-      if (f) f.count++
-      return f !== undefined
-    },
-    names: async () => [def!.customerName],
-  }
+  const { deps: feedback } = memoryFeedback([def!.customerName], [GLOBAL_RULES, ...p.customerItems])
   let status: RunSummary["status"] = "done"
   let reason: string | undefined
   let error: unknown = null

@@ -159,7 +159,7 @@ export function reviewGuard(table: CaseTable, names: Iterable<string> = []) {
 export type ReviewGuard = ReturnType<typeof reviewGuard>
 
 /** 表の記号（〔Ａ〕〔未掲載１〕）と伏せた印（〔個人名〕）。ほかの〔…〕（〔仮称〕など）は個人名としない */
-const MARK_RE = new RegExp(`〔(?:[Ａ-Ｚ]+|未掲載[０-９0-9]+)〕|${NAME_MARK}`)
+export const MARK_RE = new RegExp(`〔(?:[Ａ-Ｚ]+|未掲載[０-９0-9]+)〕|${NAME_MARK}`)
 
 /**
  * get_review が AI に返す材料（JSON にする）。turns は reviewTurnsFromUi（照合は指示の記録から作る）。view は table の表（作り直さない）。hide は reviewGuard の hide

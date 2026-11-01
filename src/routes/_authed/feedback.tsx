@@ -1,5 +1,6 @@
 import { useRef, useState } from "react"
-import { Link, createFileRoute } from "@tanstack/react-router"
+import { Link, createFileRoute, useNavigate } from "@tanstack/react-router"
+import { z } from "zod"
 import { Loader2, Plus } from "lucide-react"
 import { toast } from "sonner"
 import { AppShell, PageHeader } from "@/components/app-shell"
@@ -22,12 +23,16 @@ import {
 } from "@/lib/feedback/feedback"
 import { addFeedbackFn, listFeedbackFn, setFeedbackStatusFn, type FeedbackResult } from "@/server/feedback-fns"
 
+type Filter = FeedbackStatus | "all"
+/** 絞り込みは URL に持つ（開き直しても・戻っても、表示と絞り込みが食い違わない）。はじめは未対応 */
+const searchSchema = z.object({ status: z.enum([...FEEDBACK_STATUSES, "all"]).catch("open").default("open") })
+
 export const Route = createFileRoute("/_authed/feedback")({
-  loader: () => listFeedbackFn({ data: { status: "open" } }),
+  validateSearch: searchSchema,
+  loaderDeps: ({ search }) => ({ status: search.status }),
+  loader: ({ deps }) => listFeedbackFn({ data: { status: statusOf(deps.status) } }),
   component: FeedbackPage,
 })
-
-type Filter = FeedbackStatus | "all"
 const FILTERS: readonly { value: Filter; label: string }[] = [...FEEDBACK_STATUSES.map((s) => ({ value: s, label: FEEDBACK_STATUS_LABELS[s] })), { value: "all", label: "すべて" }]
 const statusOf = (f: Filter) => (f === "all" ? null : f)
 const EMPTY = { kind: "missing" as FeedbackKind, want: "", did: "", idea: "" }
@@ -46,7 +51,8 @@ function FeedbackPage() {
     setLoaded(initial)
     setItems(initial)
   }
-  const [filter, setFilter] = useState<Filter>("open")
+  const filter: Filter = Route.useSearch().status
+  const navigate = useNavigate({ from: Route.fullPath })
   const [busy, setBusy] = useState(false)
   const sending = useRef(false)
   const [draft, setDraft] = useState(EMPTY)
@@ -74,16 +80,18 @@ function FeedbackPage() {
     }
   }
 
-  async function changeFilter(next: Filter) {
-    if (await run(() => listFeedbackFn({ data: { status: statusOf(next) } }))) setFilter(next)
-  }
+  /** 絞り込みを変える（URL を変え、loader が読み直す） */
+  const changeFilter = (next: Filter) => navigate({ search: { status: next } })
 
   async function add(e: React.FormEvent) {
     e.preventDefault()
     if (FIELDS.some((f) => !draft[f.key].trim())) return
-    if (await run(() => addFeedbackFn({ data: { input: draft, status: statusOf(filter) } }))) {
+    // 足した要望は未対応なので、対応済み・しないで絞っているときは未対応に切り替えて見せる
+    const shown: Filter = filter === "all" ? "all" : "open"
+    if (await run(() => addFeedbackFn({ data: { input: draft, status: statusOf(shown) } }))) {
       setDraft(EMPTY)
       setAdding(false)
+      if (shown !== filter) await navigate({ search: { status: shown } })
     }
   }
 

@@ -1,7 +1,7 @@
 import { and, desc, eq, sql } from "drizzle-orm"
 import { z } from "zod"
 import { csvCases, csvCustomers, csvFeedback } from "@/db/cases-schema"
-import { feedbackKindSchema, feedbackSourceSchema, feedbackStatusSchema, MAX_FEEDBACK_LISTED, type FeedbackInput, type FeedbackItem, type FeedbackSource, type FeedbackStatus, type FeedbackSummary } from "@/lib/feedback/feedback"
+import { feedbackKindSchema, feedbackSourceSchema, feedbackStatusSchema, MAX_FEEDBACK_LISTED, summaryText, type FeedbackInput, type FeedbackItem, type FeedbackSource, type FeedbackStatus, type FeedbackSummary } from "@/lib/feedback/feedback"
 import type { Db } from "./case-store"
 
 /** 要望の読み書き（D1 の csv_feedback。lib/feedback/feedback.ts）。中身の確かめ（字数・固有名）は呼ぶ側で済ませる */
@@ -36,7 +36,7 @@ export async function listFeedback(db: Db, status: FeedbackStatus | null): Promi
   }))
 }
 
-/** チャットの AI に見せる未対応の要望（件数の多い順） */
+/** チャットの AI に見せる未対応の要望（件数の多い順に MAX_FEEDBACK_LISTED 件まで。欄は短い要約） */
 export async function openFeedbackSummaries(db: Db): Promise<FeedbackSummary[]> {
   const rows = await db
     .select({ id: csvFeedback.id, kind: csvFeedback.kind, want: csvFeedback.want, idea: csvFeedback.idea, count: csvFeedback.count })
@@ -44,7 +44,7 @@ export async function openFeedbackSummaries(db: Db): Promise<FeedbackSummary[]> 
     .where(eq(csvFeedback.status, "open"))
     .orderBy(desc(csvFeedback.count), desc(csvFeedback.updatedAt), desc(sql`${csvFeedback}.rowid`))
     .limit(MAX_FEEDBACK_LISTED)
-  return rows.map((r) => ({ ...r, kind: feedbackKindSchema.parse(r.kind) }))
+  return rows.map((r) => ({ ...r, kind: feedbackKindSchema.parse(r.kind), want: summaryText(r.want), idea: summaryText(r.idea) }))
 }
 
 /**
