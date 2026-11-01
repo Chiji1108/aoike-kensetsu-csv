@@ -1,6 +1,7 @@
 import type { CellResult, CellStatus, RowResult } from "@/lib/convert/convert"
 import { askReasonOf } from "@/lib/inquiry/inquiry"
 import { fieldLabel, type KojiFieldId } from "@/lib/spec/koji-keireki"
+import { needsLookup } from "@/lib/location/sites"
 
 export const STATUS: Record<CellStatus, { label: string; cell: string; dot: string }> = {
   ok: { label: "そのまま", cell: "", dot: "bg-muted-foreground/40" },
@@ -49,8 +50,8 @@ export function cellFix(c: CellResult, field: string, asked: boolean): CellFixKi
   return undefined
 }
 
-/** 行の片付けること: 職員が直すセル（fixes）と、顧客に聞くセルの数（ask） */
-export type RowFix<F extends string = string> = { fixes: { field: F; kind: FixKind }[]; ask: number }
+/** 行の片付けること: 職員が直すセル（fixes。action はその理由の直し方。無ければセルで直す）と、顧客に聞くセルの数（ask） */
+export type RowFix<F extends string = string> = { fixes: { field: F; kind: FixKind; action?: FixActionId }[]; ask: number }
 
 /** 行の片付けること。isAsked(field) はそのセルの問い合わせを外していないか */
 export function rowFix<F extends string>(row: RowResult<F>, isAsked: (field: F) => boolean): RowFix<F> {
@@ -59,7 +60,10 @@ export function rowFix<F extends string>(row: RowResult<F>, isAsked: (field: F) 
   for (const [field, c] of Object.entries<CellResult>(row.cells) as [F, CellResult][]) {
     const kind = cellFix(c, field, isAsked(field))
     if (kind === "ask") ask++
-    else if (kind) fixes.push({ field, kind })
+    else if (kind) {
+      const action = fixActionOf(field, row.cells)
+      fixes.push(action ? { field, kind, action } : { field, kind })
+    }
   }
   return { fixes, ask }
 }
@@ -127,29 +131,42 @@ const ACTION_OF_FIELD: Partial<Record<KojiFieldId, FixActionId>> = {
   engineer: "askCustomer",
 }
 
-/** 理由の直し方（無ければ職員がセルで直す）。値のあるエラー（コード表に無いなど）も同じ操作で直せる */
-export const fixActionOf = (f: { field: string; kind: FixKind }): FixActionId | undefined => ACTION_OF_FIELD[f.field as KojiFieldId]
+/**
+ * セルの直し方（無ければ職員がセルで直す）。行ける先と同じ判定で決める: 工事場所は一括調査が調べる行（needsLookup）だけ、
+ * 顧客に聞くのは問い合わせに載るセル（askReasonOf。外した問い合わせを戻せる）だけ。値のあるエラー・職員が空にした欄などは操作を出さない
+ */
+export function fixActionOf(field: string, cells: Readonly<Record<string, CellResult>>): FixActionId | undefined {
+  const action = ACTION_OF_FIELD[field as KojiFieldId]
+  if (action === "findLocation") return cells.prefecture && cells.place && needsLookup(cells.prefecture, cells.place) ? action : undefined
+  if (action === "askCustomer") return askReasonOf(field, cells[field]!) ? action : undefined
+  return action
+}
 
 /** まとめて頼める直し方: 同じ操作・同じ項目の、直す行（載せる行）の key と理由の種類 */
 export type FixActionGroup = { action: FixActionId; field: KojiFieldId; kinds: FixKind[]; keys: string[] }
 
-export function fixActionGroups(rows: readonly { key: string }[], inclusion: ReadonlyMap<string, { included: boolean }>, fixes: ReadonlyMap<string, RowFix<KojiFieldId>>): FixActionGroup[] {
-  const groups = new Map<string, FixActionGroup>()
+/** reason があれば、その理由の直すだけを数える（表の理由の絞り込みで見えている分） */
+export function fixActionGroups(
+  rows: readonly { key: string }[],
+  inclusion: ReadonlyMap<string, { included: boolean }>,
+  fixes: ReadonlyMap<string, RowFix<KojiFieldId>>,
+  reason?: FixKind,
+): FixActionGroup[] {
+  const groups = new Map<string, { action: FixActionId; field: KojiFieldId; kinds: Set<FixKind>; keys: Set<string> }>()
   for (const r of rows) {
     if (!inclusion.get(r.key)?.included) continue
     for (const f of fixes.get(r.key)?.fixes ?? []) {
-      const action = fixActionOf(f)
-      if (!action) continue
+      if (!f.action || (reason && f.kind !== reason)) continue
       // 工事場所は都道府県と場所名を1つの現場として調べるので、1つにまとめる
-      const field = action === "findLocation" ? "prefecture" : f.field
-      const id = `${action}:${field}`
-      const g = groups.get(id) ?? { action, field, kinds: [], keys: [] }
-      if (!g.kinds.includes(f.kind)) g.kinds.push(f.kind)
-      if (!g.keys.includes(r.key)) g.keys.push(r.key)
+      const field = f.action === "findLocation" ? "prefecture" : f.field
+      const id = `${f.action}:${field}`
+      const g = groups.get(id) ?? { action: f.action, field, kinds: new Set(), keys: new Set() }
+      g.kinds.add(f.kind)
+      g.keys.add(r.key)
       groups.set(id, g)
     }
   }
-  return [...groups.values()]
+  return [...groups.values()].map((g) => ({ action: g.action, field: g.field, kinds: [...g.kinds], keys: [...g.keys] }))
 }
 
 /** まとめて頼む操作の言葉（例「業種が空の 3 行に AI で案を出す」「注文者が空の 2 行を顧客に聞く」）。表の上・次にやること・書き出すの確認で同じ言葉 */

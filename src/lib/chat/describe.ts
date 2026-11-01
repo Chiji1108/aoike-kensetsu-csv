@@ -8,7 +8,6 @@ import { SOURCE_LABELS } from "../location/sites"
 import type { ChatChange } from "./proposals"
 import { askLabel, CORRECTION_MESSAGE } from "../inquiry/inquiry"
 import { choiceLabel } from "../spec/choices"
-import { GYOSHU_BASIS_LABELS } from "../convert/gyoshu-guess"
 
 
 /** 印の人を今の記号で見せる。今の表にいない人（承認すると現れる人）は名前を出さない */
@@ -20,7 +19,7 @@ function shownValue(stored: string, letters: PersonLetters) {
 }
 
 /** 変更案の1項目を画面に出す形。where はどこを、from・to は今と承認したあと。values なら from・to はセルの値（文字の差分を色分けする） */
-/** note は値に添える根拠（「AI で案を出す」の案）、guess はその案が推し量った値か */
+/** note は値に添える根拠（AI の案）、guess は推定の値か（編集の guessed） */
 export type ChangeLine = { where: string; what: string; from: string; to: string; values?: true; links?: string[]; note?: string; guess?: boolean }
 
 /** 顧客の回答から読んだ変更（record_answers）は、項目の名前に添えて分かるようにする（聞いていない項目の訂正は「顧客の訂正」） */
@@ -53,7 +52,9 @@ export function describeChange(c: ChatChange, view: TableView, byKey: ReadonlyMa
         to: named(shownValue(c.edit.value, view.letters)),
         values: true,
         // AI の案の根拠（「AI で案を出す」。推定ならそう書いてある）
-        ...(c.edit.by === "chat" && c.edit.message ? { note: c.edit.message, guess: c.edit.message.includes(GYOSHU_BASIS_LABELS.trend) } : {}),
+        ...(c.edit.by === "chat" && c.edit.message ? { note: c.edit.message } : {}),
+        // 推定（AI の推定の印）は、チャットの set_cells の値も「AI で案を出す」の値も同じ見た目
+        ...(c.edit.guessed ? { guess: true } : {}),
       }
     }
     case "ask":

@@ -62,7 +62,7 @@ async function fakePlan(page: Page, asks: unknown[]) {
   )
 }
 
-/** 業種の AI の案（suggestGyoshu）だけを決まった答えにする（ほかの値ごとの判断は本物）。1件目は決められない、ほかは工事名から建築一式。届いた依頼を sent に溜める */
+/** 業種の AI の案（suggestGyoshu）だけを決まった答えにする（ほかの値ごとの判断は本物）。1件目は決められない、2件目は AI が迷った（案にしない）、ほかは工事名から建築一式。届いた依頼を sent に溜める */
 async function fakeSuggest(page: Page, sent: string[]) {
   await page.route(
     (url) => callsServerFn(url.href, ["runAiBatch"]),
@@ -71,7 +71,11 @@ async function fakeSuggest(page: Page, sent: string[]) {
       if (!body.includes("suggestGyoshu")) return route.continue()
       sent.push(body)
       const results = Array.from({ length: 20 }, (_, id) =>
-        id === 0 ? { id, value: "", basis: "none", note: "" } : id === 1 ? { id, value: "2", basis: "trend", note: "ほかの工事 5 件中 4 件が建築一式" } : { id, value: "2", basis: "workName", note: "工事名の「工事」" },
+        id === 0
+          ? { id, value: "", basis: "none", confident: false, note: "" }
+          : id === 1
+            ? { id, value: "8", basis: "workName", confident: false, note: "迷った" }
+            : { id, value: "2", basis: "workName", confident: true, note: "工事名の「工事」" },
       )
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ result: { ok: true, json: { results }, usd: 0.01 } }) })
     },
@@ -113,8 +117,8 @@ test("業種が空の行に AI で案を出して承認すると直すが減る�
   await test.step("押すと、AI の案がチャットの流れに変更案として出る（結果はそのまま表に入らない）。推し量った案は根拠に推定と出る", async () => {
     await page.locator('[data-testid="fix-action"][data-action="suggestGyoshu"]').click()
     const panel = page.getByTestId("fix-suggestion")
-    await expect(panel.getByTestId("fix-suggestion-summary")).toContainText("7 行のうち 6 行に案を出しました")
-    await expect(panel.getByTestId("fix-suggestion-summary")).toContainText("決められなかった 1 行")
+    await expect(panel.getByTestId("fix-suggestion-summary")).toContainText("7 行のうち 5 行に案を出しました")
+    await expect(panel.getByTestId("fix-suggestion-summary")).toContainText("決められなかった 2 行")
     expect(sent).toHaveLength(1)
     // 決まった処理で数えた傾向を添える（ここでは決まっている業種が無い）
     expect(sent[0]).toContain("決まっている工事がない")
@@ -123,23 +127,26 @@ test("業種が空の行に AI で案を出して承認すると直すが減る�
     await panel.getByTestId("proposal-open").click()
     const dialog = page.getByTestId("proposal-dialog")
     await expect(dialog.getByTestId("diff-to").first()).toContainText("2 建築一式")
-    await expect(dialog.locator('[data-testid="diff-note"][data-guess="1"]')).toHaveCount(1)
-    await expect(dialog.locator('[data-testid="diff-note"][data-guess="1"]')).toContainText("推定: ほかの工事の傾向")
+    // 工事名から推し量った案も推定（黄色）で、根拠を添える
+    await expect(dialog.locator('[data-testid="diff-note"][data-guess="1"]')).toHaveCount(5)
+    await expect(dialog.locator('[data-testid="diff-note"][data-guess="1"]').first()).toContainText("AI の推定・AI の案（工事名から）")
     await page.keyboard.press("Escape")
   })
 
   await test.step("承認すると入り、直すが減る。表には名前で出る", async () => {
     await page.getByTestId("fix-suggestion").getByTestId("proposal-apply-all").click()
     await expect.poll(() => fixCount(page)).toBeLessThan(before)
-    await expect(tableRow(page, "業種が空")).toHaveCount(1)
+    await expect(tableRow(page, "業種が空")).toHaveCount(2)
+    // 承認した値は推定の印を外して入る（AI の推定として直すに残らない）
+    await expect(page.locator('[data-testid="preview-table"] tbody tr[data-row-key]').filter({ has: page.getByTestId("row-fix").filter({ hasText: "業種: AI の推定" }) })).toHaveCount(0)
     await page.getByTestId("row-filters-all").click()
     await expect(page.locator('td[data-field="gyoshu"] [data-code="2"]').first()).toContainText("建築一式")
     await page.getByTestId("row-filters-fix").click()
   })
 
   await test.step("業種を選ぶ欄で、名前で絞り込んで Enter で選ぶ（キーボードだけ）", async () => {
-    const row = tableRow(page, "業種が空")
-    await expect(row).toHaveCount(1)
+    const row = tableRow(page, "業種が空").first()
+    await expect(tableRow(page, "業種が空")).toHaveCount(2)
     const left = await fixCount(page)
     await row.locator('td[data-field="gyoshu"] button').focus()
     await page.keyboard.press("Enter")
@@ -149,7 +156,7 @@ test("業種が空の行に AI で案を出して承認すると直すが減る�
     await expect(picker.getByTestId("cell-picker-option")).toHaveCount(2)
     await page.keyboard.press("Enter")
     await expect(picker).toBeHidden()
-    await expect(tableRow(page, "業種が空")).toHaveCount(0)
+    await expect(tableRow(page, "業種が空")).toHaveCount(1)
     expect(await fixCount(page)).toBeLessThanOrEqual(left)
     // 閉じたらセルに戻る
     await expect(page.locator('tr[data-row-key] td[data-field="gyoshu"] button:focus')).toContainText("電気")
@@ -174,6 +181,29 @@ test("業種が空の行に AI で案を出して承認すると直すが減る�
     await page.keyboard.press("Enter")
     await expect(picker).toBeHidden()
     await expect(cell.locator("[data-code]")).not.toHaveAttribute("data-code", was)
+  })
+
+  await test.step("選ぶ欄を開いたまま別のセルを押すと、押したセルの欄が開いたまま（前のセルにフォーカスを戻して閉じない）", async () => {
+    const r = page.locator('[data-testid="preview-table"] tbody tr[data-row-key]').nth(1)
+    await r.locator('td[data-field="motoukeShitauke"] button').click()
+    await expect(page.getByTestId("cell-picker").getByTestId("cell-picker-option")).toHaveCount(3)
+    await r.locator('td[data-field="jv"] button').click()
+    await expect(page.getByTestId("cell-picker").getByTestId("cell-picker-option")).toHaveText(["なし", "あり"])
+    await page.waitForTimeout(300)
+    await expect(page.getByTestId("cell-picker")).toBeVisible()
+    await page.keyboard.press("Escape")
+    await expect(page.getByTestId("cell-picker")).toBeHidden()
+  })
+
+  await test.step("理由で絞ると、まとめての操作もその理由の見えている行だけを数える", async () => {
+    await page.getByTestId("row-filters-fix").click()
+    // 工事場所の AI の推定は自信のある推定なので調べない（操作を出さない）。必須が空で絞ると業種の1行だけ
+    await page.getByTestId("fix-reason-empty").click()
+    await expect(page.getByTestId("fix-action")).toHaveText(["業種が空の 1 行に AI で案を出す"])
+    await page.getByTestId("fix-reason-guess").click()
+    await expect(page.getByTestId("fix-action")).toHaveCount(0)
+    await page.getByTestId("fix-reason-guess").click()
+    await page.getByTestId("row-filters-all").click()
   })
 
   await test.step("主任技術者・監理技術者は1つの欄で選び、2列を一緒に決める（どちらか一方だけが あり）", async () => {

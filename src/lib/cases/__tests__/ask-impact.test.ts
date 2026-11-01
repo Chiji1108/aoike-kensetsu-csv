@@ -1,11 +1,19 @@
 import { describe, expect, test } from "bun:test"
 import { kojiRow } from "../../convert/__tests__/helpers"
-import { askFacts, askImpact, needsConfirm } from "../ask-impact"
+import { summarizeKoji } from "../../convert/koji-selection"
+import { selectRows } from "../view"
+import { askFacts, askImpact as impactOf, needsConfirm } from "../ask-impact"
 
 /** 合成の10行。8行が「未成」の区分（うち6行は完成年月が入っている） */
 const rows = Array.from({ length: 10 }, (_, i) => kojiRow({ gyoshu: "8", motoukeShitauke: "1", amount: String(1000 - i * 10), endYm: i < 6 ? "202503" : "" }, i))
 const unfinished = new Set(rows.slice(0, 8).map((r) => r.key))
 const all = { manual: new Map<string, boolean>(), tax: "excluded" as const, basis: {}, rule7Tax: "excluded" as const, selection: "all" as const }
+
+/** 画面と同じく、今の選んだ行と7割の合計を先に作って渡す */
+const askImpact = (rows_: typeof rows, s: Parameters<typeof impactOf>[1], keys: ReadonlySet<string>) => {
+  const inclusion = selectRows(s, rows_)
+  return impactOf(rows_, s, keys, { inclusion, summary: summarizeKoji(rows_, inclusion, s) })
+}
 
 describe("計画の聞き返しの答えの見込み", () => {
   test("載せない側の答えで載せる件数がどう変わるかを、今の選び方で選び直して出す。大半を外す答えは押す前に確かめる", () => {

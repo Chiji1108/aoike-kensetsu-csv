@@ -42,11 +42,10 @@ import {
   STATUS,
   cellClass,
   changedCell,
-  fixActionOf,
+  fixActionGroups,
   fixActionText,
   fixText,
   inFilter,
-  type FixActionGroup,
   type FixActionId,
   type FixCounts,
   type RowFix,
@@ -151,7 +150,6 @@ export function PreviewTable({
   counts,
   asks,
   onOpenInquiry,
-  fixGroups,
   onFixAction,
   suggest,
 }: {
@@ -173,8 +171,7 @@ export function PreviewTable({
   asks: readonly AskRows[]
   /** 問い合わせのタブを開く（顧客に聞く行から） */
   onOpenInquiry: () => void
-  /** まとめて頼める直し方（status.ts の fixActionGroups）と、押したとき（keys はその行） */
-  fixGroups: readonly FixActionGroup[]
+  /** 直し方の操作を押したとき（keys はその行） */
   onFixAction: (action: FixActionId, keys: readonly string[]) => void
   suggest: SuggestState
 }) {
@@ -224,6 +221,8 @@ export function PreviewTable({
     return rows.filter((r) => inFilter(filter, fixes.get(r.key) ?? NO_FIX, inclusion.get(r.key)?.included ?? false, asked, r.key) && (!needle || hasText(r)))
   }, [rows, fixes, inclusion, filter, asks, needle, columnVisibility, spec])
   const activeAsk = asks.find((a) => a.id === filter.ask)
+  /** まとめて頼める直し方: 今の絞り込み（理由・検索）で見えている行だけ（件数もその行で） */
+  const fixGroups = useMemo(() => (filter.kind === "fix" && !filter.ask ? fixActionGroups(data, inclusion, fixes, filter.reason) : []), [data, inclusion, fixes, filter])
 
   const table = useTable({
     features,
@@ -257,15 +256,18 @@ export function PreviewTable({
     if (commit && editing.draft !== editing.session.text) onEdit(editing.row, [[editing.field, editing.session.read(editing.draft)]])
   }
   /** 選ぶ欄で選んだ値を入れる（変わった項目だけ）。閉じたらセルに戻る（キーボードで続けて動ける） */
-  function finishPick(r: Row, picked: Partial<Record<KojiFieldId, string>> | undefined) {
+  /** restoreFocus は選んだ・Escape で閉じたとき（外を押して閉じたときは、押した先のフォーカスを奪わない） */
+  function finishPick(r: Row, picked: Partial<Record<KojiFieldId, string>> | undefined, restoreFocus: boolean) {
     if (!editing) return
     const { row, field, session } = editing
     setEditing(null)
     const changed = Object.entries(picked ?? {}).filter(([f, v]) => r.cells[f as KojiFieldId].value !== v) as [KojiFieldId, string][]
     if (changed.length) onEdit(row, changed.map(([f, v]) => [f, session.read(v)]))
-    requestAnimationFrame(() => scrollRef.current?.querySelector<HTMLElement>(`tr[data-row-key="${CSS.escape(row)}"] td[data-field="${field}"] button`)?.focus())
+    if (restoreFocus) requestAnimationFrame(() => scrollRef.current?.querySelector<HTMLElement>(`tr[data-row-key="${CSS.escape(row)}"] td[data-field="${field}"] button`)?.focus())
   }
   const [anchor, setAnchor] = useState<HTMLElement | null>(null)
+  /** 項目ごとの定義と選ぶ欄（描くたびに作らない） */
+  const fieldInfo = useMemo(() => new Map(spec.fields.map((f) => [f.id, { spec: f, choices: choicesOf(f) }])), [spec])
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const virtualizer = useVirtualizer({
@@ -307,8 +309,7 @@ export function PreviewTable({
     const field = columnId as KojiFieldId
     const cell = r.cells[field]
     const isEditing = editing?.row === r.key && editing.field === field
-    const spec_ = spec.fields.find((f) => f.id === field)!
-    const choices = choicesOf(spec_)
+    const { spec: spec_, choices } = fieldInfo.get(field)!
     const named = choiceLabel(spec_, cell.value)
     return (
       <TableCell
@@ -329,8 +330,8 @@ export function PreviewTable({
               label={choices.kind === "engineerRole" ? "配置技術者の立場" : spec_.label}
               choices={choices}
               values={Object.fromEntries(spec.fields.map((f) => [f.id, r.cells[f.id].value])) as Record<KojiFieldId, string>}
-              onPick={(picked) => finishPick(r, picked)}
-              onCancel={() => finishPick(r, undefined)}
+              onPick={(picked) => finishPick(r, picked, true)}
+              onCancel={(restore) => finishPick(r, undefined, restore)}
             />
           </>
         ) : isEditing ? (
@@ -543,7 +544,7 @@ function RowReasons({ fix, onOpenInquiry, onFixAction, suggest }: { fix: RowFix<
   const shown = fix.fixes.slice(0, SHOWN_FIXES)
   const rest = fix.fixes.length - shown.length
   // 同じ直し方は1つだけ出す（例: 都道府県と場所名が空でも「AI で案を出す」は1つ）
-  const actions = [...new Set(fix.fixes.flatMap((f) => fixActionOf(f) ?? []))]
+  const actions = [...new Set(fix.fixes.flatMap((f) => f.action ?? []))]
   return (
     <div className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] leading-4 whitespace-normal" data-testid="row-reasons">
       {shown.length > 0 && (

@@ -52,10 +52,12 @@ export const AI_TASKS = {
     item: valueItem,
     instruction: `業種名を建設業.NET の業種コード（1〜30の整数の文字列）に変換する。コード表: ${gyoshuList}。${GYOSHU_GUESS_RULE}（この作業では input の業種名だけで決め、ほかの工事の傾向は渡さないので推し量らない。）判断に迷うときは needsReview を true にする。`,
   },
+  /** 職員が「AI で案を出す」を押したときだけ使う。指示は共通の指示（計画・変換で毎回同じ・キャッシュする）に入れず、頼むときの文に書く */
   suggestGyoshu: {
     label: "業種の案",
     item: gyoshuSuggestionItem,
-    instruction: `業種が決まっていない工事の業種コード（1〜30の整数の文字列）の案を出す。input は工事名・注文者・元の業種の記載。コード表: ${gyoshuList}。${GYOSHU_GUESS_RULE} basis は決めた根拠（source: 元データの記載、workName: 工事名、trend: ほかの工事の傾向から推し量った、none: 決められない〔value は空〕）。note は根拠を職員向けに短く（工事名から決めたなら決め手の言葉、trend なら渡された件数をそのまま）。`,
+    onDemand: true,
+    instruction: `業種が決まっていない工事の業種コード（1〜30の整数の文字列）の案を出す。input は工事名・注文者・元の業種の記載。コード表: ${gyoshuList}。${GYOSHU_GUESS_RULE} basis は決めた根拠（source: 元データの記載、workName: 工事名、trend: ほかの工事の傾向から推し量った、none: 決められない〔value は空〕）。confident は迷わず決められたときだけ true にする（trend は渡された傾向がはっきりしている業種なら true。工事名の言葉が2つ以上の業種に取れる・決め手の言葉が無い・工事名が建物や場所の名前だけ、なら false。false の行は案にしない）。note は根拠を職員向けに短く（工事名から決めたなら決め手の言葉、trend なら渡された件数をそのまま）。`,
   },
   yearMonth: {
     label: "年月の読み取り",
@@ -104,7 +106,7 @@ export const AI_TASKS = {
     item: valueItem,
     instruction: "職員の指示に従って値を変換する。",
   },
-} as const satisfies Record<string, { label: string; item: z.ZodObject; instruction: string }>
+} as const satisfies Record<string, { label: string; item: z.ZodObject; instruction: string; onDemand?: true }>
 
 export type AiTaskId = keyof typeof AI_TASKS
 export const AI_TASK_IDS = Object.keys(AI_TASKS) as [AiTaskId, ...AiTaskId[]]

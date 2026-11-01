@@ -1,5 +1,5 @@
 import type { RowResult } from "../convert/convert"
-import { summarizeKoji } from "../convert/koji-selection"
+import { summarizeKoji, type GyoshuSummary } from "../convert/koji-selection"
 import type { KojiFieldId } from "../spec/koji-keireki"
 import { selectRows, type CaseTable } from "./view"
 
@@ -15,20 +15,20 @@ export type AskImpact = { before: number; after: number; shortBefore: string[]; 
 
 const EXCLUDED_BY_ANSWER = "聞き返しの答えで載せない"
 
-function shortOf(rows: readonly Row[], s: Settings, inclusion: ReturnType<typeof selectRows>) {
-  return summarizeKoji(rows, inclusion, { tax: s.tax, basis: s.basis, rule7Tax: s.rule7Tax }).flatMap((g) => [
+const shortOf = (summary: readonly GyoshuSummary[]) =>
+  summary.flatMap((g) => [
     ...(g.short.total ? [`${g.label}（完成工事高）`] : []),
     ...(g.short.motouke ? [`${g.label}（うち元請）`] : []),
   ])
-}
 
 const includedCount = (inclusion: ReturnType<typeof selectRows>) => [...inclusion.values()].filter((i) => i.included).length
 
-export function askImpact(edited: Row[], s: Settings, keys: ReadonlySet<string>): AskImpact {
-  const now = selectRows(s, edited)
+/** current は今の表の選んだ行と7割の合計（画面がもう作ったもの。作り直さない）。答えたあとの側だけを選び直す */
+export function askImpact(edited: Row[], s: Settings, keys: ReadonlySet<string>, current: { inclusion: ReturnType<typeof selectRows>; summary: readonly GyoshuSummary[] }): AskImpact {
   const without = edited.map((r) => (keys.has(r.key) && !r.excluded ? { ...r, excluded: EXCLUDED_BY_ANSWER } : r))
   const next = selectRows(s, without)
-  return { before: includedCount(now), after: includedCount(next), shortBefore: shortOf(edited, s, now), shortAfter: shortOf(without, s, next) }
+  const after = summarizeKoji(without, next, { tax: s.tax, basis: s.basis, rule7Tax: s.rule7Tax })
+  return { before: includedCount(current.inclusion), after: includedCount(next), shortBefore: shortOf(current.summary), shortAfter: shortOf(after) }
 }
 
 /** 押す前に確かめるか: 載せる件数が半分以上減る、または7割に届かなくなる（今届いている業種が届かなくなる） */

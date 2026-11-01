@@ -94,6 +94,16 @@ export function addedCountAfter(added: readonly AddedRow[], changes: readonly Ch
   return keys.size
 }
 
+/**
+ * 承認で入れる変更。「AI で案を出す」（出どころ fix）の推定の値は、職員の承認が確かめなので推定の印を外して入れる
+ * （ほかの出どころの推定の印〔チャットの匿名化で迷った値など〕は承認しても残す）
+ */
+export function approvedChange(p: Pick<Proposal, "origin">, c: ChatChange): ChatChange {
+  if (p.origin.kind !== "fix" || c.kind !== "cell" || !c.edit.guessed) return c
+  const { guessed: _, ...edit } = c.edit
+  return { ...c, edit }
+}
+
 /** 決める前に要らなくなった変更案（変換の元を変えたなど）を閉じる。未決は却下にする */
 export const discard = (p: Proposal): Proposal =>
   p.state === "open" ? { id: p.id, origin: p.origin, question: p.question, state: "closed", applied: p.applied.length, rejected: p.count - p.applied.length } : p

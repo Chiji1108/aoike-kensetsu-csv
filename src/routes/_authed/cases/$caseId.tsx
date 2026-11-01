@@ -46,7 +46,7 @@ import { askFacts, askImpact, needsConfirm } from "@/lib/cases/ask-impact"
 import { carryoverReady } from "@/lib/chat/carryover"
 import { caseContext, NO_SOURCE_CONTEXT } from "@/lib/chat/context"
 import type { ChatAction } from "@/lib/chat/messages"
-import { addedCountAfter, answer, applyChanges, decide, decisionOf, discard, isAnswered, newProposal, withRecorded, type Proposal, type ProposalRecord } from "@/lib/chat/proposals"
+import { addedCountAfter, answer, applyChanges, approvedChange, decide, decisionOf, discard, isAnswered, newProposal, withRecorded, type Proposal, type ProposalRecord } from "@/lib/chat/proposals"
 import { toWire } from "@/lib/chat/wire"
 import { ADDRESS_API_PATH, addressCache, addressKey, lookupAddresses, NO_ADDRESSES, type AddressBook, type AddressLookup } from "@/lib/convert/address"
 import { convertRows, editKey, editSession, resolveRows, staffEdit, type CellEdit, type RowResult } from "@/lib/convert/convert"
@@ -669,10 +669,13 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
    */
   const askEffects = useMemo(
     () =>
-      edited && shown
-        ? askRows.map((r, i) => ({ impact: askImpact(edited, { manual, tax, basis, rule7Tax, selection: selectionMode }, r.keys), facts: askFacts(planAsks[i]!.kind, shown, r.keys) }))
+      edited && shown && selected
+        ? askRows.map((r, i) => ({
+            impact: askImpact(edited, { manual, tax, basis, rule7Tax, selection: selectionMode }, r.keys, { inclusion: selected, summary }),
+            facts: askFacts(planAsks[i]!.kind, shown, r.keys),
+          }))
         : [],
-    [askRows, edited, shown, planAsks, manual, tax, basis, rule7Tax, selectionMode],
+    [askRows, edited, shown, selected, summary, planAsks, manual, tax, basis, rule7Tax, selectionMode],
   )
   /** 載せる件数が大きく減る答えを押したときの確かめ（押す前に何件減るか・7割に届くかを出す） */
   const [confirmAsk, setConfirmAsk] = useState<{ id: string; option: string; title: string; lines: string[] } | null>(null)
@@ -800,7 +803,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
       if (!indices.length) return
       const edited = view?.edited ?? []
       setWork((w) => {
-        const overlaid = applyChanges(w, edited, indices.map((i) => changes[i]!))
+        const overlaid = applyChanges(w, edited, indices.map((i) => approvedChange(p, changes[i]!)))
         const replanned = nextPlan && indices.some((i) => changes[i]!.kind === "plan") && w.plan ? { ...overlaid, plan: { ...w.plan, plan: nextPlan }, converted: false } : overlaid
         const decided = { ...replanned, proposals: w.proposals.map((x) => (x.id === id ? decide(x, indices, "applied") : x)) }
         return withUndo(w, decided, id, indices, external)
@@ -1246,7 +1249,17 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
     </>
   )
   /** チャットの流れの最後に出す「AI で案を出す」の結果と変更案 */
-  const fixPanel = <FixSuggestionPanel state={gyoshuSuggestion} proposals={fixProposals} changes={proposalChanges} view={view} actions={proposalActions} busy={savingRule} />
+  const fixPanel = (
+    <FixSuggestionPanel
+      state={gyoshuSuggestion}
+      proposals={fixProposals}
+      changes={proposalChanges}
+      view={view}
+      actions={proposalActions}
+      busy={savingRule}
+      onRetry={canSuggest ? (keys) => runFixAction("suggestGyoshu", keys) : null}
+    />
+  )
 
   const chatPanel = chatEnabled ? (
     <Suspense fallback={<div className="h-full" />}>
@@ -1465,7 +1478,6 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
               counts={fixCounts!}
               asks={askRows}
               onOpenInquiry={() => showTab("inquiry")}
-              fixGroups={fixGroups}
               onFixAction={runFixAction}
               suggest={{ can: canSuggest, running: gyoshuSuggestion.running !== null, pending: pendingFix }}
             />

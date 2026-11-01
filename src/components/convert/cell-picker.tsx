@@ -29,19 +29,20 @@ export function CellPicker({
   /** 行の今の値（立場は主任技術者・監理技術者の2列から決める） */
   values: Readonly<Record<KojiFieldId, string>>
   onPick: (values: Partial<Record<KojiFieldId, string>>) => void
-  onCancel: () => void
+  /** restoreFocus: Escape で閉じた（セルにフォーカスを戻す）。外を押して閉じたときは false */
+  onCancel: (restoreFocus: boolean) => void
 }) {
   // 選んだあとに閉じる知らせ（onOpenChange）でもう一度終えない
   const finished = useRef(false)
-  const finish = (picked?: Partial<Record<KojiFieldId, string>>) => {
+  const finish = (picked?: Partial<Record<KojiFieldId, string>>, restoreFocus = false) => {
     if (finished.current) return
     finished.current = true
     if (picked) onPick(picked)
-    else onCancel()
+    else onCancel(restoreFocus)
   }
   const initial = useRef<HTMLButtonElement | null>(null)
   return (
-    <Popover open onOpenChange={(open) => !open && finish()}>
+    <Popover open onOpenChange={(open, d) => !open && finish(undefined, d.reason === "escape-key")}>
       <PopoverContent anchor={anchor} align="start" sideOffset={2} className="w-auto max-w-[calc(100vw-2rem)] gap-1.5 p-1.5" initialFocus={choices.kind === "codes" && choices.search ? undefined : initial} data-testid="cell-picker" aria-label={`${label}を選ぶ`}>
         <p className="px-1 text-xs text-muted-foreground">{label}</p>
         {choices.kind === "engineerRole" ? (
@@ -50,12 +51,12 @@ export function CellPicker({
             options={choices.options.map((o) => ({ code: o.code, label: o.label }))}
             current={engineerRoleOf(values.chiefEngineer, values.supervisingEngineer)}
             initial={initial}
-            onPick={(code) => finish(code === undefined ? undefined : { ...choices.options.find((o) => o.code === code)!.values })}
+            onPick={(code) => finish(code === undefined ? undefined : { ...choices.options.find((o) => o.code === code)!.values }, true)}
           />
         ) : choices.search ? (
-          <Search label={label} options={choices.options} onPick={(code) => finish({ [field]: code })} onCancel={() => finish()} />
+          <Search label={label} options={choices.options} onPick={(code) => finish({ [field]: code })} onCancel={(restore) => finish(undefined, restore)} />
         ) : (
-          <Buttons label={label} options={choices.options} current={values[field]} initial={initial} onPick={(code) => finish(code === undefined ? undefined : { [field]: code })} />
+          <Buttons label={label} options={choices.options} current={values[field]} initial={initial} onPick={(code) => finish(code === undefined ? undefined : { [field]: code }, true)} />
         )}
       </PopoverContent>
     </Popover>
@@ -104,7 +105,7 @@ function Buttons({
 }
 
 /** 選択肢の多い欄（業種）: 名前・コード・別名で絞り込み、↑↓ と Enter で選ぶ（選択肢は欄の中に並べる） */
-function Search({ label, options, onPick, onCancel }: { label: string; options: readonly Choice[]; onPick: (code: string) => void; onCancel: () => void }) {
+function Search({ label, options, onPick, onCancel }: { label: string; options: readonly Choice[]; onPick: (code: string) => void; onCancel: (restoreFocus: boolean) => void }) {
   const [query, setQuery] = useState("")
   const shown = options.filter((o) => matchesChoice(o, query))
   return (
@@ -118,7 +119,7 @@ function Search({ label, options, onPick, onCancel }: { label: string; options: 
       onInputValueChange={setQuery}
       itemToStringLabel={(o: Choice) => `${o.code} ${o.label}`}
       onValueChange={(o: Choice | null) => o && onPick(o.code)}
-      onOpenChange={(open) => !open && onCancel()}
+      onOpenChange={(open, d) => !open && onCancel(d.reason === "escape-key")}
     >
       <ComboboxInput autoFocus showTrigger={false} placeholder="名前・コードで絞り込む" aria-label={`${label}を名前・コードで絞り込む`} className="w-60 max-w-full" data-testid="cell-picker-search" />
       {shown.length === 0 && <p className="px-2 py-1.5 text-xs text-muted-foreground">合うものがありません</p>}

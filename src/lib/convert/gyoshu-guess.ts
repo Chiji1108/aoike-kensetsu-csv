@@ -14,13 +14,15 @@ export const GYOSHU_GUESS_RULE =
 /** AI の案の根拠の種類。source: 元データの記載、workName: 工事名、trend: ほかの工事の傾向（推定）、none: 決められない */
 export const GYOSHU_BASES = ["source", "workName", "trend", "none"] as const
 export type GyoshuBasis = (typeof GYOSHU_BASES)[number]
-export const GYOSHU_BASIS_LABELS: Record<GyoshuBasis, string> = { source: "元データの記載から", workName: "工事名から", trend: "推定: ほかの工事の傾向", none: "決められない" }
+export const GYOSHU_BASIS_LABELS: Record<GyoshuBasis, string> = { source: "元データの記載から", workName: "工事名から", trend: "ほかの工事の傾向から", none: "決められない" }
 
 /** 「AI で案を出す」の AI の1件の答え */
 export const gyoshuSuggestionItem = z.object({
   id: z.number().int(),
   value: z.string(),
   basis: z.enum(GYOSHU_BASES),
+  /** 迷わず決められたか（false なら案にしない） */
+  confident: z.boolean(),
   note: z.string(),
 })
 export type GyoshuSuggestion = z.infer<typeof gyoshuSuggestionItem>
@@ -69,7 +71,8 @@ export function suggestionInput(r: Row): string {
 
 /**
  * AI の答えを手直しの案にする。コード表に無い値・決められないものは案にしない（数えて知らせる）。
- * 推し量った値（trend）は、傾向がはっきりしている業種（dominantGyoshu）のときだけ案にし、承認するまで推定の印を付けて見せ、承認したら職員が確かめた値として入る（根拠は注意書きに残す）
+ * AI が迷った値（confident が false）は案にしない。推し量った値（trend）は、傾向がはっきりしている業種（dominantGyoshu）のときだけ案にする。
+ * 工事名・傾向から決めた値は推定の印（guessed）を付けて見せ、承認したら職員が確かめた値として入る（confirmedChange。根拠は注意書きに残す）
  */
 export function suggestionEdits(rows: ReadonlyMap<number, Row>, results: ReadonlyMap<number, GyoshuSuggestion>, trend: GyoshuTrend) {
   const dominant = dominantGyoshu(trend)
@@ -79,13 +82,15 @@ export function suggestionEdits(rows: ReadonlyMap<number, Row>, results: Readonl
     const r = results.get(id)
     const code = r?.value.normalize("NFKC").trim() ?? ""
     // 傾向から推し量った値は、決まった処理で数えた「はっきりしている」業種のときだけ受け取る
-    if (!r || r.basis === "none" || !GYOSHU.some((g) => g.code === code) || (r.basis === "trend" && code !== dominant)) {
+    if (!r || r.basis === "none" || !r.confident || !GYOSHU.some((g) => g.code === code) || (r.basis === "trend" && code !== dominant)) {
       undecided++
       continue
     }
     if (code === row.cells.gyoshu.value && !row.cells.gyoshu.guessed && row.cells.gyoshu.status !== "error") continue
     const note = r.note.trim().slice(0, 120)
-    edits.push({ rowKey: row.key, basis: r.basis, edit: { value: code, by: "chat", message: `AI の案（${GYOSHU_BASIS_LABELS[r.basis]}）${note ? `: ${note}` : ""}` } })
+    // 元データの記載から決めた値のほかは推定（工事名・傾向から推し量った）。承認するまで推定の印で見せる
+    const guessed = r.basis !== "source"
+    edits.push({ rowKey: row.key, basis: r.basis, edit: { value: code, by: "chat", message: `AI の案（${GYOSHU_BASIS_LABELS[r.basis]}）${note ? `: ${note}` : ""}`, ...(guessed ? { guessed: true as const } : {}) } })
   }
   return { edits, undecided }
 }

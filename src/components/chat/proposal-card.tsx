@@ -310,8 +310,9 @@ function ValueDiff({ from, to, note, guess }: { from: string; to: string; note?:
             </span>
           ),
         )}
-        {note && (
+        {(note || guess) && (
           <span className={cn("mt-0.5 block text-[11px]", guess ? "text-amber-800" : "text-muted-foreground")} data-testid="diff-note" data-guess={guess ? "1" : undefined}>
+            {guess && `AI の推定${note ? "・" : ""}`}
             {note}
           </span>
         )}

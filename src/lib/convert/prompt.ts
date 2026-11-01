@@ -46,7 +46,9 @@ export function systemPrompt<F extends string>(spec: CsvSpec<F>) {
     .filter((t: Transform) => spec.fields.some((f) => transformsFor(f.valueType).some((x) => x.id === t.id)))
     .map((t: Transform) => `- ${t.id}: ${t.label}${t.multiColumn ? "（複数列可。columns の順に渡す）" : ""}`)
     .join("\n")
+  // 頼むときだけ使う作業（onDemand）の指示は、頼むときの文に書く（batchUserMessage）
   const tasks = Object.entries(AI_TASKS)
+    .filter(([, t]) => !("onDemand" in t))
     .map(([id, t]) => `- ${id}: ${t.instruction}`)
     .join("\n")
 
@@ -191,7 +193,7 @@ export function previousPlanContext<F extends string>(spec: CsvSpec<F>, p: { fis
 export function batchUserMessage(req: AiBatchRequest) {
   const task = AI_TASKS[req.task]
   return `作業: ${req.task}（${task.label}）
-${req.instruction ? `${req.task === "freeform" ? "職員の指示" : "この案件"}: ${req.instruction}\n` : ""}items:
+${"onDemand" in task ? `作業の決まり: ${task.instruction}\n` : ""}${req.instruction ? `${req.task === "freeform" ? "職員の指示" : "この案件"}: ${req.instruction}\n` : ""}items:
 ${JSON.stringify(req.items)}`
 }
 
