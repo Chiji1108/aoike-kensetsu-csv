@@ -1,4 +1,4 @@
-import { CircleHelp, FileUp, Info, Loader2, MapPin, RotateCcw, Sparkles, TableProperties, Undo2 } from "lucide-react"
+import { CircleHelp, FileUp, Info, Loader2, MapPin, MessageSquareText, RotateCcw, Sparkles, TableProperties, Undo2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Item, ItemContent, ItemDescription, ItemMedia, ItemTitle } from "@/components/ui/item"
 import { Message, MessageContent, MessageHeader } from "@/components/ui/message"
@@ -29,7 +29,12 @@ export type ReportQuestion = {
   view?: () => void
   /** 答えを取り消して聞き直す（取り消せるときだけ） */
   undo?: (() => void) | null
+  /** 「AI に聞く」でチャットに送る決まった質問（説明を頼める聞き返しだけ） */
+  prompt?: string
 }
+
+/** 報告からチャットに送る（チャットの欄が渡す。送れる間だけ canSend。送る決まりは入力欄と同じ） */
+export type ReportChat = { send: (text: string) => void; canSend: boolean }
 
 export type ReportCounts = { rows: number; csv: number }
 
@@ -49,6 +54,7 @@ export type ReportProps = {
   location: { open: () => void; sites: number } | null
   onRetry: (() => void) | null
   uploads: UploadNote[]
+  chat: ReportChat | null
 }
 
 const PHASE_TEXT = {
@@ -154,7 +160,7 @@ function Body(p: ReportProps) {
           </ItemMedia>
           <ItemContent className="gap-2">
             <ItemTitle className="whitespace-pre-wrap">{q.text}</ItemTitle>
-            {q.detail && <ItemDescription data-testid="report-question-detail">{q.detail}</ItemDescription>}
+            {q.detail && <ItemDescription className="line-clamp-none" data-testid="report-question-detail">{q.detail}</ItemDescription>}
             <div className="flex flex-wrap items-center gap-1.5">
               {q.answered !== null ? (
                 <>
@@ -177,6 +183,11 @@ function Body(p: ReportProps) {
               {q.view && (
                 <Button size="sm" variant="ghost" onClick={q.view} data-testid="report-question-view">
                   <TableProperties /> 表で見る
+                </Button>
+              )}
+              {q.prompt && p.chat && (
+                <Button size="sm" variant="ghost" disabled={!p.chat.canSend} onClick={() => p.chat!.send(q.prompt!)} data-testid="report-question-ask">
+                  <MessageSquareText /> AI に聞く
                 </Button>
               )}
             </div>

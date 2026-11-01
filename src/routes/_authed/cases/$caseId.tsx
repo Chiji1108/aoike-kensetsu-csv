@@ -3,7 +3,7 @@ import { Link, createFileRoute, notFound, useRouter } from "@tanstack/react-rout
 import { Ellipsis, FileText, FileUp, Loader2, PanelRightClose, Paperclip, Trash2, TriangleAlert, X } from "lucide-react"
 import { toast } from "sonner"
 import { AppShell } from "@/components/app-shell"
-import { CaseReport, type ReportProps, type ReportQuestion, type UploadNote } from "@/components/cases/case-report"
+import { CaseReport, type ReportChat, type ReportProps, type ReportQuestion, type UploadNote } from "@/components/cases/case-report"
 import { reportPhase } from "@/lib/cases/phase"
 import { WORK_TABS, type WorkTab } from "@/components/cases/work-tabs"
 import { DeleteDialog } from "@/components/cases/delete-dialog"
@@ -42,7 +42,7 @@ import { ATTACH_ACCEPT, CASE_STATUSES, CASE_STATUS_LABELS, contentTypeOf, FILE_K
 import { canUndo, pushUndo, undo, undoEntry, type UndoEntry } from "@/lib/cases/undo"
 import { uploadKind, warnsUnlinked } from "@/lib/cases/upload-kind"
 import { baseRows, editRows, orderAndFinalize, selectRows } from "@/lib/cases/view"
-import { askFacts, askImpact, needsConfirm } from "@/lib/cases/ask-impact"
+import { askFacts, askImpact, askPrompt, askWording, needsConfirm } from "@/lib/cases/ask-impact"
 import { carryoverReady } from "@/lib/chat/carryover"
 import { caseContext, NO_SOURCE_CONTEXT } from "@/lib/chat/context"
 import type { ChatAction } from "@/lib/chat/messages"
@@ -659,8 +659,8 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
     return planAsks.map((a, i) => {
       // 計画の取り込みと同じ数え方（askTargets）。行は元の行の分け方（記号の列で分けた行）ごと
       const targets = new Set(askTargets(a, sources.rows, rf).map(sourceKey))
-      const keys = new Set(shown.flatMap((r) => (targets.has(sourceKey(r)) ? [r.key] : [])))
-      return { id: `plan-ask-${i}`, label: ASK_KINDS[a.kind].label, keys }
+      const rows = shown.filter((r) => targets.has(sourceKey(r)))
+      return { id: `plan-ask-${i}`, label: ASK_KINDS[a.kind].label, keys: new Set(rows.map((r) => r.key)), rows }
     })
   }, [sources, shown, planAsks, plan])
   /**
@@ -1127,16 +1127,16 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
           // 答えは聞き返しの答えとして記録したものだけ（チャットなどで入れた除外は答えと見なさない）
           const answered = kind.options.find((o) => o.value === work.reportAnswers[r.id])?.label ?? null
           const effect = askEffects[i]
+          const wording = effect ? askWording(effect.impact, r.keys.size) : null
           return {
             id: r.id,
-            text: planAsks[i]!.text,
-            detail: [`該当 ${r.keys.size} 行`, effect?.facts].filter(Boolean).join("。"),
-            // 押すとどう変わるか（載せる件数）を答えに添える
-            options: kind.options.map((o) => ({
-              value: o.value,
-              label: !effect ? o.label : o.value === "exclude" ? `${o.label}（載せる ${effect.impact.before} → ${effect.impact.after} 件）` : `${o.label}（${effect.impact.before} 件のまま）`,
-            })),
+            text: ask.text,
+            detail: [wording?.detail ?? `該当 ${r.keys.size} 行`, effect?.facts].filter(Boolean).join("。"),
+            // 押すとどう変わるか（載せる件数）を答えに添える（変わらないときは detail に理由を書き、ボタンには付けない）
+            options: kind.options.map((o) => ({ value: o.value, label: wording ? wording.label(o.value, o.label) : o.label })),
             answered,
+            // まだ答えていない聞き返しだけ、チャットの AI に説明を頼める（決まった質問を職員の発言として送る）
+            prompt: answered === null ? askPrompt(ask.text, r.rows, effect?.impact.targets ?? null) : undefined,
             view: () => {
               setFilter({ kind: "all", ask: r.id })
               showTab("table")
@@ -1213,7 +1213,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
     })
   }
   const locationSites = locationSearch.sites
-  const caseReport = (
+  const caseReport = (chat: ReportChat | null) => (
     <CaseReport
       phase={phase}
       source={sourceFile ? `「${sourceFile.name}」${sourceSheets.length ? `のシート「${sourceSheets.join("」「")}」` : ""}` : null}
@@ -1239,11 +1239,12 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
         void convert()
       }}
       uploads={uploadNotes}
+      chat={chat}
     />
   )
-  const report = (
+  const report = (chat: ReportChat | null) => (
     <>
-      {caseReport}
+      {caseReport(chat)}
       <FinalImportPanel result={finalResult} view={view} proposals={excelProposals} changes={proposalChanges} actions={proposalActions} busy={savingRule} />
     </>
   )
@@ -1570,7 +1571,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
             {chatPanel ?? (
               // チャットが使えない（APIキーが無い）ときは、報告と📎と同じアップロードの入口をチャットの代わりに出す
               <div className="grid h-full content-start gap-3 overflow-auto p-4">
-                {report}
+                {report(null)}
                 <Button size="sm" className="w-fit" onClick={() => noChatInput.current?.click()} data-testid="chat-attach">
                   <Paperclip /> アップロード
                 </Button>
