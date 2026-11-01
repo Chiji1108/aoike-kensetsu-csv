@@ -4,7 +4,8 @@ import type { FieldSpec } from "../spec/types"
 import { columnLetter, type FieldPlan, type FlagColumn, type MappingPlan, type SourceRow } from "./plan"
 import { hasPersons, personLetters, readMarked, showPersons, type PersonLetters } from "./persons"
 import { excludedReason, sourceKey } from "./sources"
-import { getTransform, isFlagOn, knownNameSplits, normalizePersonName, WITHOUT_AI, type TransformContext, type TransformId } from "./transforms"
+import { NO_ADDRESSES } from "./address"
+import { getTransform, isFlagOn, knownNameSplits, normalizePersonName, WITHOUT_AI, type Rounding, type TransformContext, type TransformId } from "./transforms"
 import { checkRow, checkValue } from "./validate"
 
 export type CellStatus = "ok" | "changed" | "ai" | "warning" | "error"
@@ -141,6 +142,26 @@ export function convertRows<F extends string>(
     }
   }
   return drafts
+}
+
+/**
+ * 千円未満の端数の扱いを変えた行。端数で値が変わる変換（readsRounding: 1列の値だけを読み、AI に回さない）の項目だけを、
+ * セルに残した元データの値（original）から同じ変換で作り直す（ほかの項目・行は同じもの）。元のファイルを読み直せないところ（チャットの1回の指示）で使う
+ */
+export function reroundRows<F extends string>(rows: readonly RowResult<F>[], plan: MappingPlan<F>, rounding: Rounding): RowResult<F>[] {
+  const fields = (Object.entries(plan.fields) as [F, FieldPlan][]).flatMap(([f, p]) => (p.kind === "column" && getTransform(p.transform).readsRounding ? [[f, p.transform] as const] : []))
+  if (!fields.length) return [...rows]
+  // 端数の扱いのほかは読まない変換なので、住所の表は空でよい
+  const ctx: TransformContext = { rounding, addresses: NO_ADDRESSES }
+  return rows.map((r) => {
+    const cells = { ...r.cells }
+    for (const [f, transform] of fields) {
+      const now = r.cells[f]
+      const redone = transformCell(transform, [now.original], now.source, ctx)
+      if (redone.kind === "done") cells[f] = redone.cell
+    }
+    return { ...r, cells }
+  })
 }
 
 /** 氏名の項目に使う列の、元データの値（列を分けた姓・名は空白でつなぐ） */

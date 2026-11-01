@@ -8,6 +8,8 @@ import { placePersons } from "./persons"
 import { collapseSpaces, matchKey, nfkc, removeSpaces, toFullWidth } from "./text"
 
 export type Rounding = "floor" | "round"
+/** 千円未満の端数の扱いの名前（作業の画面・チャットの変更案・振り返りで同じ言葉） */
+export const ROUNDING_LABELS: Record<Rounding, string> = { floor: "切り捨て", round: "四捨五入" }
 export type TransformContext = {
   rounding: Rounding
   /** 住所の値を引いた結果（address.ts の lookupAddresses）。引いていない値の住所の変換は AI に回す */
@@ -66,6 +68,8 @@ export type Transform = {
   multiColumn?: boolean
   /** 最初の列の値を住所として引いた結果（ctx.addresses）を読む。変換の前にその値を引いておく（pipeline.ts の addressBookFor） */
   readsAddress?: true
+  /** 千円未満の端数の扱い（ctx.rounding）で値が変わる。1列の値だけを読み、AI に回さない（端数の扱いを変えたら元の値から作り直せる。convert.ts の reroundRows） */
+  readsRounding?: true
   run: (inputs: string[], ctx: TransformContext) => RuleOutcome
   ai?: AiStep
   /**
@@ -206,7 +210,7 @@ function yenToThousand(yen: number, ctx: TransformContext): RuleOutcome {
   const message =
     remainder === 0
       ? undefined
-      : `千円未満（${remainder}円）を${ctx.rounding === "floor" ? "切り捨て" : "四捨五入"}`
+      : `千円未満（${remainder}円）を${ROUNDING_LABELS[ctx.rounding]}`
   return value(String(thousand), message)
 }
 
@@ -289,6 +293,7 @@ export const TRANSFORMS = {
     label: "円 → 千円",
     kind: "rule",
     accepts: ["thousandYen"],
+    readsRounding: true,
     run: ([raw = ""], ctx) => {
       const a = parseAmount(raw)
       if (!a) return fail(`「${raw}」を金額として読めません`)
@@ -301,6 +306,7 @@ export const TRANSFORMS = {
     label: "千円のまま",
     kind: "rule",
     accepts: ["thousandYen"],
+    readsRounding: true,
     run: ([raw = ""], ctx) => {
       const a = parseAmount(raw)
       if (!a) return fail(`「${raw}」を金額として読めません`)
