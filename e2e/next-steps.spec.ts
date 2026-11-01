@@ -74,8 +74,9 @@ test("計画の聞き返しに答えると表と載せる件数が変わり、�
 
   await test.step("聞き返しと知らせを見た目で分ける。聞き返しは対象の行の数と答えの選択肢、知らせは答えが要らないと出す", async () => {
     await expect(question(page)).toContainText("備考（K列）に注記のある行があります。")
-    await expect(question(page).getByTestId("report-question-detail")).toHaveText("該当 1 行")
-    await expect(question(page).getByTestId("report-answer")).toHaveText([/^載せない（載せる \d+ → \d+ 件）$/, /^載せる（\d+ 件のまま）$/])
+    // 7割で選ぶ（はじめ）と対象の行は載っておらず、どちらでも件数は変わらない（ボタンに件数を付けない）
+    await expect(question(page).getByTestId("report-question-detail")).toHaveText("該当 1 行（今載せているのは 0 行）。どちらでも載せる件数は変わりません（この 1 行は今載せていません）")
+    await expect(question(page).getByTestId("report-answer")).toHaveText(["載せない", "載せる"])
     await expect(page.getByTestId("report-notes")).toContainText("答えは要りません")
     await expect(page.getByTestId("report-notes")).toContainText("メモのシートに書類待ちの工事があります。")
     // 計画が税込と決めたので税の聞き返しは出ない。次にやることの「答える」は聞き返しの1つ
