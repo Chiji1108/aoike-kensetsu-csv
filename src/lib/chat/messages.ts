@@ -28,6 +28,8 @@ export type ChatDataParts = {
   "location-offer": { sites: number; memorized: number; usd: number }
   /** 画面の決まった処理を始めるボタン（チャットの offer_action。保存した会話には前の edit_excel もある） */
   action: { action: SavedChatAction }
+  /** チャットの AI が開発者への要望を残した印（record_feedback。残した数） */
+  feedback: { count: number }
 }
 
 export type ChatMessage = UIMessage<ChatMetadata, ChatDataParts>
@@ -59,6 +61,7 @@ export const chatDataSchemas = {
   carryover: z.object({ fiscalYear: z.number().int(), codes: z.number().int().min(0), skipped: z.string().optional() }),
   "location-offer": z.object({ sites: z.number().int().min(0), memorized: z.number().int().min(0), usd: z.number().min(0) }),
   action: z.object({ action: z.enum(SAVED_CHAT_ACTIONS) }),
+  feedback: z.object({ count: z.number().int().min(1) }),
 }
 
 /** 会話を終えた印（画面にだけ出す。AI の履歴には入らない） */

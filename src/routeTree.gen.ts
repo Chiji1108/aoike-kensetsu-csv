@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as AuthedRouteImport } from './routes/_authed'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as AuthedIndexRouteImport } from './routes/_authed/index'
+import { Route as AuthedFeedbackRouteImport } from './routes/_authed/feedback'
 import { Route as AuthedRulesRouteImport } from './routes/_authed/rules'
 import { Route as AuthedCasesCaseIdRouteImport } from './routes/_authed/cases/$caseId'
 import { Route as AuthedCustomersCustomerIdRouteImport } from './routes/_authed/customers/$customerId'
@@ -32,6 +33,11 @@ const LoginRoute = LoginRouteImport.update({
 const AuthedIndexRoute = AuthedIndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => AuthedRoute,
+} as any)
+const AuthedFeedbackRoute = AuthedFeedbackRouteImport.update({
+  id: '/feedback',
+  path: '/feedback',
   getParentRoute: () => AuthedRoute,
 } as any)
 const AuthedRulesRoute = AuthedRulesRouteImport.update({
@@ -74,6 +80,7 @@ const ApiCasesCaseIdFilesRoute = ApiCasesCaseIdFilesRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof AuthedIndexRoute
   '/login': typeof LoginRoute
+  '/feedback': typeof AuthedFeedbackRoute
   '/rules': typeof AuthedRulesRoute
   '/cases/$caseId': typeof AuthedCasesCaseIdRoute
   '/customers/$customerId': typeof AuthedCustomersCustomerIdRoute
@@ -84,6 +91,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/login': typeof LoginRoute
+  '/feedback': typeof AuthedFeedbackRoute
   '/rules': typeof AuthedRulesRoute
   '/': typeof AuthedIndexRoute
   '/cases/$caseId': typeof AuthedCasesCaseIdRoute
@@ -97,6 +105,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_authed': typeof AuthedRouteWithChildren
   '/login': typeof LoginRoute
+  '/_authed/feedback': typeof AuthedFeedbackRoute
   '/_authed/rules': typeof AuthedRulesRoute
   '/_authed/': typeof AuthedIndexRoute
   '/_authed/cases/$caseId': typeof AuthedCasesCaseIdRoute
@@ -111,6 +120,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/login'
+    | '/feedback'
     | '/rules'
     | '/cases/$caseId'
     | '/customers/$customerId'
@@ -121,6 +131,7 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/login'
+    | '/feedback'
     | '/rules'
     | '/'
     | '/cases/$caseId'
@@ -133,6 +144,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/_authed'
     | '/login'
+    | '/_authed/feedback'
     | '/_authed/rules'
     | '/_authed/'
     | '/_authed/cases/$caseId'
@@ -173,6 +185,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof AuthedIndexRouteImport
+      parentRoute: typeof AuthedRoute
+    }
+    '/_authed/feedback': {
+      id: '/_authed/feedback'
+      path: '/feedback'
+      fullPath: '/feedback'
+      preLoaderRoute: typeof AuthedFeedbackRouteImport
       parentRoute: typeof AuthedRoute
     }
     '/_authed/rules': {
@@ -228,6 +247,7 @@ declare module '@tanstack/react-router' {
 }
 
 interface AuthedRouteChildren {
+  AuthedFeedbackRoute: typeof AuthedFeedbackRoute
   AuthedRulesRoute: typeof AuthedRulesRoute
   AuthedIndexRoute: typeof AuthedIndexRoute
   AuthedCasesCaseIdRoute: typeof AuthedCasesCaseIdRoute
@@ -235,6 +255,7 @@ interface AuthedRouteChildren {
 }
 
 const AuthedRouteChildren: AuthedRouteChildren = {
+  AuthedFeedbackRoute: AuthedFeedbackRoute,
   AuthedRulesRoute: AuthedRulesRoute,
   AuthedIndexRoute: AuthedIndexRoute,
   AuthedCasesCaseIdRoute: AuthedCasesCaseIdRoute,

@@ -251,16 +251,17 @@ export function personalNameTest(names: Iterable<string>): (text: string) => boo
 export const MASKED = "〔伏せた語〕"
 
 /** 固有名になりうる語: 漢字の続き・カタカナの続き（ひらがなは区切りとみなす） */
-const PROPER_RE = /[\p{Script=Han}々〆ヵヶ]+|[\p{Script=Katakana}ー]+/gu
+export const PROPER_RE = /[\p{Script=Han}々〆ヵヶ]+|[\p{Script=Katakana}ー]+/gu
 
 /** 書式の決まり（14列の名前・説明・公式の記載ルール・コードの名前）。ルールと一緒に、知っている語に入れる */
-const SPEC_TEXT = [
+export const SPEC_TEXT = [
   ...KOJI_KEIREKI.fields.flatMap((f) => [f.label, f.description]),
   ...KOJI_KEIREKI.writingRules,
   ...Object.values(CODE_SETS).flatMap((set) => set.map((c) => c.label)),
 ].join("\n")
 
-const norm = (s: string) => removeSpaces(s.normalize("NFKC"))
+/** 語の比べ方（NFKC にして空白を除く。知っている語・要望の固有名の確かめで同じもの） */
+export const norm = (s: string) => removeSpaces(s.normalize("NFKC"))
 
 /**
  * 去年のコードに残してよい語（知っている語）: 今年の表の値（個人名の項目と印の人は除く）・手直し、全体ルールと顧客ルール、去年と今年の見出し、書式の決まり

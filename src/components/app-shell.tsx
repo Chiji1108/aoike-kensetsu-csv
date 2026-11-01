@@ -1,6 +1,6 @@
 import { useState } from "react"
 import { Link, useRouter } from "@tanstack/react-router"
-import { KeyRound, LogOut, Menu } from "lucide-react"
+import { KeyRound, Lightbulb, LogOut, Menu } from "lucide-react"
 import { BrandMark } from "@/components/brand"
 import { ChangePasswordDialog } from "@/components/change-password-dialog"
 import { Button } from "@/components/ui/button"
@@ -51,6 +51,10 @@ export function AppShell({ children, fill = false }: { children: React.ReactNode
                 <Menu />
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-48">
+                <DropdownMenuItem onClick={() => void router.navigate({ to: "/feedback" })} data-testid="menu-feedback">
+                  <Lightbulb />
+                  要望
+                </DropdownMenuItem>
                 <DropdownMenuItem onClick={() => setPwOpen(true)}>
                   <KeyRound />
                   パスワード変更

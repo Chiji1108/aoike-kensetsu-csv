@@ -36,6 +36,7 @@ import { carryoverPrompt, cleanCarryoverCodes, codesFromModel, knownWords, names
 import { compareFormats, describeFormatDiff, similarity } from "../src/lib/convert/format-diff"
 import { DEFAULT_GLOBAL_RULE_ITEMS, rulesText, ruleTextSchema } from "../src/lib/chat/rules"
 import { checkReport, newTurnState, startTurn, systemPrompt, type InquiryDeps, type ReviewDeps, type TurnState } from "../src/lib/chat/turn"
+import { memoryFeedback } from "../src/lib/feedback/memory"
 import type { RowResult } from "../src/lib/convert/convert"
 import { heuristicPlan, planSheets, sheetByNames } from "../src/lib/convert/heuristic-plan"
 import { runConversion } from "../src/lib/convert/pipeline"
@@ -355,6 +356,8 @@ async function chatPhase(p: {
   let total = 0
   const log: TurnLogEntry[] = []
   const generated = new Set<string>()
+  /** 要望（本番の csv_feedback の代わり。この会話の間だけ持つ。同じ要望は件数を足す） */
+  const { deps: feedback } = memoryFeedback([def!.customerName], [GLOBAL_RULES, ...p.customerItems])
   let status: RunSummary["status"] = "done"
   let reason: string | undefined
   let error: unknown = null
@@ -398,6 +401,7 @@ async function chatPhase(p: {
         { lookup: fileAddressLookup, rounding: "floor" },
         p.review ?? null,
         p.inquiry ?? null,
+        feedback,
       )
       const result = startTurn({ apiKey: apiKey!, system, messages, state, containerId })
       let reply = ""
@@ -442,7 +446,7 @@ async function chatPhase(p: {
       table = applyChanges(table, deriveTable(table).edited, state.pending)
       const rules = state.pending.flatMap((c) => (c.kind === "rule" && c.scope === "customer" ? [c.text] : []))
       const score = compare(csvRows(table))
-      log.push({ turn: i + 1, plan: planChanges, text, ms: Date.now() - t0, steps: steps.length, calls, toolCalls: state.toolCalls, usage, usd, pending: state.pending, question: state.question, rules, oneOff: state.oneOff, tools: state.log, reply, report: checkReport(deriveTable(table), state.letters), score })
+      log.push({ turn: i + 1, plan: planChanges, text, ms: Date.now() - t0, steps: steps.length, calls, toolCalls: state.toolCalls, usage, usd, pending: state.pending, question: state.question, rules, oneOff: state.oneOff, feedback: state.feedbackRecorded, tools: state.log, reply, report: checkReport(deriveTable(table), state.letters), score })
       console.log(`\n# turn ${i + 1}「${text}」 ${Math.round((Date.now() - t0) / 1000)}s steps ${steps.length} tools ${state.toolCalls} [${calls.join(",")}] $${usd.toFixed(3)}`)
       if (state.question) console.log("  question:", state.question)
       console.log("  reply:", reply.replace(/\n+/g, " ").slice(0, 400))

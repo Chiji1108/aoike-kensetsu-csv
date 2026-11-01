@@ -39,6 +39,7 @@ import { finishTurn, watchStop } from "./turn-close"
 import { searchLocation } from "./location"
 import { locateOne } from "./location-run"
 import * as loc from "./location-store"
+import * as feedback from "./feedback-store"
 import { serverAddressLookup, serverPlaceIndex } from "./place-index"
 import { personalChecker } from "./location-guard"
 import { namesOfSaved, readSavedCase } from "./case-names"
@@ -210,6 +211,9 @@ async function runTurn(request: Request, caseId: string): Promise<Response> {
   /** 保存した作業（振り返りと名前の確かめで、指示の間に1回だけ読む） */
   let savedCase: ReturnType<typeof readSavedCase> | undefined
   const saved = () => (savedCase ??= readSavedCase(db, caseId))
+  /** ほかの顧客の名前（問い合わせの文と要望に入れない。指示の間で1回だけ読む） */
+  let others: Promise<readonly string[]> | undefined
+  const otherCustomers = () => (others ??= store.otherCustomerNames(db, kase.customerId))
   // 注文者・工事名に AI が書いた値は、変換と同じ匿名化の AI に通す（lib/chat/turn.ts の anonymizeChanges）
   const state = newTurnState(
     fromWire(body.table),
@@ -242,7 +246,14 @@ async function runTurn(request: Request, caseId: string): Promise<Response> {
       taken: () => takenRules(db, kase.customerId, caseId, saved),
       rounding: body.rounding,
     },
-    { customerName: customer?.name ?? "", otherCustomers: () => store.otherCustomerNames(db, kase.customerId) },
+    { customerName: customer?.name ?? "", otherCustomers },
+    {
+      list: () => feedback.openFeedbackSummaries(db),
+      add: (input) => feedback.addFeedback(db, { ...input, caseId, source: "ai" }),
+      bump: (id) => feedback.bumpFeedback(db, id),
+      names: async () => [customer?.name ?? "", ...(await otherCustomers())],
+      known: [rules.global, rules.customer],
+    },
   )
   /** 履歴・作ったファイル・費用を書き終えたら resolve する。印がまだ自分のもの（画面の会話を書いて下ろしてよい）なら true */
   const recorded = Promise.withResolvers<boolean>()
@@ -312,6 +323,8 @@ async function runTurn(request: Request, caseId: string): Promise<Response> {
         writer.write({ type: "data-carryover", data: { fiscalYear: carryover.fiscalYear, codes: carryText.included, ...(carryover.skipped ? { skipped: carryover.skipped } : {}) } })
       // 一括調査を始めるボタン（検索は職員が押してから。件数と費用の目安を添える）
       if (state.locationOffer) writer.write({ type: "data-location-offer", data: state.locationOffer })
+      // 要望を残した印（止めた・失敗した回でも、残したものは残っているので出す）
+      if (state.feedbackRecorded.length) writer.write({ type: "data-feedback", data: { count: state.feedbackRecorded.length } })
       // 画面の決まった処理を始めるボタン（書き出す前の確認・問い合わせの Excel）。止めた・失敗した回は出さない
       if (!failure) for (const action of state.actions) writer.write({ type: "data-action", data: { action } })
       // 置いた変更案は、後始末のほかの失敗があっても画面に出す（開き直したときと同じに見せる）

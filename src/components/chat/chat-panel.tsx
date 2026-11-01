@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from "react"
 import { useChat } from "@ai-sdk/react"
 import { DefaultChatTransport, validateUIMessages } from "ai"
 import { z } from "zod"
-import { Brain, Code2, FileSpreadsheet, History, Loader2, MessageSquare, MessageSquareText, PanelRightOpen, Paperclip, Send, Square, Table2, Trash2 } from "lucide-react"
+import { Brain, Code2, FileSpreadsheet, History, Lightbulb, Loader2, MessageSquare, MessageSquareText, PanelRightOpen, Paperclip, Send, Square, Table2, Trash2 } from "lucide-react"
+import { Link } from "@tanstack/react-router"
 import { toast } from "sonner"
 import { Markdown } from "@/components/chat/markdown"
 import { ProposalCard, type ProposalActions } from "@/components/chat/proposal-card"
@@ -38,7 +39,7 @@ async function loadHistory(caseId: string): Promise<{ messages: ChatMessage[]; c
     ? await validateUIMessages<ChatMessage>({
         messages: history.messages,
         metadataSchema: chatMetadataSchema.optional(),
-        dataSchemas: { proposal: chatDataSchemas.proposal, carryover: chatDataSchemas.carryover, "location-offer": chatDataSchemas["location-offer"], action: chatDataSchemas.action },
+        dataSchemas: { proposal: chatDataSchemas.proposal, carryover: chatDataSchemas.carryover, "location-offer": chatDataSchemas["location-offer"], action: chatDataSchemas.action, feedback: chatDataSchemas.feedback },
       })
     : []
   return { messages, carried: history.carryover }
@@ -66,6 +67,8 @@ const TOOL_LABELS: Record<string, string> = {
   get_inquiries: "問い合わせを読む",
   record_answers: "顧客の回答の変更案",
   propose_inquiry: "問い合わせの文面の案",
+  list_feedback: "要望の一覧を読む",
+  record_feedback: "要望を残す",
 }
 
 export type ChatPanelProps = {
@@ -508,6 +511,16 @@ function ChatMessageView({
               </div>
             )
           if (p.type === "data-proposal") return <ProposalCard key={i} proposal={proposals.get(p.data.id)} changes={changes.get(p.data.id)} view={view} actions={actions} busy={busy} plan={plan} />
+          if (p.type === "data-feedback")
+            return (
+              <p key={i} className="flex items-center gap-1 text-xs text-muted-foreground" data-testid="chat-feedback-note">
+                <Lightbulb className="size-3.5" />
+                要望として残しました{p.data.count > 1 ? `（${p.data.count}件）` : ""}。
+                <Link to="/feedback" className="underline underline-offset-2 hover:text-foreground">
+                  要望を見る
+                </Link>
+              </p>
+            )
           if (p.type === "data-action") return <ActionButton key={i} action={p.data.action} onAction={onAction} />
           if (p.type.startsWith("tool-")) {
             const name = p.type.slice(5)

@@ -5,6 +5,7 @@ import { csvCaseAiCaches, csvCaseFiles, csvCases, csvCaseStates, csvCustomers, c
 import type * as schema from "@/db/schema"
 import { charCount, MAX_RULE_ITEMS, MAX_RULES_TOTAL, ruleSourceSchema, rulesText, type ProposedRuleSource, type Rule7Tax, type RuleItem, type RuleScope, type RuleSource, type RuleTarget } from "@/lib/chat/rules"
 import { deleteMemoryOfCustomer, deleteRunsOfCase } from "./location-store"
+import { unlinkFeedbackOfCase } from "./feedback-store"
 import { casePrefix, r2KeyOf, type Case, type CaseFile, type CaseStatus, type Customer, type CustomerSummary, type DeletionCounts, type FileKind } from "@/lib/cases/types"
 
 /**
@@ -530,8 +531,9 @@ export async function deleteCase(db: Db, bucket: Bucket, caseId: string) {
   await db.delete(csvCaseStates).where(eq(csvCaseStates.caseId, caseId))
   await db.delete(csvCaseAiCaches).where(eq(csvCaseAiCaches.caseId, caseId))
   await db.delete(csvRuleAppends).where(eq(csvRuleAppends.caseId, caseId))
-  // ルールの項目は残す（由来の案件だけ外す）
+  // ルールの項目と要望は残す（由来の案件だけ外す）
   await db.update(csvRuleItems).set({ caseId: null }).where(eq(csvRuleItems.caseId, caseId))
+  await unlinkFeedbackOfCase(db, caseId)
   await deleteRunsOfCase(db, caseId)
   await db.delete(csvCases).where(eq(csvCases.id, caseId))
 }
