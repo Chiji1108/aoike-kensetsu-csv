@@ -54,7 +54,7 @@ export function CellPicker({
             onPick={(code) => finish(code === undefined ? undefined : { ...choices.options.find((o) => o.code === code)!.values }, true)}
           />
         ) : choices.search ? (
-          <Search label={label} options={choices.options} onPick={(code) => finish({ [field]: code })} onCancel={(restore) => finish(undefined, restore)} />
+          <Search label={label} options={choices.options} onPick={(code) => finish({ [field]: code }, true)} onCancel={(restore) => finish(undefined, restore)} />
         ) : (
           <Buttons label={label} options={choices.options} current={values[field]} initial={initial} onPick={(code) => finish(code === undefined ? undefined : { [field]: code }, true)} />
         )}
