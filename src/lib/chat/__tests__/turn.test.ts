@@ -177,7 +177,7 @@ describe("チャットの道具（決まった入力で）", () => {
     expect(state.pending).toEqual([
       { kind: "rule", scope: "customer", text: "注文者の株式会社は㈱にする", source: "chat" },
       { kind: "rule", scope: "customer", text: "完成年月は引渡日", source: "chat" },
-      { kind: "settings", tax: "included", selection: "rule7", basis: undefined },
+      { kind: "settings", tax: "included", selection: "rule7" },
     ])
   })
 
@@ -303,34 +303,22 @@ describe("列の対応を直す（set_plan）・ボタン（offer_action）", ()
   }
   const shape = { rows: 21, columns: 8 }
 
-  test("set_selection で千円未満の扱いを変えると変更案になり、この指示の表の金額をその扱いで作り直す（ほかの項目・指示を受けたときの表は変えない）", async () => {
-    // 元データは円（1,500,500円 → 切り捨て 1500・四捨五入 1501）
-    const yen = rows.map((r, i) => ({ ...r, cells: { ...r.cells, amount: { value: String([1500, 999, 2000][i]), status: "changed" as const, source: "G列: x", original: ["1,500,500", "999,500", "2,000,000"][i]!, message: "千円未満を切り捨て" } } }))
-    const amountPlan = { ...plan, fields: { ...(plan.fields as object), amount: { kind: "column" as const, column: 6, transform: "rule.yenToThousand" as const } } as never }
-    const state = newTurnState({ ...table, rows: yen }, undefined, undefined, { plan: amountPlan, shape })
+  test("set_selection の千円未満の扱いは変更案にするが、承認するまで案件の扱いは変えない（この指示の表も今の扱いのまま）。今と同じ値だけなら変更案にしない", async () => {
+    const state = newTurnState(table)
     const tools = chatTools(state)
-    const res = await call(tools, "set_selection", { rounding: "round" })
-    expect(res.ok).toBe(true)
-    expect(state.pending).toEqual([{ kind: "settings", rounding: "round" }])
-    const amounts = (await call(tools, "get_table", {})).map((r: { key: string; cells: { amount: string; client: string } }) => [r.key, r.cells.amount])
-    expect(Object.fromEntries(amounts)).toEqual({ "s!1": "1501", "s!2": "1000", "s!3": "2000" })
-    expect(state.current.rounding).toBe("round")
-    expect(state.current.rows[0]!.cells.client).toBe(yen[0]!.cells.client)
-    expect(state.start.rows[0]!.cells.amount.value).toBe("1500")
-    // 千円未満を変えない設定の変更では作り直さない
-    const before = state.current.rows
-    await call(tools, "set_selection", { selection: "rule7" })
-    expect(state.current.rows).toBe(before)
-    // 列の対応の変更案はこの指示の表を変換し直さないので、作り直しは表を変換した計画（指示を受けたときの計画）でする
-    expect((await call(tools, "set_plan", { fields: { amount: { kind: "column", column: "G", transform: "rule.thousandYen" } }, reason: "千円の列" })).ok).toBe(true)
-    await call(tools, "set_selection", { rounding: "floor" })
-    expect(state.current.rows[0]!.cells.amount.value).toBe("1500")
-  })
-
-  test("変換の元の表が無い案件（計画が無い）でも千円未満の扱いは変更案になる（作り直す行は無い）", async () => {
-    const state = newTurnState({ ...table, rows: [] })
-    expect((await call(chatTools(state), "set_selection", { rounding: "round" })).ok).toBe(true)
-    expect(state.current.rounding).toBe("round")
+    const res = await call(tools, "set_selection", { rounding: "round", selection: "rule7" })
+    expect(res).toMatchObject({ ok: true, applied: 1, note: expect.stringContaining("承認すると変換し直します") })
+    expect(state.pending).toEqual([{ kind: "settings", selection: "rule7", rounding: "round" }])
+    // ほかの設定はこの指示の表に重ねる。千円未満は重ねない（顧客の回答の変換なども案件の今の扱いのまま）
+    expect([state.current.selection, state.current.rounding]).toEqual(["rule7", "floor"])
+    expect(state.current.rows).toBe(table.rows)
+    // 今と同じ値（ほかの設定も）だけなら変更案にしない
+    expect(await call(tools, "set_selection", { rounding: "floor", tax: "excluded", selection: "rule7" })).toMatchObject({ ok: true, applied: 0, same: true })
+    expect(await call(tools, "set_selection", { basis: {} })).toMatchObject({ same: true })
+    // 一部だけ違えば、違う値だけを変更案にする
+    await call(tools, "set_selection", { tax: "included", selection: "rule7" })
+    expect(state.pending.at(-1)).toEqual({ kind: "settings", tax: "included" })
+    expect(state.pending).toHaveLength(2)
   })
 
   test("合う差分は変更案にし、表は変えない。続けて出す差分は前の差分を重ねた計画で確かめる", async () => {

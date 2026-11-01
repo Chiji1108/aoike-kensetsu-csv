@@ -206,18 +206,3 @@ test("画面の数の入力は全角数字・カンマ（全角も）・空白�
   expect(["1,000,000", "１，０００，０００", "１０００ ０００", "1000000"].map(parseInputNumber)).toEqual([1000000, 1000000, 1000000, 1000000])
   expect(["", "百万", "1.5", "-1"].map(parseInputNumber)).toEqual([undefined, undefined, undefined, undefined])
 })
-
-describe("千円未満の端数で値が変わる変換（readsRounding）", () => {
-  test("1列の値だけを読み、AI に回さない（端数の扱いを変えたら元の値から作り直せる）。端数で値が変わる変換には印がある", () => {
-    const marked = Object.values(TRANSFORMS).filter((t) => "readsRounding" in t && t.readsRounding)
-    expect(marked.map((t) => t.id).sort()).toEqual(["rule.thousandYen", "rule.yenToThousand"])
-    for (const t of marked) {
-      expect("ai" in t && t.ai).toBeFalsy()
-      expect("multiColumn" in t && t.multiColumn).toBeFalsy()
-    }
-    // 印の無い変換は端数の扱いで値が変わらない
-    const round = { rounding: "round" as const, addresses: NO_ADDRESSES }
-    for (const t of Object.values(TRANSFORMS).filter((t) => !marked.includes(t)))
-      for (const v of ["1,500,500", "1500.5千円", "2024/4/1"]) expect(JSON.stringify(t.run([v], round))).toBe(JSON.stringify(t.run([v], floor)))
-  })
-})

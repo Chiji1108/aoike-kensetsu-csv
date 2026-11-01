@@ -4,7 +4,7 @@ import { z } from "zod"
 import { MAX_ADDED_ROWS, newAddedKey } from "../cases/added"
 import { baseRows, deriveTable, type CaseTable, type TableView } from "../cases/view"
 import { MAX_ITEMS_PER_REQUEST, parseAiResponse, type AiBatchRequest } from "../convert/ai-tasks"
-import { editText, reroundRows, staffEdit, type CellEdit } from "../convert/convert"
+import { editText, staffEdit, type CellEdit } from "../convert/convert"
 import { showPersons, withNames, type PersonLetters } from "../convert/persons"
 import { getTransform, transformsFor, type TransformId } from "../convert/transforms"
 import type { MappingPlan } from "../convert/plan"
@@ -79,7 +79,7 @@ ${fileLines || "（なし）"}
 - 変換の元のほかのファイル（技術者の一覧・別の年の表など）も読んで使ってよい（例: 技術者の一覧から配置技術者を埋める）。
 - 個人名は表では「〔Ａ〕」「〔未掲載１〕」の形の記号で出る。値に個人名を入れるときはこの形のまま書く（例:「〔Ａ〕邸新築工事」）。個人名をそのまま書かない。
 - 注文者・工事名に書いた値は、事務所の変換と同じ匿名化で確かめる（個人名は記号にする）。確かめられない値は受け取られない。
-- 7割と金額の設定（税込/税抜・基準額・載せる工事の選び方＝7割ルールか全件か・金額の千円未満の切り捨て/四捨五入）は set_selection を直接呼ぶ。千円未満を変えると、この指示の get_table の金額もその扱いで作り直す。
+- 7割と金額の設定（税込/税抜・基準額・載せる工事の選び方＝7割ルールか全件か・金額の千円未満の切り捨て/四捨五入）は set_selection を直接呼ぶ。千円未満の扱いは承認すると変換し直す（この指示の get_table の金額は変わらない）。
 - 列の対応（どの列からどの項目を作るか・見出しの行・データの開始・飛ばす行・金額の単位）を変えるときは set_plan を直接呼ぶ（例:「金額は税込の列で」「工事名は B 列と C 列をつなげて」）。全行に同じ直しをセルの変更で当てるより、列の対応で直せるものは set_plan にする。承認すると変換し直す（この指示の get_table の表は変わらない）。使うシートは変えられないので、変えたいときは職員に作業の画面の上のシートの欄で選び直してもらう。職員にどの列を使っているか聞かれたら「この案件」の列の対応で答える。
 - 職員が CSV・Excel を出したい、問い合わせの Excel が欲しい、Excel で直したいと言ったら offer_action でボタンを出す（Excel で直すときも export。書き出した Excel を直してアップロードし直すと表に戻る。書き出す前の確認は画面が出す。あなたはファイルを作らない）。
 - 直したら await check_table({}) で決まった検査（エラー・警告・字数の上限・個人名らしい値・7割）を確かめ、直せるものは直す。
@@ -166,8 +166,6 @@ export type TurnState = {
   locationOffer: LocationOffer | null
   /** 今の列の対応と計画の元のシートの大きさ（set_plan の確かめ。変換の元の表が無い案件は null）。set_plan のたびに重ねた計画にする */
   plan: { plan: MappingPlan<KojiFieldId>; shape: SheetShape } | null
-  /** 表の行（start・current の rows）を変換した計画（set_plan はこの指示の表を変換し直さないので、指示を受けたときの計画のまま。千円未満の扱いを変えたときの作り直しに使う） */
-  rowsPlan: MappingPlan<KojiFieldId> | null
   /** 返事に付けるボタン（offer_action） */
   actions: ChatAction[]
   /** 顧客の回答を値にするもの（record_answers。住所の分け方と、記入を整える計画の変換・端数。無ければ道具は使えない） */
@@ -236,7 +234,6 @@ export function newTurnState(
     lookups: 0,
     locationOffer: null,
     plan,
-    rowsPlan: plan?.plan ?? null,
     actions: [],
     answers,
     answerCache: new Map(),
@@ -412,12 +409,10 @@ export function chatTools(state: TurnState) {
   const inquiriesOf = (v: TableView) => collectInquiries(v.output, { tax: state.current.tax }).filter((q) => !state.current.dismissed.has(inquiryKey(q)))
   const ruleItem = z.string().min(1).refine((s) => charCount(s) <= MAX_RULE_ITEM_LENGTH, `1項目は${MAX_RULE_ITEM_LENGTH}字まで`)
   const NAME_REFUSAL = "個人名か表の記号（〔Ａ〕〔個人名〕など）が入っている項目があります。何も出していません。名前を挙げずに決まりとして書き直してください。"
-  const push = (tool: string, changes: ChatChange[], summary: string, extra: object = {}) => {
+  /** shown はこの指示の表に重ねる変更（既定は changes。表に重ねない変更〔千円未満の扱い〕を除くときに渡す） */
+  const push = (tool: string, changes: ChatChange[], summary: string, extra: object = {}, shown: ChatChange[] = changes) => {
     state.pending.push(...changes)
-    const before = state.current
-    const next = applyChanges(before, view().edited, changes)
-    // 千円未満の扱いを変えたら、金額をその扱いで作り直す（承認したあとの画面と同じ表を AI に見せる）
-    state.current = next.rounding !== before.rounding && state.rowsPlan ? { ...next, rows: reroundRows(next.rows, state.rowsPlan, next.rounding) } : next
+    state.current = applyChanges(state.current, view().edited, shown)
     state.log.push({ tool, summary })
     return json({ ok: true, applied: changes.length, ...extra, report: checkReport(view(), state.letters) })
   }
@@ -533,9 +528,32 @@ export function chatTools(state: TurnState) {
         basis: basisSchema.optional(),
         rounding: roundingSchema.optional(),
       }),
-      execute: counted<{ tax?: TaxMode; selection?: SelectionMode; basis?: Basis; rounding?: Rounding }>(({ tax, selection, basis, rounding }) =>
-        push("set_selection", [{ kind: "settings", tax, selection, basis, rounding }], json({ tax, selection, basis, rounding })),
-      ),
+      execute: counted<{ tax?: TaxMode; selection?: SelectionMode; basis?: Basis; rounding?: Rounding }>((input) => {
+        const now = state.current
+        // 今と同じ値は変更案にしない（基準額は重ねたあとが今と同じなら）
+        const basisChanged = !!input.basis && JSON.stringify(applyChanges(now, [], [{ kind: "settings", basis: input.basis }]).basis) !== JSON.stringify(now.basis)
+        const change: Extract<ChatChange, { kind: "settings" }> = {
+          kind: "settings",
+          ...(input.tax && input.tax !== now.tax ? { tax: input.tax } : {}),
+          ...(input.selection && input.selection !== now.selection ? { selection: input.selection } : {}),
+          ...(basisChanged ? { basis: input.basis } : {}),
+          ...(input.rounding && input.rounding !== now.rounding ? { rounding: input.rounding } : {}),
+        }
+        const { kind: _, ...changed } = change
+        if (!Object.keys(changed).length) {
+          state.log.push({ tool: "set_selection", summary: "今と同じ" })
+          return json({ ok: true, applied: 0, same: true, message: "今と同じ設定なので変更案にしていません" })
+        }
+        // 千円未満の扱いは承認するまで案件の扱いを変えない（この指示の表は今の扱いのまま。承認すると画面が変換し直す）
+        const { rounding, ...shown } = change
+        return push(
+          "set_selection",
+          [change],
+          json(changed),
+          rounding ? { note: "千円未満の扱いは承認すると変換し直します（この指示の get_table の表は変わりません）" } : {},
+          Object.keys(shown).length > 1 ? [shown] : [],
+        )
+      }),
     }),
     get_inquiries: tool({
       description:

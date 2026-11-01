@@ -144,26 +144,6 @@ export function convertRows<F extends string>(
   return drafts
 }
 
-/**
- * 千円未満の端数の扱いを変えた行。端数で値が変わる変換（readsRounding: 1列の値だけを読み、AI に回さない）の項目だけを、
- * セルに残した元データの値（original）から同じ変換で作り直す（ほかの項目・行は同じもの）。元のファイルを読み直せないところ（チャットの1回の指示）で使う
- */
-export function reroundRows<F extends string>(rows: readonly RowResult<F>[], plan: MappingPlan<F>, rounding: Rounding): RowResult<F>[] {
-  const fields = (Object.entries(plan.fields) as [F, FieldPlan][]).flatMap(([f, p]) => (p.kind === "column" && getTransform(p.transform).readsRounding ? [[f, p.transform] as const] : []))
-  if (!fields.length) return [...rows]
-  // 端数の扱いのほかは読まない変換なので、住所の表は空でよい
-  const ctx: TransformContext = { rounding, addresses: NO_ADDRESSES }
-  return rows.map((r) => {
-    const cells = { ...r.cells }
-    for (const [f, transform] of fields) {
-      const now = r.cells[f]
-      const redone = transformCell(transform, [now.original], now.source, ctx)
-      if (redone.kind === "done") cells[f] = redone.cell
-    }
-    return { ...r, cells }
-  })
-}
-
 /** 氏名の項目に使う列の、元データの値（列を分けた姓・名は空白でつなぐ） */
 function* sourceNames<F extends string>(spec: CsvSpec<F>, sources: readonly SourceRow[], plan: MappingPlan<F>) {
   for (const f of spec.fields) {
@@ -251,6 +231,30 @@ export type CellEdit = {
   byAi?: true
   /** 顧客に聞くと決めた（CellResult.ask） */
   ask?: true
+  /**
+   * 千円未満の扱いで値が変わる金額の、千円にする前の値と変換（返ってきた Excel の金額など）。value はそのときの扱いで千円にした値で、
+   * 表は今の扱いで千円にし直す（roundEdits）。この項目より前の手直しには無い（value のまま）
+   */
+  amount?: { raw: string; transform: AmountTransform }
+}
+/** 千円未満の扱いで値が変わる金額の変換 */
+export const AMOUNT_TRANSFORMS = ["rule.thousandYen", "rule.yenToThousand"] as const satisfies readonly TransformId[]
+export type AmountTransform = (typeof AMOUNT_TRANSFORMS)[number]
+
+/**
+ * 千円未満の扱い（rounding）で手直しの金額を千円にし直す（amount のある手直しだけ。無ければ同じ Map を返す）。
+ * 表を作るとき（cases/view.ts の editRows）にいつも通すので、扱いを画面で切り替えても、承認で変えても、取り消しで戻しても同じになる
+ */
+export function roundEdits(edits: CellEdits, rounding: Rounding): CellEdits {
+  let out: Map<string, CellEdit> | null = null
+  const ctx: TransformContext = { rounding, addresses: NO_ADDRESSES }
+  for (const [key, e] of edits) {
+    if (!e.amount) continue
+    const cell = transformCell(e.amount.transform, [e.amount.raw], "", ctx)
+    if (cell.kind !== "done" || cell.cell.status === "error" || cell.cell.value === e.value) continue
+    ;(out ??= new Map(edits)).set(key, { ...e, value: cell.cell.value })
+  }
+  return out ?? edits
 }
 export type CellEdits = ReadonlyMap<string, CellEdit>
 

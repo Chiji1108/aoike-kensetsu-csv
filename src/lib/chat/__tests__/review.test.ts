@@ -56,6 +56,8 @@ describe("振り返る指示（画面の会話から）", () => {
         tool("set_selection", { selection: "all", tax: "excluded", rounding: "round" }, JSON.stringify({ ok: true, applied: 1 })),
         // 断られた set_selection（道具の回数を使い切った）は記録しない
         tool("set_selection", { tax: "included" }, JSON.stringify({ ok: false, error: "使い切りました" })),
+        // 今と同じで変更案にしなかった set_selection も記録しない
+        tool("set_selection", { tax: "unknown" }, JSON.stringify({ ok: true, applied: 0, same: true })),
         tool("set_include", {}),
         tool("set_include", {}),
         { type: "data-proposal", data: { id: "p2" } },

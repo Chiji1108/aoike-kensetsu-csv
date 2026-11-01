@@ -64,6 +64,25 @@ describe("最後の Excel の上げ直し", () => {
     expect(r.changes).toEqual([])
   })
 
+  test("Excel で直した金額は千円にする前の値も持ち、千円未満の扱いを変えると（画面でもチャットの承認でも、取り消しでも）表がその扱いで千円にし直す", async () => {
+    const sheets = await roundTrip(table, (ws, rowOf) => {
+      ws.getCell(rowOf("s!2"), col("amount")).value = 3500.6
+    })
+    const r = await read(sheets, table)
+    expect(r.changes).toEqual([{ kind: "cell", rowKey: "s!2", field: "amount", edit: { value: "3500", by: "excel", amount: { raw: "3500.6", transform: "rule.thousandYen" } } }])
+    const approved = applyChanges(table, deriveTable(table).edited, r.changes)
+    const amountOf = (t: CaseTable) => deriveTable(t).shown.find((x) => x.key === "s!2")!.cells.amount.value
+    expect(amountOf(approved)).toBe("3500")
+    // 画面の切り替え（作業の rounding を変える）
+    expect(amountOf({ ...approved, rounding: "round" })).toBe("3501")
+    // チャットの承認（変更案の settings）
+    const rounded = applyChanges(approved, deriveTable(approved).edited, [{ kind: "settings", rounding: "round" }])
+    expect(amountOf(rounded)).toBe("3501")
+    expect(amountOf({ ...rounded, rounding: "floor" })).toBe("3500")
+    // 千円にする前の値の無い手直し（前の保存・職員の手入力）は、そのときの値のまま
+    expect(amountOf({ ...rounded, edits: new Map([[editKey("s!2", "amount"), { value: "3500", by: "excel" }]]) })).toBe("3500")
+  })
+
   test("セルを直す → セルの変更案。承認すると表に入る", async () => {
     const sheets = await roundTrip(table, (ws, rowOf) => {
       ws.getCell(rowOf("s!2"), col("amount")).value = 3500
@@ -73,7 +92,7 @@ describe("最後の Excel の上げ直し", () => {
     const r = await read(sheets, table)
     expect(r.report).toMatchObject({ cells: 2, added: 0, excluded: 0, conflicts: [], invalid: [], ambiguous: [] })
     expect(r.changes).toEqual([
-      { kind: "cell", rowKey: "s!2", field: "amount", edit: { value: "3500", by: "excel" } },
+      { kind: "cell", rowKey: "s!2", field: "amount", edit: { value: "3500", by: "excel", amount: { raw: "3500", transform: "rule.thousandYen" } } },
       { kind: "cell", rowKey: "s!3", field: "startYm", edit: { value: "202405", by: "excel" } },
     ])
     const after = deriveTable(applyChanges(table, view.edited, r.changes))

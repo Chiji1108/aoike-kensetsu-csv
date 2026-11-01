@@ -52,7 +52,7 @@ export const QUIET_TOOLS: ReadonlySet<string> = new Set(["code_execution", "get_
 const planOutput = z.object({ ok: z.literal(true), changes: z.array(z.string()) })
 const selectionInput = z.object({ tax: taxSchema.optional(), selection: selectionSchema.optional(), basis: basisSchema.optional(), rounding: roundingSchema.optional() })
 /** 変更案を溜めた道具の結果（set_selection。断った結果は記録しない） */
-const pushedOutput = z.object({ ok: z.literal(true) })
+const pushedOutput = z.object({ ok: z.literal(true), applied: z.number().int().positive() })
 const outputOf = (output: unknown) => (typeof output === "string" ? tryParseJson(output) : output)
 
 /** 変更案の承認の数（undo は承認の取り消しの記録。取り消した項目を項目ごとに数える） */

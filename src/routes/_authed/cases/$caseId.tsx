@@ -60,7 +60,7 @@ import { acceptAiPlan, hasExclusion, reviewPlanTransforms, type MappingPlan, typ
 import { applyPlanPatch, sheetShapeOf } from "@/lib/convert/plan-patch"
 import { planExcerpt, previousPlanContext } from "@/lib/convert/prompt"
 import { askTargets, collectSourceRows, sameHeader, sourceKey } from "@/lib/convert/sources"
-import { ROUNDING_LABELS, type Rounding } from "@/lib/convert/transforms"
+import { ROUNDING_LABELS, ROUNDINGS, type Rounding } from "@/lib/convert/transforms"
 import { changeSignature, readFinalSheet, recount, withoutKnown, type FinalReport } from "@/lib/excel/final-import"
 import { finalSheet } from "@/lib/excel/final-sheet"
 import { Cost, useUsdJpy } from "@/components/cost"
@@ -614,7 +614,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
   }, [sources, plan, addresses])
 
   /** 画面と CSV の表。個人名の記号（letters）は CSV に書く行からこの順に付け、手直し・置換先の「〔Ａ〕」をその人に戻すのにも使う */
-  const edited = useMemo(() => (rows ? editRows({ rows, added, edits, replacements }) : null), [rows, added, edits, replacements])
+  const edited = useMemo(() => (rows ? editRows({ rows, added, edits, replacements, rounding }) : null), [rows, added, edits, replacements, rounding])
   /** 選び直しは入れ外し・7割の設定が変わったときだけ（並べ替えでは選び直さない） */
   const selected = useMemo(
     () => (edited ? selectRows({ manual, tax, basis, rule7Tax, selection: selectionMode }, edited) : null),
@@ -1729,7 +1729,7 @@ function SelectionPanel(p: {
           <Segmented label="7割の計算" value={p.rule7Tax} options={(Object.keys(RULE7_TAX_LABELS) as Rule7Tax[]).map((v) => ({ value: v, label: RULE7_TAX_LABELS[v] }))} onChange={p.onRule7Tax} testId="rule7-tax" />
         </Field>
         <Field label="千円未満">
-          <Segmented label="千円未満の端数" value={p.rounding} options={[{ value: "floor", label: ROUNDING_LABELS.floor }, { value: "round", label: ROUNDING_LABELS.round }]} onChange={p.onRounding} testId="rounding" />
+          <Segmented label="千円未満の端数" value={p.rounding} options={ROUNDINGS.map((value) => ({ value, label: ROUNDING_LABELS[value] }))} onChange={p.onRounding} testId="rounding" />
         </Field>
         <Field label="載せる工事" hint="全件: 7割以上なら件数は自由。顧客が絞ったデータもこちら">
           <Segmented label="載せる工事" value={p.selection} options={SELECTION_MODES.map((m) => ({ value: m, label: SELECTION_LABELS[m] }))} onChange={p.onSelection} testId="selection" />

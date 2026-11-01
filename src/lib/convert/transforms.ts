@@ -7,7 +7,9 @@ import { formatYearMonth, parsePeriod, parseYearMonth } from "./dates"
 import { placePersons } from "./persons"
 import { collapseSpaces, matchKey, nfkc, removeSpaces, toFullWidth } from "./text"
 
-export type Rounding = "floor" | "round"
+/** 金額の千円未満の扱い（切り捨て・四捨五入）。並びは作業の画面の選ぶ欄の順 */
+export const ROUNDINGS = ["floor", "round"] as const
+export type Rounding = (typeof ROUNDINGS)[number]
 /** 千円未満の端数の扱いの名前（作業の画面・チャットの変更案・振り返りで同じ言葉） */
 export const ROUNDING_LABELS: Record<Rounding, string> = { floor: "切り捨て", round: "四捨五入" }
 export type TransformContext = {
@@ -68,8 +70,6 @@ export type Transform = {
   multiColumn?: boolean
   /** 最初の列の値を住所として引いた結果（ctx.addresses）を読む。変換の前にその値を引いておく（pipeline.ts の addressBookFor） */
   readsAddress?: true
-  /** 千円未満の端数の扱い（ctx.rounding）で値が変わる。1列の値だけを読み、AI に回さない（端数の扱いを変えたら元の値から作り直せる。convert.ts の reroundRows） */
-  readsRounding?: true
   run: (inputs: string[], ctx: TransformContext) => RuleOutcome
   ai?: AiStep
   /**
@@ -293,7 +293,6 @@ export const TRANSFORMS = {
     label: "円 → 千円",
     kind: "rule",
     accepts: ["thousandYen"],
-    readsRounding: true,
     run: ([raw = ""], ctx) => {
       const a = parseAmount(raw)
       if (!a) return fail(`「${raw}」を金額として読めません`)
@@ -306,7 +305,6 @@ export const TRANSFORMS = {
     label: "千円のまま",
     kind: "rule",
     accepts: ["thousandYen"],
-    readsRounding: true,
     run: ([raw = ""], ctx) => {
       const a = parseAmount(raw)
       if (!a) return fail(`「${raw}」を金額として読めません`)

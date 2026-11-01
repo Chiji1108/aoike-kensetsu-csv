@@ -2,7 +2,7 @@ import { MAX_ADDED_ROWS } from "../cases/added"
 import type { TableView } from "../cases/view"
 import type { ChatChange } from "../chat/proposals"
 import { addressKey, NO_ADDRESSES, type AddressLookup } from "../convert/address"
-import { resolveRows, transformCell, type CellDraft, type CellEdit, type CellResult, type RowDraft } from "../convert/convert"
+import { AMOUNT_TRANSFORMS, resolveRows, transformCell, type AmountTransform, type CellDraft, type CellEdit, type CellResult, type RowDraft } from "../convert/convert"
 import { personKey, withNames } from "../convert/persons"
 import { fillAiCache, type AiCache, type AiCaller } from "../convert/pipeline"
 import type { SheetGrid } from "../convert/plan"
@@ -40,6 +40,8 @@ const INDEX_FIELDS: readonly F[] = ["client", "workName", "place", "engineer", "
 const comparable = (values: readonly string[]) => values.map((v, c) => (NUMERIC_FIELDS.has(FIELDS[c]!.id) ? v.replace(/[,，\s　]/g, "") : v))
 
 /** 取り込んだ値を項目の値にする決まった処理（AI に頼らない。注文者・工事名は変換と同じ匿名化） */
+const isAmountTransform = (how: string): how is AmountTransform => (AMOUNT_TRANSFORMS as readonly string[]).includes(how)
+
 const READ_AS: Record<F, TransformId | "personName" | "address"> = {
   gyoshu: "rule.gyoshu",
   client: "ai.anonymizeClient",
@@ -496,7 +498,10 @@ async function readValues(cells: readonly Cell[], ai: FinalAi, nameOfLetter: Rea
       return
     }
     const note = r.status === "warning" ? { status: "warning" as const, ...(r.message ? { message: r.message } : {}) } : {}
-    out.set(c, { ok: true, edit: { value: r.value, by: "excel", ...note, ...(r.byAi ? { byAi: true } : {}), ...(r.guessed ? { guessed: true } : {}) } })
+    // 金額は千円にする前の値も持つ（千円未満の扱いを変えたら表がその扱いで千円にし直す）
+    const how = READ_AS[c.field]
+    const amount = isAmountTransform(how) ? { amount: { raw: r.original, transform: how } } : {}
+    out.set(c, { ok: true, edit: { value: r.value, by: "excel", ...note, ...(r.byAi ? { byAi: true } : {}), ...(r.guessed ? { guessed: true } : {}), ...amount } })
   })
   return out
 }
