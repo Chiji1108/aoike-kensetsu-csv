@@ -8,6 +8,7 @@ import { toast } from "sonner"
 import { Markdown } from "@/components/chat/markdown"
 import { ProposalCard, type ProposalActions } from "@/components/chat/proposal-card"
 import { LocationSearchStatus, type LocationSearch } from "@/components/convert/location-panel"
+import type { ReportChat } from "@/components/cases/case-report"
 import { TOOL_TABS, workTabLabel, type WorkTab } from "@/components/cases/work-tabs"
 import { Bubble, BubbleContent } from "@/components/ui/bubble"
 import { Button } from "@/components/ui/button"
@@ -96,8 +97,8 @@ export type ChatPanelProps = {
   onCaseCost: (usd: number) => void
   /** 工事場所の一括調査（返事の「調べ始める」は案件の画面と同じものを動かす） */
   location: LocationSearch
-  /** 会話の最初に出す変換の報告（案件の作業から作る。保存しない） */
-  report: React.ReactNode
+  /** 会話の最初に出す変換の報告（案件の作業から作る。保存しない）。chat で報告から決まった質問を送れる（聞き返しの「AI に聞く」） */
+  report: (chat: ReportChat) => React.ReactNode
   /** 会話の最後に出すもの（表の「直す」から頼んだ AI の案。案件の作業から作る） */
   tail?: React.ReactNode
   /** 📎でアップロードしたファイル（種類は案件の画面が見分ける。画面にドラッグしたファイルも案件の画面が受け取る） */
@@ -299,7 +300,7 @@ export function ChatPanel(props: ChatPanelProps) {
         <MessageScroller className="flex-1">
           <MessageScrollerViewport>
             <MessageScrollerContent className="gap-4 px-4 py-3" data-testid="chat-messages">
-              {props.report}
+              {props.report({ send: (text) => void send(text, { keepInput: true }), canSend: ready && !working && !preparing })}
               {carryover && history === "loaded" && !carried && (
                 <div className="grid gap-2 rounded-lg border bg-violet-50/60 px-3 py-2 text-xs dark:bg-violet-950/30" data-testid="chat-carryover">
                   <span className="text-muted-foreground">
