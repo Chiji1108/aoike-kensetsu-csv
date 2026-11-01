@@ -24,7 +24,7 @@ const rows = [
   kojiRow({ ...base, client: "株式会社テスト", workName: "テストﾋﾞﾙ電気工事", amount: "3000" }, 2),
   kojiRow({ ...base, client: "株式会社サンプル", workName: "サンプル倉庫改修", amount: "1000" }, 3),
 ]
-const table: CaseTable = { rows, added: [], edits: new Map(), replacements: {}, manual: new Map(), tax: "excluded", basis: {}, rule7Tax: "excluded" as const, selection: "all" as const, dismissed: new Set<string>(), inquiryText: EMPTY_INQUIRY_TEXT }
+const table: CaseTable = { rows, added: [], edits: new Map(), replacements: {}, manual: new Map(), tax: "excluded", basis: {}, rule7Tax: "excluded" as const, selection: "all" as const, rounding: "floor", dismissed: new Set<string>(), inquiryText: EMPTY_INQUIRY_TEXT }
 const id = { caseId: "case-1", sourceFileId: "file-1", excelKey: "1".repeat(64) }
 
 /** 匿名化の決まった応答: 注文者は全体、工事名は「様邸」「邸」の前を個人名として印にする */

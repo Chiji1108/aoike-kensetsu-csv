@@ -56,7 +56,7 @@ const TOOL_LABELS: Record<string, string> = {
   set_include: "載せる・外すの変更案",
   add_rows: "工事を足す変更案",
   ask_customer: "問い合わせの変更案",
-  set_selection: "7割の設定の変更案",
+  set_selection: "7割と金額の設定の変更案",
   set_plan: "列の対応の変更案",
   offer_action: "ボタンを出す",
   ask_staff: "聞き返し",

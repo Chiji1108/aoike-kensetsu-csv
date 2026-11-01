@@ -8,6 +8,7 @@ import { SOURCE_LABELS } from "../location/sites"
 import type { ChatChange } from "./proposals"
 import { askLabel, CORRECTION_MESSAGE } from "../inquiry/inquiry"
 import { choiceLabel } from "../spec/choices"
+import { ROUNDING_LABELS, type Rounding } from "../convert/transforms"
 
 
 /** 印の人を今の記号で見せる。今の表にいない人（承認すると現れる人）は名前を出さない */
@@ -25,11 +26,12 @@ export type ChangeLine = { where: string; what: string; from: string; to: string
 /** 顧客の回答から読んだ変更（record_answers）は、項目の名前に添えて分かるようにする（聞いていない項目の訂正は「顧客の訂正」） */
 const BY_NOTE: Partial<Record<Extract<ChatChange, { kind: "cell" }>["edit"]["by"], string>> = { customer: "（顧客の回答）", confirmed: "（顧客が確認）" }
 
-/** 7割の設定の変更（変更案の settings・チャットの set_selection の入力）を言葉にする。振り返りの材料も同じ言葉で出す */
-export function describeSettings(c: { tax?: TaxMode; selection?: SelectionMode; basis?: Basis }): string[] {
+/** 7割と金額の設定の変更（変更案の settings・チャットの set_selection の入力）を言葉にする。振り返りの材料も同じ言葉で出す */
+export function describeSettings(c: { tax?: TaxMode; selection?: SelectionMode; basis?: Basis; rounding?: Rounding }): string[] {
   return [
     c.tax && `Excel の金額: ${TAX_LABELS[c.tax]}`,
     c.selection && `載せる工事: ${SELECTION_LABELS[c.selection]}`,
+    c.rounding && `千円未満: ${ROUNDING_LABELS[c.rounding]}`,
     c.basis && `基準額: ${Object.entries(c.basis).map(([code, b]) => `業種${code} 合計${b?.total ?? "-"}・元請${b?.motouke ?? "-"}千円`).join("、")}`,
   ].filter((x): x is string => !!x)
 }
@@ -68,7 +70,7 @@ export function describeChange(c: ChatChange, view: TableView, byKey: ReadonlyMa
       return { where: rowName(c.rowKey), what: "CSV に載せる", from: now ? `${now.included ? "載せる" : "載せない"}${INCLUSION_LABELS[now.reason] ? `（${INCLUSION_LABELS[now.reason]}）` : ""}` : "", to: c.include ? "載せる（手動）" : "載せない（手動）" }
     }
     case "settings":
-      return { where: "案件", what: "7割の設定", from: "", to: describeSettings(c).join(" / ") }
+      return { where: "案件", what: "7割と金額の設定", from: "", to: describeSettings(c).join(" / ") }
     case "rule":
       return { where: c.scope === "global" ? "全体ルール" : "顧客ルール", what: c.source === "review" ? "項目を足す（振り返り）" : "項目を足す", from: "", to: c.text }
     case "plan":

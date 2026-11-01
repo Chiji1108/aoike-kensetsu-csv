@@ -3,6 +3,7 @@ import { orderKojiRows, selectKojiRows, type Basis, type Rule7Tax, type Selectio
 import { KOJI_KEIREKI, type KojiFieldId } from "../spec/koji-keireki"
 import { addedRowResults, type AddedRow } from "./added"
 import type { InquiryText } from "../inquiry/text"
+import type { Rounding } from "../convert/transforms"
 
 /** 案件の表を決めるもの: 変換の結果（手直しの前）と、それに重ねる手直し・置換・入れ外し・7割の設定 */
 export type CaseTable = {
@@ -17,6 +18,8 @@ export type CaseTable = {
   /** 7割の計算（基準額が税抜か税込か） */
   rule7Tax: Rule7Tax
   selection: SelectionMode
+  /** 金額の千円未満の扱い。rows はこの扱いで変換した行（変えたら変換し直す） */
+  rounding: Rounding
   /** 職員が外した問い合わせ（inquiryKey）。チャットの問い合わせの道具はこれを除く */
   dismissed: ReadonlySet<string>
   /** 問い合わせの文面（承認した AI の文・職員が直した文） */

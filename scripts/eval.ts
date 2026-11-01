@@ -194,7 +194,7 @@ function previousPlanOf() {
 /** 画面と同じく、計画が税込・税抜を決めていれば案件の税の設定に入れる */
 const tableOf = ({ rows, plan }: Pick<Baseline, "rows" | "plan">): CaseTable => {
   const w = withPlanTax(newWork(), plan)
-  return { rows, added: w.added, edits: w.edits, replacements: w.replacements, manual: w.manual, tax: w.tax, basis: w.basis, rule7Tax: w.rule7Tax, selection: w.selection, dismissed: w.dismissed, inquiryText: w.inquiryText }
+  return { rows, added: w.added, edits: w.edits, replacements: w.replacements, manual: w.manual, tax: w.tax, basis: w.basis, rule7Tax: w.rule7Tax, selection: w.selection, rounding: w.rounding, dismissed: w.dismissed, inquiryText: w.inquiryText }
 }
 
 /** 文字の2つ組の重なり（行の対応づけに使う。法人格と空白は除いて比べ、2文字に満たなければ 0） */
@@ -398,7 +398,7 @@ async function chatPhase(p: {
         },
         undefined,
         { plan, shape: sheetShapeOf(gridOf(plan)) },
-        { lookup: fileAddressLookup, rounding: "floor" },
+        { lookup: fileAddressLookup },
         p.review ?? null,
         p.inquiry ?? null,
         feedback,
@@ -493,7 +493,7 @@ async function reviewEval() {
     selection: l.pending.flatMap((c) => (c.kind === "settings" ? describeSettings(c) : [])),
     tools: [...new Set(l.tools.map((t) => t.tool).filter((t) => !QUIET_TOOLS.has(t)))],
   }))
-  const review = finish("review", await chatPhase({ turns: [REVIEW_PROMPT], table: year.table, plan: year.plan, customerItems: [], review: { turns: async () => turns, names: async () => [], taken: async () => ({ rules: [], pending: [] }), rounding: "floor" } }))
+  const review = finish("review", await chatPhase({ turns: [REVIEW_PROMPT], table: year.table, plan: year.plan, customerItems: [], review: { turns: async () => turns, names: async () => [], taken: async () => ({ rules: [], pending: [] }) } }))
   const reviewed = review.log.flatMap((l) => l.pending.flatMap((c) => (c.kind === "rule" && c.scope === "customer" ? [ruleTextSchema.parse(c.text)] : [])))
   const oneOff = review.log.flatMap((l) => l.oneOff)
   console.log(`\n振り返りの毎年の決まり ${reviewed.length} 項目:\n  ${reviewed.join("\n  ")}\n今年だけ ${oneOff.length} 件:\n  ${oneOff.join("\n  ")}`)
@@ -683,7 +683,7 @@ async function answersEval() {
         ],
       })
       const t0 = Date.now()
-      const state = newTurnState(table, anonymize, undefined, { plan: base.plan, shape: sheetShapeOf(gridOf(base.plan)) }, { lookup: fileAddressLookup, rounding: "floor" })
+      const state = newTurnState(table, anonymize, undefined, { plan: base.plan, shape: sheetShapeOf(gridOf(base.plan)) }, { lookup: fileAddressLookup })
       const result = startTurn({ apiKey, system, messages, state, containerId })
       let reply = ""
       const calls: string[] = []

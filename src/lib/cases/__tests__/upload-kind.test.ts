@@ -22,6 +22,7 @@ const table: CaseTable = {
   basis: {},
   rule7Tax: "excluded",
   selection: "all",
+  rounding: "floor",
   dismissed: new Set<string>(),
   inquiryText: EMPTY_INQUIRY_TEXT,
 }

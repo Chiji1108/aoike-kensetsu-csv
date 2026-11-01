@@ -1,6 +1,6 @@
 import { z } from "zod"
 import type { CellResult, RowResult } from "../convert/convert"
-import { basisSchema, cellEditSchema, fieldIdSchema, replacementsSchema, rule7TaxSchema, selectionSchema, taxSchema } from "../schemas"
+import { basisSchema, cellEditSchema, fieldIdSchema, replacementsSchema, roundingSchema, rule7TaxSchema, selectionSchema, taxSchema } from "../schemas"
 import type { CaseTable } from "../cases/view"
 import { addedRowSchema, MAX_ADDED_ROWS } from "../cases/added"
 import { EMPTY_INQUIRY_TEXT, inquiryTextSchema } from "../inquiry/text"
@@ -50,6 +50,8 @@ export const caseTableWireSchema: z.ZodType<CaseTableWire> = z.object({
   /** 7割の計算。無い形（この項目より前の画面が送る表）は税抜（前はいつも税抜） */
   rule7Tax: rule7TaxSchema.default("excluded"),
   selection: selectionSchema,
+  /** 金額の千円未満の扱い。無い形（この項目より前の画面が送る表）は切り捨て（新しい案件の初期値） */
+  rounding: roundingSchema.default("floor"),
   /** 外した問い合わせと問い合わせの文面。無い形（この項目より前の画面が送る表）は空 */
   dismissed: z.array(z.string().max(300)).max(50_000).default([]),
   inquiryText: inquiryTextSchema.default(EMPTY_INQUIRY_TEXT),
