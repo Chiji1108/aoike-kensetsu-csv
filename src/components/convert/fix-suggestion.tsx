@@ -37,7 +37,8 @@ export function useGyoshuSuggestion({ caseId, onRecord, onCaseCost }: { caseId: 
     setRunning(asked.length)
     setLast(null)
     try {
-      const instruction = trendText(gyoshuTrend(rows, targets))
+      const trend = gyoshuTrend(rows, targets)
+      const instruction = trendText(trend)
       const byId = new Map(asked.map((r, i) => [i, r]))
       const results = new Map<number, GyoshuSuggestion>()
       for (let start = 0; start < asked.length; start += MAX_ITEMS_PER_REQUEST) {
@@ -53,7 +54,7 @@ export function useGyoshuSuggestion({ caseId, onRecord, onCaseCost }: { caseId: 
         if (!parsed.ok) throw new Error(parsed.message)
         for (const [id, r] of parsed.results) results.set(id, r)
       }
-      const { edits, undecided } = suggestionEdits(byId, results)
+      const { edits, undecided } = suggestionEdits(byId, results, trend)
       const byBasis: FixRun["byBasis"] = {}
       for (const e of edits) byBasis[e.basis] = (byBasis[e.basis] ?? 0) + 1
       if (edits.length) {

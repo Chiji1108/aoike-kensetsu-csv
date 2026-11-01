@@ -75,7 +75,7 @@ test("計画の聞き返しに答えると表と載せる件数が変わり、�
   await test.step("聞き返しと知らせを見た目で分ける。聞き返しは対象の行の数と答えの選択肢、知らせは答えが要らないと出す", async () => {
     await expect(question(page)).toContainText("備考（K列）に注記のある行があります。")
     await expect(question(page).getByTestId("report-question-detail")).toHaveText("該当 1 行")
-    await expect(question(page).getByTestId("report-answer")).toHaveText(["載せない", "載せる"])
+    await expect(question(page).getByTestId("report-answer")).toHaveText([/^載せない（載せる \d+ → \d+ 件）$/, /^載せる（\d+ 件のまま）$/])
     await expect(page.getByTestId("report-notes")).toContainText("答えは要りません")
     await expect(page.getByTestId("report-notes")).toContainText("メモのシートに書類待ちの工事があります。")
     // 計画が税込と決めたので税の聞き返しは出ない。次にやることの「答える」は聞き返しの1つ
@@ -159,9 +159,9 @@ test("計画の聞き返しに答えると表と載せる件数が変わり、�
     const remaining = page.getByTestId("export-remaining")
     if ((await button.getAttribute("data-left")) === "1") {
       expect(title).toMatch(/^残り: /)
-      const texts = await remaining.locator("button").allTextContents()
+      const texts = await remaining.locator('[data-testid^="export-remaining-"]').allTextContents()
       expect(title).toBe(`残り: ${texts.join(" → ")}`)
-      await remaining.locator("button").first().click()
+      await remaining.locator('[data-testid^="export-remaining-"]').first().click()
       await expect(page.getByTestId("export-dialog")).toBeHidden()
     } else {
       expect(title).toBe("残りはありません")

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { AI_TASKS, parseAiResponse } from "../ai-tasks"
-import { GYOSHU_BASIS_LABELS, GYOSHU_GUESS_RULE, gyoshuTrend, suggestionEdits, suggestionInput, trendText, type GyoshuSuggestion } from "../gyoshu-guess"
+import { dominantGyoshu, GYOSHU_BASIS_LABELS, GYOSHU_GUESS_RULE, gyoshuTrend, suggestionEdits, suggestionInput, trendText, type GyoshuSuggestion } from "../gyoshu-guess"
 import { systemPrompt } from "../../chat/turn"
 import { kojiRow } from "./helpers"
 
@@ -17,7 +17,11 @@ describe("業種の推定", () => {
   test("ほかの工事の傾向は、対象の行・業種が決まっていない行・推定の行を除いて決まった処理で数える", () => {
     const t = gyoshuTrend(rows, new Set(["s!8", "s!9"]))
     expect(t).toEqual({ total: 8, counts: [{ code: "8", count: 7 }, { code: "9", count: 1 }] })
-    expect(trendText(t)).toBe("ほかの工事の業種: 8 件中 7 件が電気（8）、1 件が管（9）")
+    expect(trendText(t)).toBe("ほかの工事の業種: 8 件中 7 件が電気（8）、1 件が管（9）。傾向がはっきりしている: 電気（8）")
+    // 6割に届かない・少なすぎる傾向からは推し量らない
+    expect(dominantGyoshu({ total: 10, counts: [{ code: "25", count: 5 }, { code: "15", count: 5 }] })).toBeUndefined()
+    expect(dominantGyoshu({ total: 3, counts: [{ code: "8", count: 3 }] })).toBeUndefined()
+    expect(trendText({ total: 10, counts: [{ code: "25", count: 5 }, { code: "15", count: 5 }] })).toContain("傾向ははっきりしない（推し量らない）")
     expect(trendText(gyoshuTrend([], new Set()))).toContain("決まっている工事がない")
   })
 
@@ -36,8 +40,11 @@ describe("業種の推定", () => {
       [1, { id: 1, value: "8", basis: "workName", note: "受変電" }],
       [2, { id: 2, value: "31", basis: "workName", note: "" }],
     ])
-    const { edits, undecided } = suggestionEdits(byId, results)
+    const trend = gyoshuTrend(rows, new Set(["s!8", "s!9"]))
+    const { edits, undecided } = suggestionEdits(byId, results, trend)
     expect(undecided).toBe(1)
+    // 傾向がはっきりしない案件では、推し量った値を受け取らない
+    expect(suggestionEdits(byId, results, { total: 10, counts: [{ code: "8", count: 5 }, { code: "9", count: 5 }] }).edits.map((e) => e.basis)).toEqual(["workName"])
     expect(edits.map((e) => [e.rowKey, e.edit.value, e.basis])).toEqual([
       ["s!8", "8", "trend"],
       ["s!9", "8", "workName"],

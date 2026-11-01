@@ -156,6 +156,8 @@ export function fixActionGroups(rows: readonly { key: string }[], inclusion: Rea
 export function fixActionText(g: FixActionGroup) {
   const what = g.action === "findLocation" ? "工事場所" : shortLabel(g.field)
   const reasons = FIX_KINDS.filter((k) => g.kinds.includes(k)).map((k) => (k === "empty" ? "空" : FIX_LABELS[k]))
-  const target = `${what}が${reasons.join("・")}の ${g.keys.length} 行`
+  const joined = reasons.join("・")
+  // 「AI の推定」のように英字で始まるときは空白を挟む（「工事場所が AI の推定」）
+  const target = `${what}が${/^[A-Za-z]/.test(joined) ? " " : ""}${joined}の ${g.keys.length} 行`
   return g.action === "askCustomer" ? `${target}を${FIX_ACTIONS[g.action].label}` : `${target}に ${FIX_ACTIONS[g.action].label}`
 }

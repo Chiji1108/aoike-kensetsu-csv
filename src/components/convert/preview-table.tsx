@@ -326,7 +326,7 @@ export function PreviewTable({
             <CellPicker
               anchor={anchor}
               field={field}
-              label={spec_.label}
+              label={choices.kind === "engineerRole" ? "配置技術者の立場" : spec_.label}
               choices={choices}
               values={Object.fromEntries(spec.fields.map((f) => [f.id, r.cells[f.id].value])) as Record<KojiFieldId, string>}
               onPick={(picked) => finishPick(r, picked)}
@@ -545,7 +545,7 @@ function RowReasons({ fix, onOpenInquiry, onFixAction, suggest }: { fix: RowFix<
   // 同じ直し方は1つだけ出す（例: 都道府県と場所名が空でも「AI で案を出す」は1つ）
   const actions = [...new Set(fix.fixes.flatMap((f) => fixActionOf(f) ?? []))]
   return (
-    <div className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] leading-4" data-testid="row-reasons">
+    <div className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] leading-4 whitespace-normal" data-testid="row-reasons">
       {shown.length > 0 && (
         <span className="text-amber-800" title={fix.fixes.map(fixText).join("\n")} data-testid="row-fix">
           {shown.map(fixText).join("・")}

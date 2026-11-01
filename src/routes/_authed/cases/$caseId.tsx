@@ -1165,7 +1165,10 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
         id,
         option: ASK_KINDS[planAsks[i]!.kind].options.find((o) => o.value === "exclude")!.label,
         title: `載せる工事が ${before} 件から ${after} 件に減ります`,
-        lines: [effect.facts, newlyShort.length ? `7割に届かなくなります: ${newlyShort.join("・")}` : after > 0 ? "7割には届きます（決算書の額を入れていない業種は、表の合計で見ています）。" : undefined].filter((x): x is string => !!x),
+        lines: [
+          effect.facts,
+          after === 0 ? "載せる工事がなくなります。" : newlyShort.length ? `7割に届かなくなります: ${newlyShort.join("・")}` : "7割には届きます（決算書の額を入れていない業種は、表の合計で見ています）。",
+        ].filter((x): x is string => !!x),
       })
       return
     }
