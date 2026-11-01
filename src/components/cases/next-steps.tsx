@@ -1,6 +1,6 @@
 import { Check, ChevronRight, FileSpreadsheet, TriangleAlert } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { FIX_KINDS, FIX_LABELS, type FixCounts } from "@/components/convert/status"
+import { FIX_KINDS, FIX_LABELS, fixActionText, type FixActionGroup, type FixCounts } from "@/components/convert/status"
 import { cn } from "@/lib/utils"
 
 /**
@@ -18,6 +18,8 @@ export type NextStepsData = {
   /** チャットで答えを待つもの（報告の聞き返し・承認待ちの変更案） */
   answer: number
   fix: FixCounts
+  /** 直す行のうち、まとめて頼める直し方（status.ts の fixActionGroups） */
+  fixActions: readonly FixActionGroup[]
   inquiry: InquiryStep
   /** CSV に載せる件数 */
   exportRows: number
@@ -99,6 +101,6 @@ export function NextSteps({ steps, onGo, exportDisabled, className }: { steps: N
 
 function stepTitle(id: Exclude<StepId, "export">, s: NextStepsData) {
   if (id === "answer") return "チャットの聞き返し・変更案に答える"
-  if (id === "fix") return `表で直す行（${fixBreakdown(s.fix)}）`
+  if (id === "fix") return [`表で直す行（${fixBreakdown(s.fix)}）`, ...s.fixActions.map(fixActionText)].join("\n")
   return s.inquiry.state === "waiting" ? "顧客に送りました。返事の記入用Excelをチャットの📎でアップロードすると取り込みます" : "問い合わせのタブで、顧客に聞くことを確かめて送る"
 }

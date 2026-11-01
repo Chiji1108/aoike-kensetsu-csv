@@ -1,5 +1,6 @@
 import type { CellResult, CellStatus, RowResult } from "@/lib/convert/convert"
 import { askReasonOf } from "@/lib/inquiry/inquiry"
+import { fieldLabel, type KojiFieldId } from "@/lib/spec/koji-keireki"
 
 export const STATUS: Record<CellStatus, { label: string; cell: string; dot: string }> = {
   ok: { label: "そのまま", cell: "", dot: "bg-muted-foreground/40" },
@@ -93,4 +94,68 @@ export function countFixes<F extends string>(rows: readonly RowResult<F>[], incl
     for (const k of new Set(f.fixes.map((x) => x.kind))) byKind[k]++
   }
   return { rows: n, byKind, all: rows.length }
+}
+
+/** 項目の短い名前（「請負代金（千円）」→「請負代金」） */
+export const shortLabel = (field: string) => fieldLabel(field as KojiFieldId).replace(/（.*）$/, "")
+
+/** 行の理由の1つ（例:「業種が空」「工事名: AI の推定」）。表の行・次にやること・書き出すの確認で同じ言葉 */
+export const fixText = (f: { field: string; kind: FixKind }) => (f.kind === "empty" ? `${shortLabel(f.field)}が空` : `${shortLabel(f.field)}: ${FIX_LABELS[f.kind]}`)
+
+/**
+ * 直し方。理由（項目と種類）ごとに、職員が押せる操作を1つ決める（1か所の表）。
+ * suggestGyoshu: 業種は事務所が決めるので、AI に案を出させて職員が承認する。
+ * findLocation: 工事場所は今の調査の仕組み（費用のかかる検索は工事場所のタブで職員が押して始める）。
+ * askCustomer: 顧客にしか分からない項目は問い合わせへ（外した問い合わせを戻す）。
+ * 表にない理由（元請下請・金額など）は、職員がセルを選んで直す
+ */
+export type FixActionId = "suggestGyoshu" | "findLocation" | "askCustomer"
+export const FIX_ACTIONS: Record<FixActionId, { label: string; title: string }> = {
+  suggestGyoshu: { label: "AI で案を出す", title: "AI が業種の案と根拠を出します。承認したものだけが表に入ります" },
+  findLocation: { label: "AI で案を出す", title: "工事場所のタブを開きます。費用の目安を見てから調べ始めます" },
+  askCustomer: { label: "顧客に聞く", title: "問い合わせのタブを開きます（外した問い合わせを戻すと顧客に聞きます）" },
+}
+
+const ACTION_OF_FIELD: Partial<Record<KojiFieldId, FixActionId>> = {
+  gyoshu: "suggestGyoshu",
+  prefecture: "findLocation",
+  place: "findLocation",
+  client: "askCustomer",
+  workName: "askCustomer",
+  startYm: "askCustomer",
+  endYm: "askCustomer",
+  engineer: "askCustomer",
+}
+
+/** 理由の直し方（無ければ職員がセルで直す）。値のあるエラー（コード表に無いなど）も同じ操作で直せる */
+export const fixActionOf = (f: { field: string; kind: FixKind }): FixActionId | undefined => ACTION_OF_FIELD[f.field as KojiFieldId]
+
+/** まとめて頼める直し方: 同じ操作・同じ項目の、直す行（載せる行）の key と理由の種類 */
+export type FixActionGroup = { action: FixActionId; field: KojiFieldId; kinds: FixKind[]; keys: string[] }
+
+export function fixActionGroups(rows: readonly { key: string }[], inclusion: ReadonlyMap<string, { included: boolean }>, fixes: ReadonlyMap<string, RowFix<KojiFieldId>>): FixActionGroup[] {
+  const groups = new Map<string, FixActionGroup>()
+  for (const r of rows) {
+    if (!inclusion.get(r.key)?.included) continue
+    for (const f of fixes.get(r.key)?.fixes ?? []) {
+      const action = fixActionOf(f)
+      if (!action) continue
+      // 工事場所は都道府県と場所名を1つの現場として調べるので、1つにまとめる
+      const field = action === "findLocation" ? "prefecture" : f.field
+      const id = `${action}:${field}`
+      const g = groups.get(id) ?? { action, field, kinds: [], keys: [] }
+      if (!g.kinds.includes(f.kind)) g.kinds.push(f.kind)
+      if (!g.keys.includes(r.key)) g.keys.push(r.key)
+      groups.set(id, g)
+    }
+  }
+  return [...groups.values()]
+}
+
+/** まとめて頼む操作の言葉（例「業種が空の 3 行に AI で案を出す」「注文者が空の 2 行を顧客に聞く」）。表の上・次にやること・書き出すの確認で同じ言葉 */
+export function fixActionText(g: FixActionGroup) {
+  const what = g.action === "findLocation" ? "工事場所" : shortLabel(g.field)
+  const reasons = FIX_KINDS.filter((k) => g.kinds.includes(k)).map((k) => (k === "empty" ? "空" : FIX_LABELS[k]))
+  const target = `${what}が${reasons.join("・")}の ${g.keys.length} 行`
+  return g.action === "askCustomer" ? `${target}を${FIX_ACTIONS[g.action].label}` : `${target}に ${FIX_ACTIONS[g.action].label}`
 }

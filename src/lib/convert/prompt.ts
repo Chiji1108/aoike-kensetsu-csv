@@ -83,6 +83,7 @@ ai.inferPrefecture / ai.inferPlace は columns に [工事名の列…, 注文�
 - asks は職員に答えを選んでもらう聞き返し。種類は次の2つだけ。対象の行は「column の列の値が values のどれか」（values が空なら「column の列に値がある」）で決まるように書く（こちらでその行を数えて職員に見せ、答えで行を載せる・載せないを決める）。values には列ごとの値の例にある値をそのまま書く。
   - unfinished: 未成の工事（完成していない工事）の行がある。column は未成／完成の区分の列、values は未成を表す値（例: 「未成」「施工中」）。職員が「完成だけ載せる／未成も載せる」を選ぶ。
   - doubtful: 載せるか迷う行がある（メモの列に「重複」「対象外」「削除済み」などの注記がある行など）。column はその注記の列、values は迷う値（列に値がある行すべてなら空）。職員が「載せない／載せる」を選ぶ。
+  対象の行がデータの行の大半になる区分（顧客のシステムが締めるまで「未成」のままの区分など）も asks にする。そのときは text に、区分が今の状態を表していないかもしれないことを短く添えてよい。行の数・完成年月の入っている行の数などはこちらで数えて職員に見せるので、text に数を書かない。
   text は状況を職員向けに1文で短く書く（例: 「F列が「未成」の行は完成していない工事です。」）。「確認してください」で終えない（答えの選択肢はこちらが出す）。どちらでもない、行で決められないことは asks にせず notes に書く。excludeColumns に入れた列は asks にしない。
 - notes は職員が知っておくべきこと（答えは要らない知らせ）だけを、1件1文で短く、多くても3件まで書く（例: 備考に「追加工事あり」とある行は、金額に追加分が入っているかもしれない）。事実と気づいたことを書き、「確認してください」「確かめてください」で終えない。無ければ空にする。asks に書いたこと、こちらで決まった処理として行うこと（無い列の自動補完、個人名の匿名化、都道府県の補完、7割の選定、千円への丸め）、空の必須の項目や AI の推定（こちらで行ごとに印を付けて表に出す）、どの列を使ったかの説明、amountTax で答えた税込・税抜は notes に書かない。
 
@@ -190,7 +191,7 @@ export function previousPlanContext<F extends string>(spec: CsvSpec<F>, p: { fis
 export function batchUserMessage(req: AiBatchRequest) {
   const task = AI_TASKS[req.task]
   return `作業: ${req.task}（${task.label}）
-${req.instruction ? `職員の指示: ${req.instruction}\n` : ""}items:
+${req.instruction ? `${req.task === "freeform" ? "職員の指示" : "この案件"}: ${req.instruction}\n` : ""}items:
 ${JSON.stringify(req.items)}`
 }
 

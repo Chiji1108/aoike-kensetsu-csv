@@ -45,13 +45,35 @@ export const MOTOUKE_SHITAUKE = [
   { code: "2", label: "下請" },
 ] as const
 
+/** 0/1 の項目（JV・主任技術者・監理技術者）。画面では数字でなくこの名前で出し、選ぶ */
+export const FLAG = [
+  { code: "0", label: "なし" },
+  { code: "1", label: "あり" },
+] as const
+
 export const CODE_SETS = {
   gyoshu: GYOSHU,
   motoukeShitauke: MOTOUKE_SHITAUKE,
+  flag: FLAG,
 } as const satisfies Record<string, readonly { code: string; label: string }[]>
 
 export type CodeSetId = keyof typeof CODE_SETS
 
 export function codeLabel(set: CodeSetId, code: string) {
   return CODE_SETS[set].find((c) => c.code === code)?.label
+}
+
+/**
+ * 配置技術者の立場。主任技術者・監理技術者の2列は「どちらか一方だけが 1」の決まりがあるので、画面では1つの選ぶ欄にまとめ、
+ * 選ぶと2列を一緒に決める（片方だけ 1 にできない組み合わせを作らせない）
+ */
+export const ENGINEER_ROLES = [
+  { code: "chief", label: "主任技術者", values: { chiefEngineer: "1", supervisingEngineer: "0" } },
+  { code: "supervising", label: "監理技術者", values: { chiefEngineer: "0", supervisingEngineer: "1" } },
+] as const
+export type EngineerRole = (typeof ENGINEER_ROLES)[number]["code"]
+
+/** 2列の値から立場（決まりに合わない組み合わせ・空なら undefined） */
+export function engineerRoleOf(chief: string, supervising: string): EngineerRole | undefined {
+  return ENGINEER_ROLES.find((r) => r.values.chiefEngineer === chief && r.values.supervisingEngineer === supervising)?.code
 }

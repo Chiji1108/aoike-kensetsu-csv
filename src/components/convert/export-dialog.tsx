@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { GyoshuSummaryTable } from "@/components/convert/summary-panel"
 import { remainingSteps, type NextStepsData, type StepId } from "@/components/cases/next-steps"
+import { FIX_ACTIONS, fixActionText, type FixActionId } from "@/components/convert/status"
 import { exportCheck, issueLabel } from "@/lib/cases/export-check"
 import type { RowResult } from "@/lib/convert/convert"
 import { RULE7_TAX_LABELS, type Basis, type GyoshuSummary, type Rule7Tax } from "@/lib/convert/koji-selection"
@@ -30,6 +31,8 @@ export function ExportDialog({
   onCsv,
   steps,
   onGo,
+  onFixAction,
+  canSuggest,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -43,6 +46,9 @@ export function ExportDialog({
   /** 次にやること（書き出す前に残っていることを、作業の画面の上・書き出すのツールチップと同じ言葉で出す。押すとそこへ移る） */
   steps: NextStepsData | null
   onGo: (id: StepId) => void
+  /** 直し方の操作（「業種が空の N 行に AI で案を出す」など。表の上と同じ） */
+  onFixAction: (action: FixActionId, keys: readonly string[]) => void
+  canSuggest: boolean
 }) {
   const check = useMemo(() => (open ? exportCheck(output, summary, basis) : null), [open, output, summary, basis])
   return (
@@ -56,7 +62,7 @@ export function ExportDialog({
         </DialogHeader>
         {check && (
           <div className="grid gap-3 text-sm">
-            <Remaining steps={steps} onGo={onGo} />
+            <Remaining steps={steps} onGo={onGo} onFixAction={onFixAction} canSuggest={canSuggest} />
             <ul className="grid gap-1.5" data-testid="export-checks">
               <CheckLine ok={check.short.length === 0} testId="export-rule7">
                 {check.short.length === 0
@@ -115,7 +121,7 @@ export function ExportDialog({
 }
 
 /** 書き出す前に残っていること（次にやることと同じ言葉）。無ければ済みと出す */
-function Remaining({ steps, onGo }: { steps: NextStepsData | null; onGo: (id: StepId) => void }) {
+function Remaining({ steps, onGo, onFixAction, canSuggest }: { steps: NextStepsData | null; onGo: (id: StepId) => void; onFixAction: (action: FixActionId, keys: readonly string[]) => void; canSuggest: boolean }) {
   const left = steps ? remainingSteps(steps) : []
   if (!left.length)
     return (
@@ -135,6 +141,25 @@ function Remaining({ steps, onGo }: { steps: NextStepsData | null; onGo: (id: St
           </Button>
         </span>
       ))}
+      {steps && steps.fixActions.length > 0 && (
+        <span className="flex basis-full flex-wrap gap-1 pt-1" data-testid="export-fix-actions">
+          {steps.fixActions.map((g) => (
+            <Button
+              key={`${g.action}:${g.field}`}
+              size="xs"
+              variant="ghost"
+              className="text-amber-900 underline-offset-2 hover:underline"
+              title={FIX_ACTIONS[g.action].title}
+              disabled={g.action === "suggestGyoshu" && !canSuggest}
+              onClick={() => onFixAction(g.action, g.keys)}
+              data-testid="export-fix-action"
+              data-action={g.action}
+            >
+              {fixActionText(g)}
+            </Button>
+          ))}
+        </span>
+      )}
       <span className="basis-full pt-0.5 text-xs text-amber-800/80">残っていても書き出せます。</span>
     </div>
   )

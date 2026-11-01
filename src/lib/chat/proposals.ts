@@ -51,8 +51,10 @@ export type ChatChange =
 
 export type Decision = "pending" | "applied" | "rejected"
 
-/** 出どころ。P3b の Excel の取り込みも同じ形で変更案を出す */
-export type ProposalOrigin = { kind: "chat"; messageId: string } | { kind: "excel"; fileId: string } | { kind: "location"; runId: string }
+/**
+ * 出どころ。P3b の Excel の取り込みも同じ形で変更案を出す。fix は表の「直す」から頼んだ AI の案（「AI で案を出す」。field はどの項目の案か）
+ */
+export type ProposalOrigin = { kind: "chat"; messageId: string } | { kind: "excel"; fileId: string } | { kind: "location"; runId: string } | { kind: "fix"; runId: string; field: "gyoshu" }
 
 /**
  * AI の聞き返し（「これでよいですか」）。答えるまで承認できない。no と答えたら全部を却下する
@@ -246,6 +248,7 @@ export const proposalSchema: z.ZodType<Proposal> = (() => {
       z.object({ kind: z.literal("chat"), messageId: z.string() }),
       z.object({ kind: z.literal("excel"), fileId: z.string() }),
       z.object({ kind: z.literal("location"), runId: z.string() }),
+      z.object({ kind: z.literal("fix"), runId: z.string(), field: z.literal("gyoshu") }),
     ]),
     question: z.object({ text: z.string(), answer: z.enum(["yes", "no"]).nullable() }).nullable(),
   }

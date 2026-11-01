@@ -95,6 +95,8 @@ export type ChatPanelProps = {
   location: LocationSearch
   /** 会話の最初に出す変換の報告（案件の作業から作る。保存しない） */
   report: React.ReactNode
+  /** 会話の最後に出すもの（表の「直す」から頼んだ AI の案。案件の作業から作る） */
+  tail?: React.ReactNode
   /** 📎でアップロードしたファイル（種類は案件の画面が見分ける。画面にドラッグしたファイルも案件の画面が受け取る） */
   onFiles: (files: File[]) => void
   /** 返事のボタン（書き出す前の確認・問い合わせ） */
@@ -351,6 +353,7 @@ export function ChatPanel(props: ChatPanelProps) {
                   {error.message}
                 </div>
               )}
+              {props.tail}
               {history === "loaded" &&
                 props.suggestions.filter((sg) => !(sg.once && sentTexts.has(sg.prompt))).map((sg) => (
                   <div key={sg.id} className="grid gap-2 rounded-lg border bg-violet-50/60 px-3 py-2 text-xs dark:bg-violet-950/30" data-testid="chat-suggestion" data-suggestion={sg.id} data-file-name={sg.fileName}>

@@ -1,5 +1,6 @@
 import { z } from "zod"
 import { GYOSHU } from "../spec/code-sets"
+import { GYOSHU_GUESS_RULE, gyoshuSuggestionItem } from "./gyoshu-guess"
 
 /**
  * AI に頼む判断の種類。値ごとの変換のうち、ルールで決まらなかったものだけがここに来る。
@@ -49,7 +50,12 @@ export const AI_TASKS = {
   gyoshu: {
     label: "業種の判定",
     item: valueItem,
-    instruction: `業種名を建設業.NET の業種コード（1〜30の整数の文字列）に変換する。コード表: ${gyoshuList}。判断に迷うときは needsReview を true にする。`,
+    instruction: `業種名を建設業.NET の業種コード（1〜30の整数の文字列）に変換する。コード表: ${gyoshuList}。${GYOSHU_GUESS_RULE}（この作業では input の業種名だけで決め、ほかの工事の傾向は渡さないので推し量らない。）判断に迷うときは needsReview を true にする。`,
+  },
+  suggestGyoshu: {
+    label: "業種の案",
+    item: gyoshuSuggestionItem,
+    instruction: `業種が決まっていない工事の業種コード（1〜30の整数の文字列）の案を出す。input は工事名・注文者・元の業種の記載。コード表: ${gyoshuList}。${GYOSHU_GUESS_RULE} basis は決めた根拠（source: 元データの記載、workName: 工事名、trend: ほかの工事の傾向から推し量った、none: 決められない〔value は空〕）。note は根拠を職員向けに短く（工事名から決めたなら決め手の言葉、trend なら渡された件数をそのまま）。`,
   },
   yearMonth: {
     label: "年月の読み取り",

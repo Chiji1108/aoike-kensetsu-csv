@@ -7,6 +7,8 @@ import { beforeOf, describePlanPatch } from "../convert/plan-patch"
 import { SOURCE_LABELS } from "../location/sites"
 import type { ChatChange } from "./proposals"
 import { askLabel, CORRECTION_MESSAGE } from "../inquiry/inquiry"
+import { choiceLabel } from "../spec/choices"
+import { GYOSHU_BASIS_LABELS } from "../convert/gyoshu-guess"
 
 
 /** 印の人を今の記号で見せる。今の表にいない人（承認すると現れる人）は名前を出さない */
@@ -18,7 +20,8 @@ function shownValue(stored: string, letters: PersonLetters) {
 }
 
 /** 変更案の1項目を画面に出す形。where はどこを、from・to は今と承認したあと。values なら from・to はセルの値（文字の差分を色分けする） */
-export type ChangeLine = { where: string; what: string; from: string; to: string; values?: true; links?: string[] }
+/** note は値に添える根拠（「AI で案を出す」の案）、guess はその案が推し量った値か */
+export type ChangeLine = { where: string; what: string; from: string; to: string; values?: true; links?: string[]; note?: string; guess?: boolean }
 
 /** 顧客の回答から読んだ変更（record_answers）は、項目の名前に添えて分かるようにする（聞いていない項目の訂正は「顧客の訂正」） */
 const BY_NOTE: Partial<Record<Extract<ChatChange, { kind: "cell" }>["edit"]["by"], string>> = { customer: "（顧客の回答）", confirmed: "（顧客が確認）" }
@@ -39,8 +42,20 @@ export function describeChange(c: ChatChange, view: TableView, byKey: ReadonlyMa
     return r ? `${r.sheet}!${r.row + 1}行` : `${key}（今の表に無い行）`
   }
   switch (c.kind) {
-    case "cell":
-      return { where: rowName(c.rowKey), what: `${fieldLabel(c.field)}${c.edit.by === "customer" && c.edit.message?.startsWith(CORRECTION_MESSAGE) ? "（顧客の訂正）" : (BY_NOTE[c.edit.by] ?? "")}`, from: byKey.get(c.rowKey)?.cells[c.field].value ?? "", to: shownValue(c.edit.value, view.letters), values: true }
+    case "cell": {
+      const field = KOJI_KEIREKI.fields.find((f) => f.id === c.field)!
+      // 決まった値の項目は名前も添える（例「8 電気」）
+      const named = (v: string) => (choiceLabel(field, v) ? `${v} ${choiceLabel(field, v)}` : v)
+      return {
+        where: rowName(c.rowKey),
+        what: `${fieldLabel(c.field)}${c.edit.by === "customer" && c.edit.message?.startsWith(CORRECTION_MESSAGE) ? "（顧客の訂正）" : (BY_NOTE[c.edit.by] ?? "")}`,
+        from: named(byKey.get(c.rowKey)?.cells[c.field].value ?? ""),
+        to: named(shownValue(c.edit.value, view.letters)),
+        values: true,
+        // AI の案の根拠（「AI で案を出す」。推定ならそう書いてある）
+        ...(c.edit.by === "chat" && c.edit.message ? { note: c.edit.message, guess: c.edit.message.includes(GYOSHU_BASIS_LABELS.trend) } : {}),
+      }
+    }
     case "ask":
       return { where: rowName(c.rowKey), what: fieldLabel(c.field), from: byKey.get(c.rowKey)?.cells[c.field].value ?? "", to: `顧客に確認: ${c.reason}` }
     case "add": {

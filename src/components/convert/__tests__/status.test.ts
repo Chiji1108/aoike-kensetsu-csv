@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import type { CellResult, RowResult } from "@/lib/convert/convert"
 import { finalizeAll, kojiRow } from "@/lib/convert/__tests__/helpers"
 import { askReasonOf } from "@/lib/inquiry/inquiry"
-import { cellFix, changedCell, countFixes, inFilter, rowFix, type RowFix } from "../status"
+import { cellFix, changedCell, countFixes, fixActionGroups, fixActionOf, fixActionText, fixText, inFilter, rowFix, type RowFix } from "../status"
 
 const ok: CellResult = { value: "x", status: "ok", source: "A列: x", original: "x" }
 const row = (key: string, other: Partial<CellResult>): RowResult<"a" | "b"> => ({
@@ -95,5 +95,32 @@ describe("直す行と顧客に聞く行", () => {
   })
   test("直す行は、エラー・要確認・AI の推定のどれかがある行（項目 a・b は問い合わせに回らない）", () => {
     expect(checked).toEqual(["error", "warning", "aiFilled", "guessedFill", "ruleThenWarning", "staffError"])
+  })
+})
+
+describe("直し方", () => {
+  test("理由ごとの直し方は1か所の表: 業種は AI の案、工事場所は調査、顧客にしか分からない項目は顧客に聞く。ほかはセルで直す", () => {
+    const of = (field: string) => fixActionOf({ field, kind: "empty" })
+    expect(["gyoshu", "prefecture", "place", "client", "workName", "startYm", "endYm", "engineer", "motoukeShitauke", "amount", "jv"].map(of)).toEqual([
+      "suggestGyoshu", "findLocation", "findLocation", "askCustomer", "askCustomer", "askCustomer", "askCustomer", "askCustomer", undefined, undefined, undefined,
+    ])
+    expect(fixActionOf({ field: "gyoshu", kind: "guess" })).toBe("suggestGyoshu")
+  })
+
+  test("まとめて頼む操作は、載せる行の同じ直し方を1つにまとめ、表・次にやること・書き出すの確認で同じ言葉にする", () => {
+    const empty = kojiRow({ gyoshu: "" }, 1)
+    const guessed = { ...kojiRow({}, 2), cells: { ...kojiRow({}, 2).cells, gyoshu: { value: "8", status: "warning" as const, source: "AI", original: "電工", guessed: true as const } } }
+    const notIncluded = kojiRow({ gyoshu: "" }, 3)
+    const noPlace = kojiRow({ gyoshu: "8", prefecture: "", place: "" }, 4)
+    const shown = finalizeAll([empty, guessed, notIncluded, noPlace])
+    const fixes = new Map(shown.rows.map((r) => [r.key, rowFix(r, () => false)]))
+    const inclusion = new Map(shown.rows.map((r) => [r.key, { included: r.key !== notIncluded.key }]))
+    const groups = fixActionGroups(shown.rows, inclusion, fixes)
+    const gyoshu = groups.find((g) => g.action === "suggestGyoshu")!
+    expect(gyoshu.keys).toEqual([empty.key, guessed.key])
+    expect(fixActionText(gyoshu)).toBe("業種が空・AI の推定の 2 行に AI で案を出す")
+    // 都道府県と場所名は1つの現場として1つにまとめる
+    expect(groups.filter((g) => g.action === "findLocation").map((g) => g.keys.includes(noPlace.key))).toEqual([true])
+    expect(fixText({ field: "gyoshu", kind: "empty" })).toBe("業種が空")
   })
 })
