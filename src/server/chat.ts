@@ -43,6 +43,7 @@ import { serverAddressLookup, serverPlaceIndex } from "./place-index"
 import { personalChecker } from "./location-guard"
 import { namesOfSaved, readSavedCase } from "./case-names"
 import { guardPersonal, type Site } from "@/lib/location/sites"
+import { GYOSHU } from "@/lib/spec/code-sets"
 
 
 const requestSchema = z.object({
@@ -419,19 +420,20 @@ export async function endChat(caseId: string): Promise<{ id: string; text: strin
 }
 
 /**
- * 上げ直した最後の Excel の変更案を置く（画面が差分を作る。lib/excel/final-import.ts）。中身は表の変更（セル・載せる・足す）だけで、
- * 元の Excel は案件のファイル。同じ id の変更案は上書きしない。削除と重なったら置いたものを消して断る（削除のあとに R2 に残さない）
+ * 画面が作った変更案を置く: 上げ直した最後の Excel の差分（lib/excel/final-import.ts。元の Excel は案件のファイル）と、
+ * 「AI で案を出す」の案（AI の答えは画面が runAiBatch で受け取って案にする）。形は recordable で確かめる。同じ id の変更案は上書きしない。削除と重なったら置いたものを消して断る（削除のあとに R2 に残さない）
  */
-export async function recordExcelProposal(caseId: string, record: ProposalRecord) {
+export async function recordProposal(caseId: string, record: ProposalRecord) {
   const p = record.proposal
   const fresh = p.state === "open" && p.count === record.changes.length && !p.applied.length && !p.rejected.length && p.question === null
-  if (p.origin.kind !== "excel" || !fresh || record.changes.some((c) => c.kind !== "cell" && c.kind !== "include" && c.kind !== "add"))
-    throw new Error("Excel の変更案の形が正しくありません")
+  if (!fresh || !recordable(record)) throw new Error("変更案の形が正しくありません")
   const db = getDb()
   const kase = await store.getCase(db, caseId)
   if (!kase || kase.deleting) throw new Error("案件が見つかりません")
-  const file = await store.getFileRow(db, p.origin.fileId)
-  if (file?.caseId !== caseId) throw new Error("変更案の元の Excel が案件にありません")
+  if (p.origin.kind === "excel") {
+    const file = await store.getFileRow(db, p.origin.fileId)
+    if (file?.caseId !== caseId) throw new Error("変更案の元の Excel が案件にありません")
+  }
   const key = proposalKey(caseId, p.id)
   if (await env.FILES.head(key)) throw new Error("同じ変更案がもうあります")
   await putProposal(caseId, record)
@@ -440,6 +442,16 @@ export async function recordExcelProposal(caseId: string, record: ProposalRecord
     await env.FILES.delete(key)
     throw new Error("案件が見つかりません")
   }
+}
+
+/**
+ * 画面が作って置く変更案の形: 上げ直した Excel の差分（セル・載せる・足す）か、「AI で案を出す」の業種の案（業種のセルだけ。値は業種コード、承認はチャットの承認と同じ印）
+ */
+function recordable({ proposal: p, changes }: ProposalRecord) {
+  const origin = p.origin
+  if (origin.kind === "excel") return changes.every((c) => c.kind === "cell" || c.kind === "include" || c.kind === "add")
+  if (origin.kind === "fix") return changes.length > 0 && changes.every((c) => c.kind === "cell" && c.field === origin.field && c.edit.by === "chat" && GYOSHU.some((g) => g.code === c.edit.value))
+  return false
 }
 
 async function putProposal(caseId: string, record: ProposalRecord) {

@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import type { CellResult, RowResult } from "@/lib/convert/convert"
 import { finalizeAll, kojiRow } from "@/lib/convert/__tests__/helpers"
 import { askReasonOf } from "@/lib/inquiry/inquiry"
-import { cellFix, changedCell, countFixes, inFilter, rowFix, type RowFix } from "../status"
+import { cellFix, changedCell, countFixes, fixActionGroups, fixActionOf, fixActionText, fixText, inFilter, rowFix, type RowFix } from "../status"
 
 const ok: CellResult = { value: "x", status: "ok", source: "A列: x", original: "x" }
 const row = (key: string, other: Partial<CellResult>): RowResult<"a" | "b"> => ({
@@ -95,5 +95,42 @@ describe("直す行と顧客に聞く行", () => {
   })
   test("直す行は、エラー・要確認・AI の推定のどれかがある行（項目 a・b は問い合わせに回らない）", () => {
     expect(checked).toEqual(["error", "warning", "aiFilled", "guessedFill", "ruleThenWarning", "staffError"])
+  })
+})
+
+describe("直し方", () => {
+  test("理由ごとの直し方は1か所の表で、行ける先と同じ判定: 業種は AI の案、調べる行は工事場所、問い合わせに載るセルは顧客に聞く。ほかはセルで直す", () => {
+    const blank = kojiRow({}).cells
+    const of = (field: string) => fixActionOf(field, blank)
+    expect(["gyoshu", "prefecture", "place", "client", "workName", "startYm", "endYm", "engineer", "motoukeShitauke", "amount", "jv"].map(of)).toEqual([
+      "suggestGyoshu", "findLocation", "findLocation", "askCustomer", "askCustomer", "askCustomer", "askCustomer", "askCustomer", undefined, undefined, undefined,
+    ])
+    // 問い合わせに載らないセル（値のあるエラー・職員が空にした欄）には「顧客に聞く」を出さない
+    const err = { ...blank, endYm: { value: "2023", status: "error" as const, source: "", original: "2023", message: "年月として読めません" } }
+    expect(fixActionOf("endYm", err)).toBeUndefined()
+    const staffEmptied = { ...blank, client: { value: "", status: "changed" as const, source: "手入力", original: "", by: "staff" as const } }
+    expect(fixActionOf("client", staffEmptied)).toBeUndefined()
+    // 職員が決めた工事場所は調べないので、工事場所の操作も出さない
+    const decided = { ...blank, prefecture: { value: "", status: "error" as const, source: "手入力", original: "", by: "staff" as const } }
+    expect(fixActionOf("prefecture", decided)).toBeUndefined()
+  })
+
+  test("まとめて頼む操作は、載せる行の同じ直し方を1つにまとめ、表・次にやること・書き出すの確認で同じ言葉にする", () => {
+    const empty = kojiRow({ gyoshu: "" }, 1)
+    const guessed = { ...kojiRow({}, 2), cells: { ...kojiRow({}, 2).cells, gyoshu: { value: "8", status: "warning" as const, source: "AI", original: "電工", guessed: true as const } } }
+    const notIncluded = kojiRow({ gyoshu: "" }, 3)
+    const noPlace = kojiRow({ gyoshu: "8", prefecture: "", place: "" }, 4)
+    const shown = finalizeAll([empty, guessed, notIncluded, noPlace])
+    const fixes = new Map(shown.rows.map((r) => [r.key, rowFix(r, () => false)]))
+    const inclusion = new Map(shown.rows.map((r) => [r.key, { included: r.key !== notIncluded.key }]))
+    const groups = fixActionGroups(shown.rows, inclusion, fixes)
+    const gyoshu = groups.find((g) => g.action === "suggestGyoshu")!
+    expect(gyoshu.keys).toEqual([empty.key, guessed.key])
+    expect(fixActionText(gyoshu)).toBe("業種が空・AI の推定の 2 行に AI で案を出す")
+    // 都道府県と場所名は1つの現場として1つにまとめる
+    expect(groups.filter((g) => g.action === "findLocation").map((g) => g.keys.includes(noPlace.key))).toEqual([true])
+    expect(fixText({ field: "gyoshu", kind: "empty" })).toBe("業種が空")
+    // 理由で絞ると、その理由の行だけを数える
+    expect(fixActionGroups(shown.rows, inclusion, fixes, "guess").find((g) => g.action === "suggestGyoshu")!.keys).toEqual([guessed.key])
   })
 })

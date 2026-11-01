@@ -14,7 +14,8 @@ import { InquiryPanel } from "@/components/convert/inquiry-panel"
 import { LocationPanel, useLocationSearch } from "@/components/convert/location-panel"
 import { PreviewTable } from "@/components/convert/preview-table"
 import { ReplacePanel } from "@/components/convert/replace-panel"
-import { countFixes, rowFix, type TableFilter } from "@/components/convert/status"
+import { countFixes, fixActionGroups, rowFix, type FixActionId, type TableFilter } from "@/components/convert/status"
+import { FixSuggestionPanel, useGyoshuSuggestion } from "@/components/convert/fix-suggestion"
 import { NextSteps, type NextStepsData, type StepId } from "@/components/cases/next-steps"
 import { GyoshuSummaryTable, RoundingNote } from "@/components/convert/summary-panel"
 import type { ProposalActions, UndoState } from "@/components/chat/proposal-card"
@@ -41,10 +42,11 @@ import { ATTACH_ACCEPT, CASE_STATUSES, CASE_STATUS_LABELS, contentTypeOf, FILE_K
 import { canUndo, pushUndo, undo, undoEntry, type UndoEntry } from "@/lib/cases/undo"
 import { uploadKind, warnsUnlinked } from "@/lib/cases/upload-kind"
 import { baseRows, editRows, orderAndFinalize, selectRows } from "@/lib/cases/view"
+import { askFacts, askImpact, needsConfirm } from "@/lib/cases/ask-impact"
 import { carryoverReady } from "@/lib/chat/carryover"
 import { caseContext, NO_SOURCE_CONTEXT } from "@/lib/chat/context"
 import type { ChatAction } from "@/lib/chat/messages"
-import { addedCountAfter, answer, applyChanges, decide, decisionOf, discard, isAnswered, newProposal, withRecorded, type Proposal, type ProposalRecord } from "@/lib/chat/proposals"
+import { addedCountAfter, answer, applyChanges, approvedChange, decide, decisionOf, discard, isAnswered, newProposal, withRecorded, type Proposal, type ProposalRecord } from "@/lib/chat/proposals"
 import { toWire } from "@/lib/chat/wire"
 import { ADDRESS_API_PATH, addressCache, addressKey, lookupAddresses, NO_ADDRESSES, type AddressBook, type AddressLookup } from "@/lib/convert/address"
 import { convertRows, editKey, editSession, resolveRows, staffEdit, type CellEdit, type RowResult } from "@/lib/convert/convert"
@@ -73,7 +75,7 @@ import { KOJI_KEIREKI, KOJI_PLAN_HINTS, type KojiFieldId } from "@/lib/spec/koji
 import { cn } from "@/lib/utils"
 import { planWithAi, runAiBatch } from "@/server/ai"
 import { getCasePageFn, updateCaseStatusFn } from "@/server/cases"
-import { approveRuleFn, recordExcelProposalFn } from "@/server/chat-fns"
+import { approveRuleFn, recordProposalFn } from "@/server/chat-fns"
 import { approveLocationsFn } from "@/server/location-fns"
 import { createClientOnlyFn } from "@tanstack/react-start"
 
@@ -563,8 +565,13 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
     if (needsConversion) void convert()
   }, [needsConversion, work.plan])
 
-  function edit(rowKey: string, field: KojiFieldId, e: CellEdit) {
-    update("edits", (prev) => new Map(prev).set(editKey(rowKey, field), e))
+  /** 表の手直し（1回の手直しで決める項目をまとめて。主任技術者・監理技術者は2列を一緒に） */
+  function edit(rowKey: string, changes: readonly [KojiFieldId, CellEdit][]) {
+    update("edits", (prev) => {
+      const next = new Map(prev)
+      for (const [field, e] of changes) next.set(editKey(rowKey, field), e)
+      return next
+    })
   }
 
   function replace(field: KojiFieldId, from: string, text: string) {
@@ -628,12 +635,15 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
   const shownInPanel = (p: Proposal) => p.state === "open" || work.undo.some((e) => e.proposalId === p.id && canUndo(e))
   const excelProposals = work.proposals.filter((p) => p.origin.kind === "excel" && shownInPanel(p))
   const locationProposals = work.proposals.filter((p) => p.origin.kind === "location" && shownInPanel(p))
+  const fixProposals = work.proposals.filter((p) => p.origin.kind === "fix" && shownInPanel(p))
   /**
    * 行の片付けること（職員が直すセルと、顧客に聞くセル）。表の絞り込み・行の理由・次にやること・書き出すの確認で同じものを使う
    * （行か外した問い合わせが変わったときだけ1回数える）
    */
   const rowFixes = useMemo(() => new Map((shown ?? []).map((r) => [r.key, rowFix(r, (f) => !dismissed.has(editKey(r.key, f)))])), [shown, dismissed])
   const fixCounts = useMemo(() => (shown ? countFixes(shown, inclusion, rowFixes) : null), [shown, inclusion, rowFixes])
+  /** まとめて頼める直し方（「業種が空の N 行に AI で案を出す」など。表の上・次にやること・書き出すの確認で同じもの） */
+  const fixGroups = useMemo(() => (shown ? fixActionGroups(shown, inclusion, rowFixes) : []), [shown, inclusion, rowFixes])
   const inquiries = useMemo(() => (output ? collectInquiries(output, { tax }) : []), [output, tax])
   /** まだ答えの無いセルの問い合わせ（外したものは数えない）。「AI で読む」に出す */
   const leftInquiries = inquiries.filter((q) => q.kind === "cell" && !dismissed.has(inquiryKey(q))).length
@@ -653,6 +663,22 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
       return { id: `plan-ask-${i}`, label: ASK_KINDS[a.kind].label, keys }
     })
   }, [sources, shown, planAsks, plan])
+  /**
+   * 聞き返しの「載せない」側の答えで、載せる件数と7割がどう変わるか（今の7割の選び方・入れ外しで選び直す。表・書き出すの確認と同じ計算）と、
+   * 対象がデータの大半になるときの事実（決まった処理で数える）
+   */
+  const askEffects = useMemo(
+    () =>
+      edited && shown && selected
+        ? askRows.map((r, i) => ({
+            impact: askImpact(edited, { manual, tax, basis, rule7Tax, selection: selectionMode }, r.keys, { inclusion: selected, summary }),
+            facts: askFacts(planAsks[i]!.kind, shown, r.keys),
+          }))
+        : [],
+    [askRows, edited, shown, selected, summary, planAsks, manual, tax, basis, rule7Tax, selectionMode],
+  )
+  /** 載せる件数が大きく減る答えを押したときの確かめ（押す前に何件減るか・7割に届くかを出す） */
+  const [confirmAsk, setConfirmAsk] = useState<{ id: string; option: string; title: string; lines: string[] } | null>(null)
 
   /**
    * 表の絞り込み。職員が選ぶまでは、直す行があればその行だけ（無ければすべて）。もう無い聞き返し（計画を立て直した）は「すべて」に戻し、
@@ -690,6 +716,9 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
   // 未決の工事場所の項目がある変更案（一括調査のものも、チャットの「この現場ってどこ？」のものも）を決めるまで、次の一括調査を始めさせない
   const undecidedLocation = work.proposals.some((p) => p.state === "open" && (proposalChanges.get(p.id) ?? []).some((c, i) => c.kind === "location" && decisionOf(p, i) === "pending"))
   const locationSearch = useLocationSearch({ caseId: kase.id, view, table: tableWire, undecided: undecidedLocation, onRecord: addRecorded, onCaseCost: setCostUsd })
+  const gyoshuSuggestion = useGyoshuSuggestion({ caseId: kase.id, onRecord: addRecorded, onCaseCost: addCost })
+  /** まだ決めていない業種の AI の案がある（決めるまで重ねて頼ませない） */
+  const pendingFix = fixProposals.some((p) => p.state === "open")
 
   /** 変換の元の表が無く（PDF だけ）、AI に一から表を作らせる案件か */
   const noSheetSource = !work.sourceFileId && onlyNonSheetSources(files)
@@ -774,7 +803,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
       if (!indices.length) return
       const edited = view?.edited ?? []
       setWork((w) => {
-        const overlaid = applyChanges(w, edited, indices.map((i) => changes[i]!))
+        const overlaid = applyChanges(w, edited, indices.map((i) => approvedChange(p, changes[i]!)))
         const replanned = nextPlan && indices.some((i) => changes[i]!.kind === "plan") && w.plan ? { ...overlaid, plan: { ...w.plan, plan: nextPlan }, converted: false } : overlaid
         const decided = { ...replanned, proposals: w.proposals.map((x) => (x.id === id ? decide(x, indices, "applied") : x)) }
         return withUndo(w, decided, id, indices, external)
@@ -883,7 +912,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
     const saved = await keepFile("edit_sheet", f, f.name)
     if (!saved) return undefined
     const proposal = newProposal(crypto.randomUUID(), { kind: "excel", fileId: saved.id }, changes, null)
-    await recordExcelProposalFn({ data: { caseId: kase.id, record: { proposal, changes } } })
+    await recordProposalFn({ data: { caseId: kase.id, record: { proposal, changes } } })
     setProposalChanges((m) => new Map(m).set(proposal.id, changes))
     update("proposals", (ps) => [...ps, proposal])
     return { report }
@@ -1022,6 +1051,22 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
     else setTab(t)
   }
 
+  /**
+   * 直し方の操作（status.ts の FIX_ACTIONS）。業種は AI の案を頼んで結果をチャットの流れに出す（狭い画面では作業の画面を閉じて見せる）、
+   * 工事場所は工事場所のタブ（費用の目安を見てから職員が調べ始める）、顧客に聞くものは問い合わせのタブ
+   */
+  function runFixAction(action: FixActionId, keys: readonly string[]) {
+    if (action === "findLocation") return showTab("location")
+    if (action === "askCustomer") return showTab("inquiry")
+    if (!shown || !chatEnabled) return
+    if (!wide) setWorkChoice(false)
+    void gyoshuSuggestion.run(shown, keys).then(() =>
+      requestAnimationFrame(() => document.querySelector<HTMLElement>('[data-testid="fix-suggestion"]')?.scrollIntoView({ block: "nearest", behavior: "smooth" })),
+    )
+  }
+  /** AI で案を出せるか（AI が使える・頼んでいる最中でない・前の案を決め終えた） */
+  const canSuggest = chatEnabled && gyoshuSuggestion.running === null && !pendingFix
+
   function onChatAction(a: ChatAction) {
     if (a === "export") setExportOpen(true)
     else showTab("inquiry")
@@ -1082,11 +1127,16 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
           const kind = ASK_KINDS[ask.kind]
           // 答えは聞き返しの答えとして記録したものだけ（チャットなどで入れた除外は答えと見なさない）
           const answered = kind.options.find((o) => o.value === work.reportAnswers[r.id])?.label ?? null
+          const effect = askEffects[i]
           return {
             id: r.id,
             text: planAsks[i]!.text,
-            detail: `該当 ${r.keys.size} 行`,
-            options: kind.options,
+            detail: [`該当 ${r.keys.size} 行`, effect?.facts].filter(Boolean).join("。"),
+            // 押すとどう変わるか（載せる件数）を答えに添える
+            options: kind.options.map((o) => ({
+              value: o.value,
+              label: !effect ? o.label : o.value === "exclude" ? `${o.label}（載せる ${effect.impact.before} → ${effect.impact.after} 件）` : `${o.label}（${effect.impact.before} 件のまま）`,
+            })),
             answered,
             view: () => {
               setFilter({ kind: "all", ask: r.id })
@@ -1107,7 +1157,25 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
       setWork((w) => withUndo(w, { ...setTax(w, next, "staff"), reportAnswers: { ...w.reportAnswers, tax: value === "ask" ? "ask" : next } }, reportUndoId(id), []))
       return
     }
-    if (value === "exclude" || value === "keep") answerAsk(id, value)
+    if (value === "keep") return answerAsk(id, value)
+    if (value !== "exclude") return
+    const i = askRows.findIndex((r) => r.id === id)
+    const effect = askEffects[i]
+    if (effect && needsConfirm(effect.impact)) {
+      const { before, after, shortBefore, shortAfter } = effect.impact
+      const newlyShort = shortAfter.filter((g) => !shortBefore.includes(g))
+      setConfirmAsk({
+        id,
+        option: ASK_KINDS[planAsks[i]!.kind].options.find((o) => o.value === "exclude")!.label,
+        title: `載せる工事が ${before} 件から ${after} 件に減ります`,
+        lines: [
+          effect.facts,
+          after === 0 ? "載せる工事がなくなります。" : newlyShort.length ? `7割に届かなくなります: ${newlyShort.join("・")}` : "7割には届きます（決算書の額を入れていない業種は、表の合計で見ています）。",
+        ].filter((x): x is string => !!x),
+      })
+      return
+    }
+    answerAsk(id, value)
   }
 
   /**
@@ -1180,6 +1248,18 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
       <FinalImportPanel result={finalResult} view={view} proposals={excelProposals} changes={proposalChanges} actions={proposalActions} busy={savingRule} />
     </>
   )
+  /** チャットの流れの最後に出す「AI で案を出す」の結果と変更案 */
+  const fixPanel = (
+    <FixSuggestionPanel
+      state={gyoshuSuggestion}
+      proposals={fixProposals}
+      changes={proposalChanges}
+      view={view}
+      actions={proposalActions}
+      busy={savingRule}
+      onRetry={canSuggest ? (keys) => runFixAction("suggestGyoshu", keys) : null}
+    />
+  )
 
   const chatPanel = chatEnabled ? (
     <Suspense fallback={<div className="h-full" />}>
@@ -1195,6 +1275,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
         busy={savingRule}
         fx={fx}
         report={report}
+        tail={fixPanel}
         onFiles={(fs) => void attach(fs)}
         onAction={onChatAction}
         onOpenTab={openTab}
@@ -1309,7 +1390,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
 
   /** チャットに職員の答えを待つもの（承認待ちの変更案・聞き返し）。次にやることの「答える」 */
   const chatPending =
-    work.proposals.filter((p) => p.state === "open" && (p.origin.kind === "chat" || p.origin.kind === "excel")).length + questions.filter((q) => q.answered === null).length
+    work.proposals.filter((p) => p.state === "open" && (p.origin.kind === "chat" || p.origin.kind === "excel" || p.origin.kind === "fix")).length + questions.filter((q) => q.answered === null).length
   /**
    * 問い合わせの段: 聞くことが無いか、返事（記入用Excel）を取り込んだら済み。案件の状態が問い合わせ中か、記入用Excel・メールの下書き（件名）を
    * 出したら、送った・返事待ち
@@ -1321,7 +1402,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
         ? ("waiting" as const)
         : ("todo" as const)
   /** 次にやること（作業の画面の上と書き出すの確認）。数は表・問い合わせのタブと同じもの */
-  const nextSteps: NextStepsData | null = fixCounts && output ? { answer: chatPending, fix: fixCounts, inquiry: { count: activeInquiries, state: inquiryState }, exportRows: output.length } : null
+  const nextSteps: NextStepsData | null = fixCounts && output ? { answer: chatPending, fix: fixCounts, fixActions: fixGroups, inquiry: { count: activeInquiries, state: inquiryState }, exportRows: output.length } : null
 
   /** 次にやることの段へ移る。答えるはチャットの最初の答えを待つものへ（狭い画面では作業の画面を閉じる） */
   function goStep(id: StepId) {
@@ -1397,6 +1478,8 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
               counts={fixCounts!}
               asks={askRows}
               onOpenInquiry={() => showTab("inquiry")}
+              onFixAction={runFixAction}
+              suggest={{ can: canSuggest, running: gyoshuSuggestion.running !== null, pending: pendingFix }}
             />
           </TabsContent>
           <TabsContent value="selection" keepMounted className="min-h-0 overflow-auto p-4">
@@ -1563,8 +1646,38 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
             setExportOpen(false)
             goStep(id)
           }}
+          onFixAction={(action, keys) => {
+            setExportOpen(false)
+            runFixAction(action, keys)
+          }}
+          canSuggest={canSuggest}
         />
       )}
+
+      <AlertDialog open={!!confirmAsk} onOpenChange={(open) => !open && setConfirmAsk(null)}>
+        <AlertDialogContent data-testid="ask-confirm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>{confirmAsk?.title}</AlertDialogTitle>
+            <AlertDialogDescription className="grid gap-1">
+              {confirmAsk?.lines.map((l) => (
+                <span key={l}>{l}</span>
+              ))}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="ask-confirm-cancel">やめる</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (confirmAsk) answerAsk(confirmAsk.id, "exclude")
+                setConfirmAsk(null)
+              }}
+              data-testid="ask-confirm-ok"
+            >
+              {confirmAsk?.option}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <AlertDialog open={!!pendingSource} onOpenChange={(open) => !open && setPendingSource(null)}>
         <AlertDialogContent>

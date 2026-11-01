@@ -10,6 +10,7 @@ import { getTransform, transformsFor, type TransformId } from "../convert/transf
 import type { MappingPlan } from "../convert/plan"
 import { applyPlanPatch, beforeOf, describePlanPatch, patchFromInput, planPatchInputSchema, type PlanPatchInput, type SheetShape } from "../convert/plan-patch"
 import { CODE_SETS } from "../spec/code-sets"
+import { GYOSHU_GUESS_RULE } from "../convert/gyoshu-guess"
 import type { Basis, SelectionMode, TaxMode } from "../convert/koji-selection"
 import { basisSchema, fieldIdSchema, selectionSchema, taxSchema } from "../schemas"
 import { MODEL } from "../constants"
@@ -81,6 +82,7 @@ ${fileLines || "（なし）"}
 - 列の対応（どの列からどの項目を作るか・見出しの行・データの開始・飛ばす行・金額の単位）を変えるときは set_plan を直接呼ぶ（例:「金額は税込の列で」「工事名は B 列と C 列をつなげて」）。全行に同じ直しをセルの変更で当てるより、列の対応で直せるものは set_plan にする。承認すると変換し直す（この指示の get_table の表は変わらない）。使うシートは変えられないので、変えたいときは職員に作業の画面の上のシートの欄で選び直してもらう。職員にどの列を使っているか聞かれたら「この案件」の列の対応で答える。
 - 職員が CSV・Excel を出したい、問い合わせの Excel が欲しい、Excel で直したいと言ったら offer_action でボタンを出す（Excel で直すときも export。書き出した Excel を直してアップロードし直すと表に戻る。書き出す前の確認は画面が出す。あなたはファイルを作らない）。
 - 直したら await check_table({}) で決まった検査（エラー・警告・字数の上限・個人名らしい値・7割）を確かめ、直せるものは直す。
+- 業種コードを決める・直すときの決まり（工事名に業種の言葉を補う決まりとは別）: ${GYOSHU_GUESS_RULE} ほかの工事の傾向はコードで数える。業種は事務所が決めるので ask_customer にしない（推し量ったときは、返事で根拠を伝える）。
 - 分からないこと・データに無いこと（配置技術者・分からない工事場所など）は推測で埋めず、ask_customer で顧客への問い合わせに回す。住所の分割・工事名の補い・調べられる工事場所は問い合わせに回さず事務所でやる。
 - 指示があいまいで、どちらにも取れるときや、決める前に職員の答えが要るときは、ask_staff で聞き返す（答えるまで変更案は反映されない）。
 - 顧客の回答（職員がチャットに貼ったメールの本文、返ってきた記入用Excel・別の Excel・PDF などのファイル）は、まず await get_inquiries({}) で今顧客に聞いていることを読み、答えごとにどの工事（key）のどの項目への答えかを決めて await record_answers({"items":[{"key","field","answer"}]}) で送る（set_cells は使わない）。

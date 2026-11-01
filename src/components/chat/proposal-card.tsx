@@ -249,7 +249,7 @@ function ProposalDialog({
                     <td className="px-2 py-1 whitespace-nowrap text-muted-foreground">{l.where}</td>
                     <td className="px-2 py-1 whitespace-nowrap">{l.what}</td>
                     {l.values ? (
-                      <ValueDiff from={l.from} to={l.to} />
+                      <ValueDiff from={l.from} to={l.to} note={l.note} guess={l.guess} />
                     ) : (
                       <>
                         <td className="px-2 py-1 text-red-700 line-through decoration-red-300">{l.from}</td>
@@ -289,7 +289,7 @@ function ProposalDialog({
 }
 
 /** セルの値の文字の差分（jsdiff）。今の値では消える文字を赤、承認したあとの値では増える文字を緑にする */
-function ValueDiff({ from, to }: { from: string; to: string }) {
+function ValueDiff({ from, to, note, guess }: { from: string; to: string; note?: string; guess?: boolean }) {
   const parts = diffChars(from, to)
   return (
     <>
@@ -309,6 +309,12 @@ function ValueDiff({ from, to }: { from: string; to: string }) {
               {p.value}
             </span>
           ),
+        )}
+        {(note || guess) && (
+          <span className={cn("mt-0.5 block text-[11px]", guess ? "text-amber-800" : "text-muted-foreground")} data-testid="diff-note" data-guess={guess ? "1" : undefined}>
+            {guess && `AI の推定${note ? "・" : ""}`}
+            {note}
+          </span>
         )}
       </td>
     </>

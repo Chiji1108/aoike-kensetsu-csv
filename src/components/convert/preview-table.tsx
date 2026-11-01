@@ -11,7 +11,7 @@ import {
   type SortingState,
 } from "@tanstack/react-table"
 import { useVirtualizer } from "@tanstack/react-virtual"
-import { ArrowDown, ArrowUp, ArrowUpDown, Columns3, MessageCircleQuestion, RefreshCw, Search, X } from "lucide-react"
+import { ArrowDown, ArrowUp, ArrowUpDown, Columns3, Loader2, MapPin, MessageCircleQuestion, RefreshCw, Search, Sparkles, X } from "lucide-react"
 import { Segmented } from "@/components/segmented"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -31,7 +31,26 @@ import { INCLUSION_LABELS, type Inclusion } from "@/lib/convert/koji-selection"
 import type { KojiFieldId } from "@/lib/spec/koji-keireki"
 import type { CsvSpec } from "@/lib/spec/types"
 import { cn } from "@/lib/utils"
-import { FIX_KINDS, FIX_LABELS, NO_FIX, ROW_FILTERS, STATUS, cellClass, changedCell, inFilter, type FixCounts, type FixKind, type RowFix, type TableFilter } from "./status"
+import { choiceLabel, choicesOf } from "@/lib/spec/choices"
+import { CellPicker } from "./cell-picker"
+import {
+  FIX_ACTIONS,
+  FIX_KINDS,
+  FIX_LABELS,
+  NO_FIX,
+  ROW_FILTERS,
+  STATUS,
+  cellClass,
+  changedCell,
+  fixActionGroups,
+  fixActionText,
+  fixText,
+  inFilter,
+  type FixActionId,
+  type FixCounts,
+  type RowFix,
+  type TableFilter,
+} from "./status"
 
 type Row = RowResult<KojiFieldId>
 
@@ -50,9 +69,9 @@ const columnHelper = createColumnHelper<typeof features, Row>()
 const WIDTH: Record<KojiFieldId | "include" | "origin", number> = {
   include: 156,
   origin: 84,
-  gyoshu: 64,
+  gyoshu: 100,
   client: 170,
-  motoukeShitauke: 64,
+  motoukeShitauke: 92,
   jv: 44,
   workName: 240,
   prefecture: 80,
@@ -101,18 +120,22 @@ const filterKey = (f: TableFilter) => `${f.kind}|${f.reason ?? ""}|${f.ask ?? ""
 
 const originText = (r: Row) => `${r.sheet}!${r.row + 1}`
 
-/** 項目の短い名前（「請負代金（千円）」→「請負代金」） */
-const shortLabel = (spec: CsvSpec<KojiFieldId>, field: KojiFieldId) => (spec.fields.find((f) => f.id === field)?.label ?? field).replace(/（.*）$/, "")
-
-/** 行の理由の1つ（例:「業種が空」「工事名: AI の推定」） */
-const fixText = (spec: CsvSpec<KojiFieldId>, f: { field: KojiFieldId; kind: FixKind }) =>
-  f.kind === "empty" ? `${shortLabel(spec, f.field)}が空` : `${shortLabel(spec, f.field)}: ${FIX_LABELS[f.kind]}`
-
 /** 行の理由として見せる数（残りは「他 N」。全部はツールチップ） */
 const SHOWN_FIXES = 2
 
 /** 計画の聞き返しの対象の行（表で見る） */
 export type AskRows = { id: string; label: string; keys: ReadonlySet<string> }
+
+/** 「AI で案を出す」を押せるか（can）、頼んでいる最中か（running）、前の案をまだ決めていないか（pending） */
+export type SuggestState = { can: boolean; running: boolean; pending: boolean }
+
+/** 直し方の操作を押せないときの理由（押せるなら undefined） */
+function actionBlocked(action: FixActionId, s: SuggestState) {
+  if (action !== "suggestGyoshu" || s.can) return undefined
+  return s.running ? "AI が案を考えています" : s.pending ? "前の AI の案を、チャットで承認か却下してください" : "AI を使えません"
+}
+
+const ACTION_ICONS: Record<FixActionId, React.ReactNode> = { suggestGyoshu: <Sparkles />, findLocation: <MapPin />, askCustomer: <MessageCircleQuestion /> }
 
 export function PreviewTable({
   spec,
@@ -127,13 +150,16 @@ export function PreviewTable({
   counts,
   asks,
   onOpenInquiry,
+  onFixAction,
+  suggest,
 }: {
   spec: CsvSpec<KojiFieldId>
   rows: Row[]
   inclusion: ReadonlyMap<string, Inclusion>
   /** 手直しを始める（直す元の文字列は個人名の記号を「〔Ａ〕」の形で出し、確定した文字列は同じ記号の表で読む） */
   openEditor: (cell: CellResult) => EditSession
-  onEdit: (rowKey: string, field: KojiFieldId, edit: CellEdit) => void
+  /** 手直し（主任技術者・監理技術者の欄は2列を一緒に決める） */
+  onEdit: (rowKey: string, edits: readonly [KojiFieldId, CellEdit][]) => void
   onToggle: (rowKey: string, included: boolean) => void
   /** 絞り込み（案件の画面が持つ。次にやること・報告の聞き返しの「表で見る」を押しても変わる） */
   filter: TableFilter
@@ -145,6 +171,9 @@ export function PreviewTable({
   asks: readonly AskRows[]
   /** 問い合わせのタブを開く（顧客に聞く行から） */
   onOpenInquiry: () => void
+  /** 直し方の操作を押したとき（keys はその行） */
+  onFixAction: (action: FixActionId, keys: readonly string[]) => void
+  suggest: SuggestState
 }) {
   const [editing, setEditing] = useState<Editing | null>(null)
   const setFilter = onFilterChange
@@ -183,13 +212,17 @@ export function PreviewTable({
   const data = useMemo(() => {
     const visible = (id: string) => columnVisibility[id] !== false
     const searched = spec.fields.filter((f) => visible(f.id))
+    // 決まった値の項目は表に出す名前（「電気」など）でも探せる
     const hasText = (r: Row) =>
-      (visible("origin") && originText(r).toLowerCase().includes(needle)) || searched.some((f) => r.cells[f.id].value.toLowerCase().includes(needle))
+      (visible("origin") && originText(r).toLowerCase().includes(needle)) ||
+      searched.some((f) => r.cells[f.id].value.toLowerCase().includes(needle) || (choiceLabel(f, r.cells[f.id].value)?.toLowerCase().includes(needle) ?? false))
     const ask = asks.find((a) => a.id === filter.ask)
     const asked = (key: string) => ask?.keys.has(key) ?? false
     return rows.filter((r) => inFilter(filter, fixes.get(r.key) ?? NO_FIX, inclusion.get(r.key)?.included ?? false, asked, r.key) && (!needle || hasText(r)))
   }, [rows, fixes, inclusion, filter, asks, needle, columnVisibility, spec])
   const activeAsk = asks.find((a) => a.id === filter.ask)
+  /** まとめて頼める直し方: 今の絞り込み（理由・検索）で見えている行だけ（件数もその行で） */
+  const fixGroups = useMemo(() => (filter.kind === "fix" && !filter.ask ? fixActionGroups(data, inclusion, fixes, filter.reason) : []), [data, inclusion, fixes, filter])
 
   const table = useTable({
     features,
@@ -220,8 +253,21 @@ export function PreviewTable({
   function finishEdit(commit: boolean) {
     if (!editing) return
     setEditing(null)
-    if (commit && editing.draft !== editing.session.text) onEdit(editing.row, editing.field, editing.session.read(editing.draft))
+    if (commit && editing.draft !== editing.session.text) onEdit(editing.row, [[editing.field, editing.session.read(editing.draft)]])
   }
+  /** 選ぶ欄で選んだ値を入れる（変わった項目だけ）。閉じたらセルに戻る（キーボードで続けて動ける） */
+  /** restoreFocus は選んだ・Escape で閉じたとき（外を押して閉じたときは、押した先のフォーカスを奪わない） */
+  function finishPick(r: Row, picked: Partial<Record<KojiFieldId, string>> | undefined, restoreFocus: boolean) {
+    if (!editing) return
+    const { row, field, session } = editing
+    setEditing(null)
+    const changed = Object.entries(picked ?? {}).filter(([f, v]) => r.cells[f as KojiFieldId].value !== v) as [KojiFieldId, string][]
+    if (changed.length) onEdit(row, changed.map(([f, v]) => [f, session.read(v)]))
+    if (restoreFocus) requestAnimationFrame(() => scrollRef.current?.querySelector<HTMLElement>(`tr[data-row-key="${CSS.escape(row)}"] td[data-field="${field}"] button`)?.focus())
+  }
+  const [anchor, setAnchor] = useState<HTMLElement | null>(null)
+  /** 項目ごとの定義と選ぶ欄（描くたびに作らない） */
+  const fieldInfo = useMemo(() => new Map(spec.fields.map((f) => [f.id, { spec: f, choices: choicesOf(f) }])), [spec])
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const virtualizer = useVirtualizer({
@@ -244,7 +290,7 @@ export function PreviewTable({
             <Checkbox aria-label="CSVに載せる" checked={inc?.included ?? false} onCheckedChange={(checked) => onToggle(r.key, checked)} />
             <span className="text-[11px] text-muted-foreground">{inc ? INCLUSION_LABELS[inc.reason] : ""}</span>
           </label>
-          {inc?.included && <RowReasons spec={spec} fix={fixes.get(r.key) ?? NO_FIX} onOpenInquiry={onOpenInquiry} />}
+          {inc?.included && <RowReasons fix={fixes.get(r.key) ?? NO_FIX} onOpenInquiry={onOpenInquiry} onFixAction={(a) => onFixAction(a, [r.key])} suggest={suggest} />}
           {!liveKeys.has(r.key) && (
             <span className="mt-0.5 block text-[11px] text-amber-700" data-testid="row-unmatched" title="手直しで、今の絞り込み・検索に合わなくなりました。「更新」で表から外れます">
               条件に合いません
@@ -263,6 +309,8 @@ export function PreviewTable({
     const field = columnId as KojiFieldId
     const cell = r.cells[field]
     const isEditing = editing?.row === r.key && editing.field === field
+    const { spec: spec_, choices } = fieldInfo.get(field)!
+    const named = choiceLabel(spec_, cell.value)
     return (
       <TableCell
         key={columnId}
@@ -271,12 +319,27 @@ export function PreviewTable({
         data-status={cell.status}
         data-changed={changedCell(cell) ? "1" : undefined}
       >
-        {isEditing ? (
+        {isEditing && choices ? (
+          <>
+            <div ref={setAnchor} className="min-h-8 px-2 py-1.5 ring-2 ring-ring ring-inset">
+              <CellValue value={cell.value} named={named} code={choices.kind === "codes" && choices.set !== "flag"} />
+            </div>
+            <CellPicker
+              anchor={anchor}
+              field={field}
+              label={choices.kind === "engineerRole" ? "配置技術者の立場" : spec_.label}
+              choices={choices}
+              values={Object.fromEntries(spec.fields.map((f) => [f.id, r.cells[f.id].value])) as Record<KojiFieldId, string>}
+              onPick={(picked) => finishPick(r, picked, true)}
+              onCancel={(restore) => finishPick(r, undefined, restore)}
+            />
+          </>
+        ) : isEditing ? (
           <CellEditor value={editing.draft} onChange={(draft) => setEditing({ ...editing, draft })} onDone={finishEdit} />
         ) : (
           // 注意書きはセルの下に出さない（色で状態は分かる）。選んだ・マウスを乗せたセルのものを表の上の1行に出す（キーボードで選んでも出る）
-          <CellButton store={store.current!} row={r.key} field={field} message={cell.message} onClick={() => startEdit(r, field)}>
-            <span className="whitespace-pre-wrap">{cell.value || <span className="text-muted-foreground/50">—</span>}</span>
+          <CellButton store={store.current!} row={r.key} field={field} message={cell.message} onClick={() => startEdit(r, field)} hasPopup={!!choices}>
+            <CellValue value={cell.value} named={named} code={choices?.kind === "codes" && choices.set !== "flag"} />
           </CellButton>
         )}
       </TableCell>
@@ -366,6 +429,30 @@ export function PreviewTable({
         </DropdownMenu>
       </div>
 
+      {filter.kind === "fix" && !activeAsk && fixGroups.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="まとめて直す" data-testid="fix-actions">
+          {fixGroups.map((g) => {
+            const blocked = actionBlocked(g.action, suggest)
+            return (
+              <Button
+                key={`${g.action}:${g.field}`}
+                size="xs"
+                variant="outline"
+                className="bg-background"
+                disabled={!!blocked}
+                title={blocked ?? FIX_ACTIONS[g.action].title}
+                onClick={() => onFixAction(g.action, g.keys)}
+                data-testid="fix-action"
+                data-action={g.action}
+              >
+                {g.action === "suggestGyoshu" && suggest.running ? <Loader2 className="animate-spin" /> : ACTION_ICONS[g.action]}
+                {fixActionText(g)}
+              </Button>
+            )
+          })}
+        </div>
+      )}
+
       <CellNote spec={spec} store={store.current!} byKey={byKey} />
 
       <div ref={scrollRef} className="min-h-0 overflow-auto rounded-xl border bg-card">
@@ -449,20 +536,41 @@ export function PreviewTable({
 }
 
 /**
- * 載せる行の、片付けることの理由（例:「業種が空」「工事名: AI の推定」）。顧客に聞くセルは直さなくてよいので、問い合わせのタブへの道だけ出す
+ * 載せる行の、片付けることの理由（例:「業種が空」「工事名: AI の推定」）と、その理由の直し方（status.ts の FIX_ACTIONS）。
+ * 顧客に聞くセルは直さなくてよいので、問い合わせのタブへの道だけ出す
  */
-function RowReasons({ spec, fix, onOpenInquiry }: { spec: CsvSpec<KojiFieldId>; fix: RowFix<KojiFieldId>; onOpenInquiry: () => void }) {
+function RowReasons({ fix, onOpenInquiry, onFixAction, suggest }: { fix: RowFix<KojiFieldId>; onOpenInquiry: () => void; onFixAction: (a: FixActionId) => void; suggest: SuggestState }) {
   if (!fix.fixes.length && !fix.ask) return null
-  const texts = fix.fixes.map((f) => fixText(spec, f))
-  const rest = texts.length - SHOWN_FIXES
+  const shown = fix.fixes.slice(0, SHOWN_FIXES)
+  const rest = fix.fixes.length - shown.length
+  // 同じ直し方は1つだけ出す（例: 都道府県と場所名が空でも「AI で案を出す」は1つ）
+  const actions = [...new Set(fix.fixes.flatMap((f) => f.action ?? []))]
   return (
-    <div className="mt-1 flex flex-wrap gap-1 text-[11px] leading-4" data-testid="row-reasons">
-      {texts.length > 0 && (
-        <span className="text-amber-800" title={texts.join("\n")} data-testid="row-fix">
-          {texts.slice(0, SHOWN_FIXES).join("・")}
+    <div className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] leading-4 whitespace-normal" data-testid="row-reasons">
+      {shown.length > 0 && (
+        <span className="text-amber-800" title={fix.fixes.map(fixText).join("\n")} data-testid="row-fix">
+          {shown.map(fixText).join("・")}
           {rest > 0 && ` 他${rest}`}
         </span>
       )}
+      {actions.map((a) => {
+        const blocked = actionBlocked(a, suggest)
+        return (
+          <button
+            key={a}
+            type="button"
+            disabled={!!blocked}
+            className="inline-flex items-center gap-0.5 text-violet-700 underline-offset-2 hover:underline disabled:text-muted-foreground disabled:no-underline [&_svg]:size-3"
+            title={blocked ?? FIX_ACTIONS[a].title}
+            onClick={() => onFixAction(a)}
+            data-testid="row-fix-action"
+            data-action={a}
+          >
+            {ACTION_ICONS[a]}
+            {FIX_ACTIONS[a].label}
+          </button>
+        )
+      })}
       {fix.ask > 0 && (
         <button type="button" className="inline-flex items-center gap-0.5 text-muted-foreground underline-offset-2 hover:underline" title="顧客への問い合わせに入っています（直さなくてよい）。問い合わせのタブを開きます" onClick={onOpenInquiry} data-testid="row-ask">
           <MessageCircleQuestion className="size-3" />
@@ -470,6 +578,18 @@ function RowReasons({ spec, fix, onOpenInquiry }: { spec: CsvSpec<KojiFieldId>; 
         </button>
       )}
     </div>
+  )
+}
+
+/** セルの値。決まった値の項目は名前で出す（業種・元請下請はコードも小さく添える。CSV にはコードが入る） */
+function CellValue({ value, named, code }: { value: string; named: string | undefined; code: boolean }) {
+  if (!value) return <span className="text-muted-foreground/50">—</span>
+  if (!named) return <span className="whitespace-pre-wrap">{value}</span>
+  return (
+    <span data-code={value}>
+      {code && <span className="num mr-1 text-[10px] text-muted-foreground">{value}</span>}
+      {named}
+    </span>
   )
 }
 
@@ -487,7 +607,7 @@ function columnTip(spec: CsvSpec<KojiFieldId>, id: string) {
  * セルのボタン。選んだ（フォーカスした）ときだけ注意書きの1行を説明につなぐ（読み上げはフォーカスのときだけ。マウスを乗せただけでは読み上げない）。
  * store を読むのはこのボタンだけなので、選んだセルが変わっても表全体は描き直さない
  */
-function CellButton({ store, row, field, message, onClick, children }: { store: ActiveStore; row: string; field: KojiFieldId; message?: string; onClick: () => void; children: React.ReactNode }) {
+function CellButton({ store, row, field, message, onClick, hasPopup, children }: { store: ActiveStore; row: string; field: KojiFieldId; message?: string; onClick: () => void; hasPopup?: boolean; children: React.ReactNode }) {
   const focused = useSyncExternalStore(store.subscribe, () => {
     const a = store.get()
     return a?.row === row && a.field === field && a.via === "focus"
@@ -498,6 +618,7 @@ function CellButton({ store, row, field, message, onClick, children }: { store: 
       className="block min-h-8 w-full px-2 py-1.5 text-left break-words hover:ring-1 hover:ring-ring/40 hover:ring-inset"
       title={message}
       aria-describedby={focused ? NOTE_ID : undefined}
+      aria-haspopup={hasPopup ? "dialog" : undefined}
       onFocus={() => store.set({ row, field, via: "focus" })}
       onMouseEnter={() => store.set({ row, field, via: "hover" })}
       onClick={onClick}

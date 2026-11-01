@@ -48,7 +48,7 @@ const decided = (c: CellResult) => c.by !== undefined || c.ask === true
 const unsure = (c: CellResult) => c.guessed === true || (c.byAi === true && c.status === "warning" && c.message !== INFERRED_NOTE)
 
 /** 調べる行か: 都道府県が空か、都道府県・場所名が自信の無い AI の値で、どちらもまだ決まっていない */
-function needsLookup(prefecture: CellResult, place: CellResult) {
+export function needsLookup(prefecture: CellResult, place: CellResult) {
   if (decided(prefecture) || decided(place)) return false
   return prefecture.value === "" || unsure(prefecture) || unsure(place)
 }
