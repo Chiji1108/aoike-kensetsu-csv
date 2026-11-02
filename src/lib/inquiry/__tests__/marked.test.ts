@@ -32,7 +32,7 @@ const DATA: (string | number | Date | null)[][] = [
 ]
 
 /** 顧客の元の Excel（表題の結合・見出しの塗り・罫線・金額の書式・合計の数式・メモのシート） */
-async function sourceXlsx() {
+async function sourceXlsx(opts: { mergeEnd?: true } = {}) {
   const wb = new ExcelJS.Workbook()
   const ws = wb.addWorksheet("工事経歴")
   ws.getCell("A1").value = "令和6年度 工事経歴一覧"
@@ -60,6 +60,11 @@ async function sourceXlsx() {
   ws.getCell("G8").numFmt = "#,##0"
   ws.getColumn(3).width = 30
   ws.getCell("J5").note = "顧客のメモ"
+  // 2行目のデータの完成日（空）を備考と横に結合する
+  if (opts.mergeEnd) {
+    ws.getCell("J5").value = null
+    ws.mergeCells("I5:J5")
+  }
   wb.addWorksheet("メモ").getCell("A1").value = "担当者メモ"
   return { name: "工事経歴.xlsx", bytes: new Uint8Array(await wb.xlsx.writeBuffer()) }
 }
@@ -74,8 +79,8 @@ async function convertSource(source: { name: string; bytes: Uint8Array }) {
   return { sheets, plan, rows, inquiries }
 }
 
-async function marked() {
-  const source = await sourceXlsx()
+async function marked(opts: { mergeEnd?: true } = {}) {
+  const source = await sourceXlsx(opts)
   const c = await convertSource(source)
   const placement = placeMarks(c.sheets, c.plan, c.rows, c.inquiries)
   if (!placement) throw new Error("印を付ける行がありません")
@@ -132,6 +137,17 @@ describe("印付きの Excel を書く", () => {
     expect([4, 5, 6].map((r) => isAsk(b.getCell(r, 11)))).toEqual([true, true, true])
     // 塗りを変えても、同じ書式だったほかのセルは塗らない
     expect(isAsk(b.getCell("H5"))).toBe(false)
+  })
+
+  test("足す列のセルにもとから数式（空の文字を返すもの）があれば書かない（記入用Excelにする）", async () => {
+    const wb = new ExcelJS.Workbook()
+    await wb.xlsx.load((await sourceXlsx()).bytes.slice().buffer as ArrayBuffer)
+    wb.getWorksheet("工事経歴")!.getCell(3, 11).value = { formula: 'IF(A3="","","")', result: "" }
+    const source = { name: "工事経歴.xlsx", bytes: new Uint8Array(await wb.xlsx.writeBuffer()) }
+    const c = await convertSource(source)
+    const plan = await planMarks(c.sheets, placeMarks(c.sheets, c.plan, c.rows, c.inquiries)!, ID)
+    expect(plan.columns[0]?.col).toBe(10)
+    expect(await markedXlsx(source, plan, KEY, "テスト建設")).toEqual({ ok: false, reason: "表の右端の列に値や数式があり、列を足せないので" })
   })
 
   test("書いた Excel は印付きとして見分ける。色付きのセルの数は塗ったセルの数", async () => {
@@ -258,7 +274,27 @@ describe("返ってきた印付きの Excel を読む", () => {
     const rows = m.rows.map((r) => (r.key === key ? { ...r, cells: { ...r.cells, engineer: { ...r.cells.engineer, value: "試験　次郎" } } } : r))
     const r = await readMarked(sheets, rows, m.sheets, { ...ID, plan: planOf(m) }, noAi())
     if ("error" in r) throw new Error(r.error)
-    expect(r.report.changed).toEqual([{ rowKey: key, field: "engineer", now: "試験　次郎", answer: "試験 太郎" }])
+    expect(r.report.changed).toEqual([{ rowKey: key, field: "engineer", now: "試験　次郎", answer: "試験　太郎" }])
     expect(r.report.edits.filter(([k]) => k === editKey(key, "engineer"))).toEqual([])
+  })
+
+  test("答えを承認したあとに同じファイルを上げ直しても「変わっていた」とは言わず、表にもうあるとして数える", async () => {
+    const m = await marked()
+    const sheets = await answer(m.bytes, (ws) => void (ws.getCell(4, 11).value = "試験 太郎"))
+    const key = m.rows[0]!.key
+    const rows = m.rows.map((r) => (r.key === key ? { ...r, cells: { ...r.cells, engineer: { ...r.cells.engineer, value: "試験　太郎", by: "customer" as const } } } : r))
+    const r = await readMarked(sheets, rows, m.sheets, { ...ID, plan: planOf(m) }, noAi())
+    if ("error" in r) throw new Error(r.error)
+    expect(r.report.changed).toEqual([])
+    expect(r.report.alreadyApplied.map((q) => [q.rowKey, q.field])).toEqual([[key, "engineer"]])
+  })
+
+  test("結合したセルに書いても行を見失わず、結合の隣の列を印の無いセルの書き換えとして数えない", async () => {
+    const m = await marked({ mergeEnd: true })
+    const r = await read(m, await answer(m.bytes, (ws) => void (ws.getCell("I5").value = new Date(Date.UTC(2024, 10, 15)))))
+    if ("error" in r) throw new Error(r.error)
+    expect(r.report.edits).toContainEqual([editKey(m.rows[1]!.key, "endYm"), { value: "202411", by: "customer" }])
+    expect(r.report.unreadable).toEqual([])
+    expect(r.outside).toBe(0)
   })
 })

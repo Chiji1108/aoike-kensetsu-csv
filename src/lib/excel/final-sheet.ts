@@ -66,10 +66,20 @@ export function finalSheetRows(rows: readonly RowResult<KojiFieldId>[]): FinalCe
 /** バイト列を16進の文字列にする */
 export const toHex = (bytes: Uint8Array) => [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("")
 
+/** 鍵ごとに1回だけ作る（印付きの Excel は行ごと・セルごとに HMAC を求める） */
+const keys = new Map<string, Promise<CryptoKey>>()
+function hmacKey(key: string) {
+  let k = keys.get(key)
+  if (!k) {
+    const raw = Uint8Array.from(key.match(/../g)!.map((h) => parseInt(h, 16)))
+    keys.set(key, (k = crypto.subtle.importKey("raw", raw, { name: "HMAC", hash: "SHA-256" }, false, ["sign"])))
+  }
+  return k
+}
+
 /** 案件の照合用の鍵（16進。サーバーが案件の id から決める。excel/excel-key.ts）での HMAC-SHA-256 の先頭 n バイト（印付きの Excel の照合用も使う） */
 export async function hmac(key: string, text: string, n: number) {
-  const raw = Uint8Array.from(key.match(/../g)!.map((h) => parseInt(h, 16)))
-  const k = await crypto.subtle.importKey("raw", raw, { name: "HMAC", hash: "SHA-256" }, false, ["sign"])
+  const k = await hmacKey(key)
   return toHex(new Uint8Array(await crypto.subtle.sign("HMAC", k, new TextEncoder().encode(text))).slice(0, n))
 }
 

@@ -28,9 +28,16 @@ export async function markedXlsx(source: { name: string; bytes: Uint8Array }, pl
   }
   if (wb.getWorksheet(MARKED_SHEET_NAME) || wb.getWorksheet(ADDED_SHEET_NAME)) return { ok: false, reason: `元のファイルに「${ADDED_SHEET_NAME}」などのシートがあるので` }
 
+  // 足す列の見出し・推定の値を書くセルに、もとから値や数式（空の文字を返すものも）があれば書かない
+  const filled = (ws: ExcelJS.Worksheet, row: number, col: number) => {
+    const v = ws.getCell(row + 1, col + 1).value
+    return v !== null && v !== undefined && v !== ""
+  }
   for (const c of plan.columns) {
     const ws = wb.getWorksheet(c.sheet)
     if (!ws) return { ok: false, reason: "元のファイルのシートが見つからないので" }
+    const written = [...(c.headerRow >= 0 ? [c.headerRow] : []), ...plan.cells.flatMap((m) => (m.sheet === c.sheet && m.col === c.col && m.value !== undefined ? [m.row] : []))]
+    if (written.some((r) => filled(ws, r, c.col))) return { ok: false, reason: "表の右端の列に値や数式があり、列を足せないので" }
     ws.getColumn(c.col + 1).width = 22
     if (c.headerRow < 0) continue
     const cell = ws.getCell(c.headerRow + 1, c.col + 1)
@@ -73,13 +80,13 @@ export async function markedXlsx(source: { name: string; bytes: Uint8Array }, pl
   return sameValues(source, bytes, plan) ? { ok: true, bytes } : { ok: false, reason: "元のファイルの値を変えずに書けないので" }
 }
 
-/** 書いた Excel を読み直し、元のシートの並びと、元のセルの値（足した列・足した値のセルを除く）がすべて同じで、照合用のシートが読めるか */
+/** 書いた Excel を読み直し、元のシートの並びと、元のセルの値（足した列の見出しと足した値のセルを除く）がすべて同じで、照合用のシートが読めるか */
 function sameValues(source: { name: string; bytes: Uint8Array }, bytes: Uint8Array, plan: MarkPlan) {
   const before = readWorkbook(source.name, source.bytes)
   const after = readWorkbook(source.name, bytes)
   if (before.some((s, i) => after[i]?.name !== s.name)) return false
-  const ours = new Set([...plan.columns.map((c) => `${c.sheet}\t*\t${c.col}`), ...plan.cells.flatMap((c) => (c.value !== undefined ? [`${c.sheet}\t${c.row}\t${c.col}`] : []))])
-  const mine = (sheet: string, row: number, col: number) => ours.has(`${sheet}\t*\t${col}`) || ours.has(`${sheet}\t${row}\t${col}`)
+  const ours = new Set([...plan.columns.map((c) => `${c.sheet}\t${c.headerRow}\t${c.col}`), ...plan.cells.flatMap((c) => (c.value !== undefined ? [`${c.sheet}\t${c.row}\t${c.col}`] : []))])
+  const mine = (sheet: string, row: number, col: number) => ours.has(`${sheet}\t${row}\t${col}`)
   for (const [i, s] of before.entries()) {
     const t = after[i]!
     const rows = Math.max(s.rows.length, t.rows.length)

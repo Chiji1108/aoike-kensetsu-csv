@@ -305,7 +305,7 @@ export type AnswerReport = {
   invalid: { inquiry: CellInquiry; answer: string; message: string }[]
 }
 
-const emptyReport = (): AnswerReport => ({
+export const emptyReport = (): AnswerReport => ({
   edits: [],
   applied: [],
   unknownKeys: [],

@@ -658,11 +658,14 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
   const activeInquiries = inquiries.filter((q) => !dismissed.has(inquiryKey(q))).length
   /** 外していないセルの問い合わせ（添付の Excel に色を付けるもの） */
   const activeCells = useMemo(() => inquiries.filter((q): q is CellInquiry => q.kind === "cell" && !dismissed.has(inquiryKey(q))), [inquiries, dismissed])
+  /** 印付きの Excel を書いてみて、元を壊さずに書けなかった変換の元と理由（それからはメールも記入用Excelに合わせる。保存しない） */
+  const [markFailure, setMarkFailure] = useState<{ fileId: string; reason: string } | null>(null)
   /** 添付する Excel（変換の元に印を付けられれば印付き、書けなければ理由を添えて記入用Excel） */
-  const attachment = useMemo(
-    () => chooseAttachment(source && plan && source.fileId === work.sourceFileId ? source : null, plan, output ?? NO_ROWS, activeCells),
-    [source, plan, work.sourceFileId, output, activeCells],
-  )
+  const attachment = useMemo(() => {
+    const src = source && plan && source.fileId === work.sourceFileId ? source : null
+    const failed = src && markFailure?.fileId === src.fileId ? markFailure.reason : null
+    return chooseAttachment(src && failed ? { ...src, markable: { ok: false, reason: failed } } : src, plan, output ?? NO_ROWS, activeCells)
+  }, [source, plan, work.sourceFileId, output, activeCells, markFailure])
   const summary = useMemo(() => (edited && selected ? summarizeKoji(edited, selected, { tax, basis, rule7Tax }) : []), [edited, selected, tax, basis, rule7Tax])
 
   /** 計画の聞き返しと、その対象の表の行（元の Excel のセルで決める。答えで載せないにした行も数える） */
@@ -781,8 +784,8 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
     if (!p || p.state !== "open" || !changes) return
     const chosen = indices.filter((i) => decisionOf(p, i) === "pending")
     if (decision === "rejected") {
-      // 直した Excel の却下した項目は覚え、同じ Excel を上げ直しても出し直さない
-      if (p.origin.kind === "excel" && chosen.length)
+      // 直した Excel・顧客の回答の却下した項目は覚え、同じ Excel を上げ直しても出し直さない
+      if ((p.origin.kind === "excel" || p.origin.kind === "answer") && chosen.length)
         setWork((w) => ({ ...w, rejectedExcel: [...w.rejectedExcel, ...chosen.map((i) => changeSignature(changes[i]!))].slice(-MAX_REJECTED_EXCEL) }))
       return updateProposal(id, (x) => decide(x, chosen, "rejected"))
     }
@@ -999,8 +1002,8 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
     const w = workRef.current
     const converted = sourceAtStart && addressesAtStart ? (convertedRows(sourceAtStart.sheets, w, addressesAtStart) ?? []) : []
     const merged = mergeAnswers(report, against, { rows: baseRows({ rows: converted, added: w.added }), replacements: w.replacements, edits: w.edits }).report
-    // 開いている顧客の回答の変更案と同じ項目は除く（同じ Excel を2回上げても二重にしない）
-    const known = new Set<string>()
+    // 開いている顧客の回答の変更案・却下した項目と同じものは除く（同じ Excel を2回上げても二重にせず、却下したものを出し直さない）
+    const known = new Set(w.rejectedExcel)
     for (const p of w.proposals) {
       if (p.origin.kind !== "answer" || p.state !== "open") continue
       proposalChangesRef.current.get(p.id)?.forEach((c, i) => {
@@ -1016,12 +1019,16 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
     )
     // 決まった欄で読めなかった記入を AI に読ませるときは、保存したファイルを AI に渡す
     const saved = await keepFile("answer", f, f.name)
-    if (!saved) return undefined
+    // 保存を待っている間に元や列の対応が変わったら、前の元の行への答えなので入れない
+    const stale = () => generation !== caseGeneration.current || workRef.current.plan !== planAtStart
+    if (!saved || stale()) return undefined
     if (changes.length) {
       const proposal = newProposal(crypto.randomUUID(), { kind: "answer", fileId: saved.id }, changes, null)
       await recordProposalFn({ data: { caseId: kase.id, record: { proposal, changes } } })
       setProposalChanges((m) => new Map(m).set(proposal.id, changes))
-      update("proposals", (ps) => [...ps, proposal])
+      // 記録している間に元が変わったら、閉じた変更案として足す（サーバーの記録から開き直しても、また開かない）
+      update("proposals", (ps) => [...ps, stale() ? discard(proposal) : proposal])
+      if (stale()) return undefined
     }
     setWork((x) => ({ ...x, aiCache: new Map([...cache, ...x.aiCache]), answers: merged }))
     // 色付きの欄の外（印の無いセルの書き換え・別の列・メモ・別のシート）に記入があるか、読めなかった記入があれば、このファイルを AI に読ませられる
@@ -1109,7 +1116,8 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
         const marks = await planMarks(src.sheets, placement, { caseId: kase.id, sourceFileId, excelKey })
         const out = await markedXlsx({ name: src.name, bytes: await fetchCaseFile(src.fileId) }, marks, excelKey, customer.name)
         if (out.ok) return save(out.bytes, datedFileName("確認のお願い", customer.name, new Date(), "xlsx"))
-        toast.warning(`${out.reason}、記入用Excelにしました`)
+        setMarkFailure({ fileId: src.fileId, reason: out.reason })
+        toast.warning(`${out.reason}、記入用Excelにしました（メールの本文も記入用Excelに合わせました）`)
       }
     }
     save(await inquiryXlsx(inquirySheet(output, activeCells), customer.name), datedFileName("記入のお願い", customer.name, new Date(), "xlsx"))
@@ -1479,11 +1487,11 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
   const chatPending =
     work.proposals.filter((p) => p.state === "open" && (p.origin.kind === "chat" || p.origin.kind === "excel" || p.origin.kind === "answer" || p.origin.kind === "fix")).length + questions.filter((q) => q.answered === null).length
   /**
-   * 問い合わせの段: 聞くことが無いか、返事（記入用Excel）を取り込んだら済み。案件の状態が問い合わせ中か、記入用Excel・メールの下書き（件名）を
-   * 出したら、送った・返事待ち
+   * 問い合わせの段: 聞くことが無いか、返ってきた Excel を取り込んで顧客の回答の変更案を決め終えたら済み（決めていない変更案は「答える」に数える）。
+   * 案件の状態が問い合わせ中か、問い合わせの Excel・メールの下書き（件名）を出したら、送った・返事待ち
    */
   const inquiryState =
-    activeInquiries === 0 || work.answers !== null
+    activeInquiries === 0 || (work.answers !== null && !answerProposals.some((p) => p.state === "open"))
       ? ("done" as const)
       : status === "inquiring" || files.some((f) => f.kind === "inquiry_sheet") || work.inquiryText.subject !== null
         ? ("waiting" as const)

@@ -1,5 +1,5 @@
 import { z } from "zod"
-import type { RowResult } from "../convert/convert"
+import { editKey, type RowResult } from "../convert/convert"
 import type { FieldPlan, MappingPlan, SheetGrid } from "../convert/plan"
 import { getTransform } from "../convert/transforms"
 import { hmac, keyMark } from "../excel/final-sheet"
@@ -8,6 +8,7 @@ import type { KojiFieldId } from "../spec/koji-keireki"
 import {
   answerHints,
   askLabel,
+  emptyReport,
   columnOf,
   inquirySheet,
   outsideCells,
@@ -105,17 +106,23 @@ const textAt = (grid: SheetGrid | undefined, row: number, cols: readonly number[
     .join(" ")
 const storedOf = (r: KojiRow, f: KojiFieldId) => r.cells[f].stored ?? r.cells[f].value
 
+/** その行のその列のセルと同じ結合の範囲にある列（結合していなければその列だけ） */
+function mergedColumns(grid: SheetGrid, row: number, col: number): number[] {
+  const m = grid.merges?.find((x) => x.s.r <= row && row <= x.e.r && x.s.c <= col && col <= x.e.c)
+  return m ? Array.from({ length: m.e.c - m.s.c + 1 }, (_, i) => m.s.c + i) : [col]
+}
+
 /**
  * 計画がその項目に使う元の列（無ければ null。列を足す）。ほかの項目の列から推し量る変換（工事名から工事場所を推定するなど）は、
  * その列に答えを書いてもらうものではないので列を足す
  */
 function planColumns(p: FieldPlan | undefined): number[] | null {
-  if ((p?.kind === "column" || p?.kind === "columns") && INFERS.has(p.transform)) return null
+  if ((p?.kind === "column" || p?.kind === "columns") && getTransform(p.transform).infers) return null
   if (p?.kind === "column") return [p.column]
   if (p?.kind === "columns" && p.columns.length) return p.columns
   return null
 }
-const INFERS: ReadonlySet<string> = new Set(["ai.inferPrefecture", "ai.inferPlace"])
+
 
 /** 元のファイルの行か（足した行・計画のシートに無い行は、追加の確認のシートに回す） */
 const inSource = (r: KojiRow, sheets: readonly SheetGrid[], plan: Plan) => !r.key.startsWith("add-") && plan.sheets.includes(r.sheet) && sheets.some((s) => s.name === r.sheet)
@@ -189,7 +196,8 @@ export async function planMarks(sheets: readonly SheetGrid[], placement: MarkPla
   for (const { r, cols, added } of placed) {
     const at = `${r.sheet}\t${r.row}`
     const entry = byRow.get(at) ?? { sheet: r.sheet, row: r.row, skip: new Set<number>() }
-    if (!added) for (const c of cols) entry.skip.add(c)
+    // 結合セルに書くと、読み直した表では結合の範囲の列がすべて変わるので、同じ結合の列も行の照合から除く
+    if (!added) for (const c of cols) for (const x of mergedColumns(gridOf.get(r.sheet)!, r.row, c)) entry.skip.add(x)
     byRow.set(at, entry)
   }
   const markedRows = await Promise.all(
@@ -327,22 +335,7 @@ export async function readMarked(sheets: readonly SheetGrid[], rows: readonly Ko
   const hash = (text: string) => hashOf(id.excelKey, id.caseId, text)
   const gridOf = new Map(sheets.map((s) => [s.name, s]))
   const now = new Map(rows.map((r) => [r.key, r]))
-  const report: AiAnswerReport = {
-    edits: [],
-    applied: [],
-    unknownKeys: [],
-    unreadable: [],
-    duplicateKeys: [],
-    unanswered: [],
-    confirmed: [],
-    alreadyApplied: [],
-    changed: [],
-    alsoChanged: [],
-    heldBack: [],
-    needsCheck: [],
-    invalid: [],
-    uncorrected: [],
-  }
+  const report: AiAnswerReport = { ...emptyReport(), uncorrected: [] }
 
   // 行を探す: 同じ行の中身が同じならその行、違えば同じ中身の行がシートに1つだけあればその行（行の中身の HMAC は、同じ幅・同じ印の列の組ごとに1回だけ数える）
   const found = new Map<string, number | null>()
@@ -352,10 +345,8 @@ export async function readMarked(sheets: readonly SheetGrid[], rows: readonly Ko
     let index = indexes.get(k)
     if (!index) {
       index = new Map()
-      for (const [i, r] of grid.rows.entries()) {
-        const h = await hash(rowText(r, width, skip))
-        index.set(h, [...(index.get(h) ?? []), i])
-      }
+      const hashes = await Promise.all(grid.rows.map((r) => hash(rowText(r, width, skip))))
+      for (const [i, h] of hashes.entries()) index.set(h, [...(index.get(h) ?? []), i])
       indexes.set(k, index)
     }
     return index
@@ -389,6 +380,8 @@ export async function readMarked(sheets: readonly SheetGrid[], rows: readonly Ko
 
   const items: AiAnswer[] = []
   const toRead: { cell: MarkedCell; row: KojiRow; raws: string[] }[] = []
+  /** 聞いたあとにセルの値が変わっていて、記入もある（答えが今の値と同じなら表にもうある、違えば入れずに changed） */
+  const stale: { cell: MarkedCell; row: KojiRow; raws: string[] }[] = []
   for (const cell of check.cells) {
     const row = now.get(cell.rowKey)
     if (!row) {
@@ -406,7 +399,7 @@ export async function readMarked(sheets: readonly SheetGrid[], rows: readonly Ko
     const raws = (cols as number[]).map((c) => (gridOf.get(cell.sheet)!.rows[at]?.[c] ?? "").trim())
     const text = raws.filter(Boolean).join(" ")
     if ((await hash(storedOf(row, cell.field))) !== cell.current) {
-      if (text && (await hash(text)) !== cell.sent) report.changed.push({ rowKey: cell.rowKey, field: cell.field, now: storedOf(row, cell.field), answer: text })
+      if (text && (await hash(text)) !== cell.sent) stale.push({ cell, row, raws })
       continue
     }
     if ((await hash(text)) === cell.sent || !text) {
@@ -422,13 +415,26 @@ export async function readMarked(sheets: readonly SheetGrid[], rows: readonly Ko
   report.unanswered = report.unanswered.filter((q) => !answeredColumn.has(`${q.rowKey}\t${columnOf(q.field)!.header}`))
   const read = items.length ? await readAiAnswers(items, rows, ai) : null
   if (read) merge(report, read)
+  // 聞いたあとに変わったセル: 同じ答え（承認したあとに同じファイルを上げ直したなど）は表にもうある、違う答えは入れずに知らせる
+  if (stale.length) {
+    const again = await readAiAnswers(await answersOf(stale, id.plan, ai), rows, ai)
+    for (const { cell, row, raws } of stale) {
+      const key = editKey(cell.rowKey, cell.field)
+      const edit = again.edits.find(([k]) => k === key)?.[1]
+      const unread = [...again.invalid.map((i) => i.inquiry), ...again.uncorrected].some((i) => i.rowKey === cell.rowKey && i.field === cell.field)
+      const now = storedOf(row, cell.field)
+      if (edit || unread) report.changed.push({ rowKey: cell.rowKey, field: cell.field, now, answer: edit?.value ?? raws.filter(Boolean).join(" ") })
+      else report.alreadyApplied.push({ kind: "cell", rowKey: cell.rowKey, field: cell.field, reason: cell.reason, current: now })
+    }
+  }
 
   // 元のファイルに行の無い工事の問い合わせ（記入用Excelと同じ読み方）
   const addedSheet = gridOf.get(ADDED_SHEET_NAME)
   let outside = 0
   if (addedSheet) {
     const r = await readAnswers([addedSheet], rows, ai)
-    if (!("error" in r)) merge(report, { ...r, uncorrected: [] })
+    if ("error" in r) report.unreadable.push({ line: 0, rowKey: "", reason: `「${ADDED_SHEET_NAME}」のシート: ${r.error}` })
+    else merge(report, { ...r, uncorrected: [] })
     outside += outsideCells([addedSheet], rows)
   }
   if (source) outside += changedOutside(sheets, source, check, found, addedAt)
@@ -477,12 +483,13 @@ function changedOutside(sheets: readonly SheetGrid[], source: readonly SheetGrid
       n += s.rows.reduce((k, r) => k + filled(r), 0)
       continue
     }
+    // 印を付けた列（同じ結合の列も。行の照合の skip）と足した列
     const markedAt = new Map<number, Set<number>>()
+    for (const r of check.rows) if (r.sheet === s.name) markedAt.set(r.row, new Set(r.skip))
     for (const c of check.cells) {
-      if (c.sheet !== s.name) continue
-      const cols = c.added ? c.cols.map((x) => addedAt.get(`${c.sheet}\t${x}`) ?? -1) : c.cols
+      if (c.sheet !== s.name || !c.added) continue
       const set = markedAt.get(c.row) ?? new Set<number>()
-      for (const x of cols) set.add(x)
+      for (const x of c.cols) set.add(addedAt.get(`${c.sheet}\t${x}`) ?? -1)
       markedAt.set(c.row, set)
     }
     const added = new Set(check.columns.filter((c) => c.sheet === s.name).flatMap((c) => [addedAt.get(`${c.sheet}\t${c.col}`) ?? -1]))

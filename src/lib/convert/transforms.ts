@@ -68,6 +68,8 @@ export type Transform = {
   anonymizes?: "name" | "residence"
   /** 複数の列（例: 姓列+名列、区分列+注文者列）を受け取れる */
   multiColumn?: boolean
+  /** ほかの項目の列から推し量る（工事名から工事場所など）。その列は項目の値そのものではない（印付きの Excel はその列に印を付けず、列を足して聞く） */
+  infers?: true
   /** 最初の列の値を住所として引いた結果（ctx.addresses）を読む。変換の前にその値を引いておく（pipeline.ts の addressBookFor） */
   readsAddress?: true
   run: (inputs: string[], ctx: TransformContext) => RuleOutcome
@@ -453,6 +455,7 @@ export const TRANSFORMS = {
   },
   "ai.inferPrefecture": {
     id: "ai.inferPrefecture",
+    infers: true,
     label: "現場名・注文者から都道府県を推定",
     kind: "ai",
     accepts: ["prefecture"],
@@ -474,6 +477,7 @@ export const TRANSFORMS = {
   },
   "ai.inferPlace": {
     id: "ai.inferPlace",
+    infers: true,
     label: "現場名・注文者から場所名を推定",
     kind: "ai",
     accepts: ["text"],

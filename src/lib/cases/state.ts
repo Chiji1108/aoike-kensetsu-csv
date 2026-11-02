@@ -54,7 +54,7 @@ export type CaseWork = {
   /** 問い合わせのメールの件名・前置き（承認した AI の文・職員が直した文。lib/inquiry/text.ts）。前の作業には無いので、読むときは空。前の作業の質問の文は読み捨てる */
   inquiryText: InquiryText
   /**
-   * 直した Excel の変更案で却下した項目（lib/excel/final-import.ts の changeSignature）。同じ Excel を上げ直しても出し直さない。
+   * 直した Excel・返ってきた顧客の回答の変更案で却下した項目（lib/excel/final-import.ts の changeSignature）。同じ Excel を上げ直しても出し直さない。
    * 前の作業には無いので、読むときは空
    */
   rejectedExcel: string[]
