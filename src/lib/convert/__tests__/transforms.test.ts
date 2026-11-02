@@ -112,21 +112,21 @@ describe("住所（@geolonia/normalize-japanese-addresses と同梱の住所デ�
     ["神奈川県横浜市港北区新横浜2-5", "神奈川県", "横浜市港北区"],
     ["埼玉県さいたま市大宮区桜木町1", "埼玉県", "さいたま市大宮区"],
     ["三重県四日市市諏訪町1", "三重県", "四日市市"],
-    ["北海道余市郡余市町黒川町", "北海道", "余市町"],
+    ["北海道余市郡余市町黒川町", "北海道", "余市郡余市町"],
     ["東京都町田市森野2", "東京都", "町田市"],
     ["奈良県大和郡山市北郡山町", "奈良県", "大和郡山市"],
     ["東京都 港区 六本木6-10-1", "東京都", "港区"],
-    ["群馬県吾妻郡長野原町大字長野原", "群馬県", "長野原町"],
+    ["群馬県吾妻郡長野原町大字長野原", "群馬県", "吾妻郡長野原町"],
     ["茨城県竜ヶ崎市馴馬町", "茨城県", "龍ケ崎市"],
   ])("%s → %s / %s", async (a, pref, city) => {
     expect(await address("rule.addressPrefecture", a)).toEqual({ kind: "value", value: pref })
     expect(await address("rule.addressCity", a)).toEqual({ kind: "value", value: city })
   })
 
-  test("都道府県が省かれた住所: 都道府県は AI へ、市区町村は1つの都道府県にだけあるときにルールで決める（郡は付けない）", async () => {
+  test("都道府県が省かれた住所: 都道府県は AI へ、市区町村は1つの都道府県にだけあるときにルールで決める（郡も補う）", async () => {
     expect((await address("rule.addressPrefecture", "横浜市中区山下町10")).kind).toBe("ai")
     expect(await address("rule.addressCity", "横浜市中区山下町10")).toEqual({ kind: "value", value: "横浜市中区" })
-    expect(await address("rule.addressCity", "長野原町大字長野原")).toEqual({ kind: "value", value: "長野原町" })
+    expect(await address("rule.addressCity", "長野原町大字長野原")).toEqual({ kind: "value", value: "吾妻郡長野原町" })
     expect((await address("rule.addressPrefecture", "長野原町大字長野原")).kind).toBe("ai")
     // 府中市は東京都と広島県にある。決めずに AI へ
     expect((await address("rule.addressCity", "府中市宮町")).kind).toBe("ai")

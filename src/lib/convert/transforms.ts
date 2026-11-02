@@ -1,5 +1,5 @@
 import { GYOSHU } from "../spec/code-sets"
-import { placeIssue, tidyPlace, withoutGun } from "../spec/place"
+import { placeIssue, tidyPlace } from "../spec/place"
 import { isPrefecture, leadingPrefecture, prefectureFromShortName } from "../spec/prefectures"
 import { valueTypeKey, type ValueType, type ValueTypeKey } from "../spec/types"
 import { addressKey, type AddressBook } from "./address"
@@ -73,6 +73,8 @@ export type Transform = {
   infers?: true
   /** 最初の列の値を住所として引いた結果（ctx.addresses）を読む。変換の前にその値を引いておく（pipeline.ts の addressBookFor） */
   readsAddress?: true
+  /** 住所として引く値（既定は最初の列の値）。readsAddress の変換だけが使う */
+  addressOf?: (inputs: string[]) => string
   run: (inputs: string[], ctx: TransformContext) => RuleOutcome
   ai?: AiStep
   /**
@@ -105,6 +107,12 @@ const join = (inputs: string[]) => inputs.map((s) => s.trim()).filter(Boolean).j
 
 const FLAG_ON_RE = /^(1|有|有り|あり|アリ|○|〇|◯|●|◎|✓|✔|レ|済|YES|Y|JV)$/i
 const FLAG_OFF_RE = /^(0|無|無し|なし|ナシ|-|ー|×|✕|否|NO|N)$/i
+
+/** 都道府県の列の値（正式名・省略形・住所の先頭）→ 都道府県名 */
+function prefectureOf(raw: string) {
+  const s = removeSpaces(nfkc(raw))
+  return s ? (prefectureFromShortName(s) ?? leadingPrefecture(s)) : undefined
+}
 
 /** 「○」「✓」「1」など、有りを表す記号か */
 export function isFlagOn(raw: string) {
@@ -386,14 +394,27 @@ export const TRANSFORMS = {
     kind: "rule",
     accepts: ["text"],
     fits: (vt) => vt.type === "text" && vt.municipality === true,
+    multiColumn: true,
     readsAddress: true,
-    // 住所データで市区町村まで読めればその名前（町名・番地を落とし、郡を除く）。読めなければ決まった処理で直せるところだけ直し、
-    // 決まりを守らない値（施設名だけ・郡だけ）は元の値をエラーで残す（直すの「AI で案を出す」＝工事場所の調査へ）
-    run: ([raw = ""], ctx) => {
-      const city = ctx.addresses.get(addressKey(raw))?.city
-      if (city) return value(city)
-      const t = tidyPlace(raw)
-      return t.issue ? fail(t.issue) : value(t.value)
+    addressOf: ([place = "", prefecture = ""]) => {
+      const p = prefectureOf(prefecture)
+      const v = removeSpaces(nfkc(place))
+      return p && !leadingPrefecture(v) ? p + v : v
+    },
+    // columns は [場所名の列, 都道府県の列（あれば）]。場所名を行の都道府県の市区町村として住所データで読めればその名前（町名・番地を落とし、
+    // 政令市の名前を省いた区は県内に1つだけなら市を補い、郡は決まりの形に。spec/place.ts）。都道府県と食い違う・その都道府県で読めない名前は要確認。
+    // 読めなければ決まった処理で直せるところだけ直し、決まりを守らない値（施設名だけ・郡だけ）は元の値をエラーで残す（直すの「AI で案を出す」＝工事場所の調査へ）
+    run: (inputs, ctx) => {
+      const [raw = "", prefectureRaw = ""] = inputs
+      const prefecture = prefectureOf(prefectureRaw)
+      const split = ctx.addresses.get(addressKey(TRANSFORMS["rule.place"].addressOf(inputs)))
+      if (prefecture && split?.prefecture && split.prefecture !== prefecture)
+        return { kind: "value", value: collapseSpaces(raw), warning: true, message: `場所名「${raw}」は都道府県名（${prefecture}）と食い違います` }
+      if (split?.city) return value(split.city)
+      const t = tidyPlace(raw, prefecture)
+      if (t.issue) return fail(t.issue)
+      if (prefecture) return { kind: "value", value: t.value, warning: true, message: `場所名「${t.value}」を${prefecture}の市区町村として確かめられませんでした` }
+      return value(t.value)
     },
     cleanAnswer: (answer) => tidyPlace(answer).value,
   },
@@ -410,10 +431,9 @@ export const TRANSFORMS = {
     ai: aiStep("splitAddress", (raw, r) => {
       const check = verifyAddress(raw, r)
       if (!check.ok) return { value: raw, status: "error", message: check.message }
-      // 検算は郡を含めた形でしたので、場所名の決まり（郡を付けない）にそろえる
-      const city = withoutGun(r.city)
-      const issue = placeIssue(city)
-      return issue ? { value: raw, status: "error", message: `AIの市区町村「${r.city}」: ${issue}` } : reviewed(r, city, check.message)
+      // 住所の文字どおりに分けた市区町村（検算のため郡部は郡＋町村のまま。郡の付け外しは住所データで読めた値だけ。spec/place.ts）
+      const issue = placeIssue(r.city)
+      return issue ? { value: raw, status: "error", message: `AIの市区町村「${r.city}」: ${issue}` } : reviewed(r, r.city, check.message)
     }),
   },
   "rule.personNameSpace": {

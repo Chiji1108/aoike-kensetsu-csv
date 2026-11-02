@@ -275,7 +275,7 @@ describe("回答の取り込み", () => {
       return r
     }
     const placeEdits = (r: AnswerReport, row: string) => Object.fromEntries(r.edits.filter(([k]) => k.startsWith(`${row}:p`)))
-    expect(placeEdits(await at("s!3", "長野原町大字長野原"), "s!3")).toEqual({ [editKey("s!3", "place")]: { value: "長野原町", by: "customer" } })
+    expect(placeEdits(await at("s!3", "長野原町大字長野原"), "s!3")).toEqual({ [editKey("s!3", "place")]: { value: "吾妻郡長野原町", by: "customer" } })
     expect(placeEdits(await at("s!3", "京都市中京区"), "s!3")).toEqual({ [editKey("s!3", "place")]: { value: "京都市中京区", by: "customer" } })
     expect(placeEdits(await at("s!4", "神奈川横浜市中区山下町1"), "s!4")).toEqual({
       [editKey("s!4", "prefecture")]: { value: "神奈川県", by: "customer" },

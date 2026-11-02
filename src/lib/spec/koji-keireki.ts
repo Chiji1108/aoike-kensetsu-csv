@@ -247,7 +247,7 @@ export const KOJI_PLAN_HINTS: PlanHints<KojiFieldId> = {
       { derive: ["workName"], transform: "ai.inferPrefecture" },
     ],
     place: [
-      { match: ["市区町村", "場所名"], transform: "rule.place" },
+      { match: ["市区町村", "場所名"], transform: "rule.place", pairWith: { field: "prefecture" } },
       { match: ADDRESS_HEADERS, transform: "rule.addressCity", shared: true },
       { derive: ["workName", "client"], transform: "ai.inferPlace" },
       { derive: ["workName"], transform: "ai.inferPlace" },

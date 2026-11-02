@@ -193,6 +193,6 @@ test("ブラウザで同梱の住所データを読み、住所を都道府県�
   expect(Object.fromEntries(book)).toEqual({
     "東京都千代田区丸の内1-1": { prefecture: "東京都", city: "千代田区" },
     千葉県花見川区幕張町: { prefecture: "千葉県", city: "千葉市花見川区" },
-    長野原町大字長野原: { city: "長野原町" },
+    長野原町大字長野原: { city: "吾妻郡長野原町" },
   })
 })

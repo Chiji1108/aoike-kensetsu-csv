@@ -52,20 +52,24 @@ export async function fillAiCache<F extends string>(drafts: RowDraft<F>[], cache
   await Promise.all(Array.from({ length: AI_CONCURRENCY }, worker))
 }
 
-/** 計画が住所として読む列（readsAddress の変換の最初の列）の値を、変換の前にまとめて引く */
+/** 計画が住所として読む値（readsAddress の変換の最初の列、または addressOf）を、変換の前にまとめて引く */
 export function addressBookFor<F extends string>(spec: CsvSpec<F>, sources: readonly SourceRow[], plan: MappingPlan<F>, lookup: AddressLookup): Promise<AddressBook> {
   const values = addressInputs(spec, sources, plan)
   return values.length ? lookup(values) : Promise.resolve(NO_ADDRESSES)
 }
 
-/** 計画が住所として読む列（readsAddress の変換の最初の列）の値 */
+/** 計画が住所として読む値（readsAddress の変換の最初の列、または addressOf） */
 export function addressInputs<F extends string>(spec: CsvSpec<F>, sources: readonly SourceRow[], plan: MappingPlan<F>): string[] {
-  const columns = new Set(
-    spec.fields.flatMap((f) => {
-      const p = plan.fields[f.id]
-      if ((p.kind !== "column" && p.kind !== "columns") || !getTransform(p.transform).readsAddress) return []
-      return [p.kind === "column" ? p.column : p.columns[0]!]
-    }),
-  )
-  return sources.flatMap((s) => [...columns].map((c) => s.cells[c] ?? "")).filter((v) => v.trim())
+  const readers = spec.fields.flatMap((f) => {
+    const p = plan.fields[f.id]
+    if (p.kind !== "column" && p.kind !== "columns") return []
+    const t = getTransform(p.transform)
+    if (!t.readsAddress) return []
+    const columns = p.kind === "column" ? [p.column] : p.columns
+    return [(cells: SourceRow["cells"]) => {
+      const inputs = columns.map((c) => cells[c] ?? "")
+      return t.addressOf?.(inputs) ?? inputs[0]!
+    }]
+  })
+  return [...new Set(sources.flatMap((s) => readers.map((read) => read(s.cells))))].filter((v) => v.trim())
 }

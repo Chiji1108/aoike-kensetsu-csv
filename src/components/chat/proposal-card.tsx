@@ -49,6 +49,7 @@ export function ProposalCard({
   plan?: MappingPlan<KojiFieldId> | null
 }) {
   const [open, setOpen] = useState(false)
+  const byKey = view ? rowsByKey(view) : null
   if (!proposal) return <p className="text-xs text-muted-foreground">この変更案は今の案件にはありません（変換の元を変えたなど）。</p>
   const question = proposal.question
   const waiting = question !== null && question.answer === null
@@ -109,11 +110,20 @@ export function ProposalCard({
           </ItemActions>
         </Item>
       )}
-      {view && pending.length > 0 && <PendingPreview proposal={proposal} changes={changes} pending={pending} view={view} actions={actions} busy={busy} onOpenAll={() => setOpen(true)} />}
+      {view && byKey && pending.length > 0 && <PendingPreview proposal={proposal} changes={changes} pending={pending} view={view} byKey={byKey} actions={actions} busy={busy} onOpenAll={() => setOpen(true)} />}
       <UndoLine id={proposal.id} actions={actions} busy={busy} />
-      {view && <ProposalDialog open={open} onOpenChange={setOpen} proposal={proposal} changes={changes} view={view} actions={actions} busy={busy} plan={plan} />}
+      {view && byKey && <ProposalDialog open={open} onOpenChange={setOpen} proposal={proposal} changes={changes} view={view} byKey={byKey} actions={actions} busy={busy} plan={plan} />}
     </div>
   )
+}
+
+type RowsByKey = ReadonlyMap<string, TableView["shown"][number]>
+/** 表の行を key で引く表（表ごとに1回だけ作り、同じ表を見る変更案のカードで使い回す） */
+const rowsByKeyCache = new WeakMap<TableView, RowsByKey>()
+function rowsByKey(view: TableView): RowsByKey {
+  let m = rowsByKeyCache.get(view)
+  if (!m) rowsByKeyCache.set(view, (m = new Map(view.shown.map((r) => [r.key, r]))))
+  return m
 }
 
 const EXTERNAL_LABELS = { rule: "ルールの項目", location: "顧客の覚えた工事場所" } as const
@@ -149,6 +159,7 @@ function PendingPreview({
   changes,
   pending,
   view,
+  byKey,
   actions,
   busy,
   onOpenAll,
@@ -157,11 +168,11 @@ function PendingPreview({
   changes: readonly ChatChange[]
   pending: readonly number[]
   view: TableView
+  byKey: RowsByKey
   actions: ProposalActions
   busy: boolean
   onOpenAll: () => void
 }) {
-  const byKey = useMemo(() => new Map(view.shown.map((r) => [r.key, r])), [view])
   const shown = pending.filter((i) => changes[i]?.kind !== "plan")
   const lines = useMemo(() => shown.slice(0, PREVIEW_ITEMS).map((i) => [i, describeChange(changes[i]!, view, byKey)] as const), [shown.join(","), changes, view, byKey])
   if (!lines.length) return null
@@ -311,6 +322,7 @@ function ProposalDialog({
   proposal,
   changes,
   view,
+  byKey,
   actions,
   busy,
   plan,
@@ -320,11 +332,11 @@ function ProposalDialog({
   proposal: OpenProposal
   changes: readonly ChatChange[]
   view: TableView
+  byKey: RowsByKey
   actions: ProposalActions
   busy: boolean
   plan?: MappingPlan<KojiFieldId> | null
 }) {
-  const byKey = useMemo(() => new Map(view.shown.map((r) => [r.key, r])), [view])
   const lines = useMemo(() => (open ? changes.map((c) => describeChange(c, view, byKey, plan)) : []), [open, changes, view, byKey, plan])
   const answered = isAnswered(proposal)
   return (
