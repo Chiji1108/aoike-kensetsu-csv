@@ -51,7 +51,7 @@ export type CaseWork = {
   undo: UndoEntry[]
   /** 変換の報告の聞き返しへの答え（聞き返しの id → 答え。例: 金額の税込・税抜を「顧客に聞く」）。前の作業には無いので、読むときは空 */
   reportAnswers: Record<string, string>
-  /** 問い合わせの文面（承認した AI の質問の文・職員が直した文、メールの件名・前置き。lib/inquiry/text.ts）。前の作業には無いので、読むときは空 */
+  /** 問い合わせのメールの件名・前置き（承認した AI の文・職員が直した文。lib/inquiry/text.ts）。前の作業には無いので、読むときは空。前の作業の質問の文は読み捨てる */
   inquiryText: InquiryText
   /**
    * 直した Excel の変更案で却下した項目（lib/excel/final-import.ts の changeSignature）。同じ Excel を上げ直しても出し直さない。

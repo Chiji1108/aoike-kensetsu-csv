@@ -175,7 +175,7 @@ export type TurnState = {
   review: ReviewDeps | null
   /** propose_review の今年だけの事情（ルールにしない。照合の記録に残す） */
   oneOff: string[]
-  /** 問い合わせの文面の確かめに使うもの（propose_inquiry）。無ければほかの顧客の名前は確かめない */
+  /** 問い合わせのメールの下書きの確かめに使うもの（propose_inquiry）。無ければほかの顧客の名前は確かめない */
   inquiry: InquiryDeps | null
   /** 要望を読み書きするもの（list_feedback・record_feedback）。無ければ道具は使えない */
   feedback: FeedbackDeps | null
@@ -187,7 +187,7 @@ export type TurnState = {
 
 export type { FeedbackDeps }
 
-/** 問い合わせの文面の確かめ。otherCustomers はほかの顧客の名前（文に入れない）、customerName はこの案件の顧客の名前（件名などに書いてよい） */
+/** 問い合わせのメールの下書きの確かめ。otherCustomers はほかの顧客の名前（文に入れない）、customerName はこの案件の顧客の名前（件名などに書いてよい） */
 export type InquiryDeps = { customerName: string; otherCustomers: () => Promise<readonly string[]> }
 
 /**

@@ -45,7 +45,7 @@ export type ChatChange =
   | ({ kind: "location"; site: { key: string; workName: string; client: string }; rowKeys: string[] } & Found)
   /** 前の形の、顧客への問い合わせの質問の文（今は質問の文を使わないので、承認しても何もしない。保存した変更案を読めるように残す） */
   | { kind: "inquiry"; id: string; text: string }
-  /** 問い合わせのメールの件名と前置き（承認すると案件の作業の問い合わせの文面にする） */
+  /** 問い合わせのメールの件名と前置き（承認すると案件の作業のメールの下書きにする） */
   | { kind: "inquiryMail"; subject: string; intro: string }
 
 export type Decision = "pending" | "applied" | "rejected"
@@ -162,7 +162,7 @@ export type Overlay = {
   /** 金額の千円未満の扱い（変えたら行を変換し直すのは重ねる側。案件の画面は作業から変換し直し、チャットの表は reroundRows） */
   rounding: Rounding
   added: readonly AddedRow[]
-  /** 問い合わせの文面（lib/inquiry/text.ts） */
+  /** 問い合わせのメールの件名と前置き（lib/inquiry/text.ts） */
   inquiryText: InquiryText
 }
 

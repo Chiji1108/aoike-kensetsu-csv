@@ -45,7 +45,7 @@ export function otherCustomerTest(names: Iterable<string>, own = ""): (text: str
   }
 }
 
-/** 変更案のメールの件名と前置き（lib/chat/proposals.ts の ChatChange のうち問い合わせの文面のもの） */
+/** 変更案のメールの件名と前置き（lib/chat/proposals.ts の ChatChange のうち問い合わせのメールの下書き） */
 export type InquiryTextChange = { kind: "inquiryMail"; subject: string; intro: string }
 
 /** 承認した変更案の件名と前置きを文面にする（lib/chat/proposals.ts の applyChanges から） */

@@ -11,7 +11,7 @@ import { cn } from "@/lib/utils"
 
 export type StepId = "answer" | "fix" | "inquiry" | "export"
 
-/** 問い合わせの段: todo まだ送っていない、waiting 送った・返事待ち（案件の状態が問い合わせ中・記入用Excelかメールの下書きを出した）、done 済み（聞くことが無い・返事を取り込んだ） */
+/** 問い合わせの段: todo まだ送っていない、waiting 送った・返事待ち（案件の状態が問い合わせ中・問い合わせの Excel かメールの下書きを出した）、done 済み（聞くことが無い・返事を取り込んだ） */
 export type InquiryStep = { count: number; state: "todo" | "waiting" | "done" }
 
 export type NextStepsData = {
@@ -102,5 +102,5 @@ export function NextSteps({ steps, onGo, exportDisabled, className }: { steps: N
 function stepTitle(id: Exclude<StepId, "export">, s: NextStepsData) {
   if (id === "answer") return "チャットの聞き返し・変更案に答える"
   if (id === "fix") return [`表で直す行（${fixBreakdown(s.fix)}）`, ...s.fixActions.map(fixActionText)].join("\n")
-  return s.inquiry.state === "waiting" ? "顧客に送りました。返事の記入用Excelをチャットの📎でアップロードすると取り込みます" : "問い合わせのタブで、顧客に聞くことを確かめて送る"
+  return s.inquiry.state === "waiting" ? "顧客に送りました。返ってきた Excel をチャットの📎でアップロードすると取り込みます" : "問い合わせのタブで、顧客に聞くことを確かめて送る"
 }

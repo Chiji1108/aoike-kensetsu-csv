@@ -148,7 +148,7 @@ function countKinds(changes: readonly ChatChange[]) {
     n.rule && `ルールの項目 ${n.rule}`,
     n.location && `工事場所 ${n.location}現場`,
     n.plan && "列の対応",
-    n.inquiry && `問い合わせの文 ${n.inquiry}`,
+    n.inquiry && `前の形の質問の文 ${n.inquiry}`,
     n.inquiryMail && "メールの下書き",
   ]
     .filter(Boolean)

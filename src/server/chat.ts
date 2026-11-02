@@ -62,7 +62,7 @@ const requestSchema = z.object({
   carryoverHeaders: z.array(z.string()).max(2_000).optional(),
 })
 
-/** AI のコンテナに渡す案件のファイルの種類（届いたファイルと、返ってきた記入用Excel。顧客の回答を AI が読む） */
+/** AI のコンテナに渡す案件のファイルの種類（届いたファイルと、返ってきた Excel〔印付き・記入用Excel〕。顧客の回答を AI が読む） */
 const CONTAINER_KINDS: ReadonlySet<FileKind> = new Set(["source", "answer"])
 
 /** 止める印を見に行く間隔 */
@@ -149,7 +149,7 @@ async function runTurn(request: Request, caseId: string): Promise<Response> {
   const carryText = carryover && carryoverPrompt(carryover)
   const containerLive = startSession.container !== null && Date.parse(startSession.container.expiresAt) > Date.now() + CONTAINER_MARGIN_MS
 
-  // 案件の届いたファイルと返ってきた記入用Excelをコンテナに渡す。まだ上げていないものは Files API に上げ、上げるたびに記録する（途中で失敗しても、会話を終えるときに消せる）。
+  // 案件の届いたファイルと返ってきた Excel（印付き・記入用Excel）をコンテナに渡す。まだ上げていないものは Files API に上げ、上げるたびに記録する（途中で失敗しても、会話を終えるときに消せる）。
   // コンテナが新しくなるときは全部を付け直す
   let session = startSession
   const added: ChatSession["files"] = []
@@ -208,7 +208,7 @@ async function runTurn(request: Request, caseId: string): Promise<Response> {
   /** 保存した作業（振り返りと名前の確かめで、指示の間に1回だけ読む） */
   let savedCase: ReturnType<typeof readSavedCase> | undefined
   const saved = () => (savedCase ??= readSavedCase(db, caseId))
-  /** ほかの顧客の名前（問い合わせの文と要望に入れない。指示の間で1回だけ読む） */
+  /** ほかの顧客の名前（問い合わせのメールの下書きと要望に入れない。指示の間で1回だけ読む） */
   let others: Promise<readonly string[]> | undefined
   const otherCustomers = () => (others ??= store.otherCustomerNames(db, kase.customerId))
   // 注文者・工事名に AI が書いた値は、変換と同じ匿名化の AI に通す（lib/chat/turn.ts の anonymizeChanges）
