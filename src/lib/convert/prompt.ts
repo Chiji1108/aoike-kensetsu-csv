@@ -64,6 +64,7 @@ ${spec.writingRules.map((r) => `- ${r}`).join("\n")}
 ${transforms}
 rule.motoukeShitauke は columns に [元請/下請の列, 官民の区分の列] か [元請/下請の列, 注文者の列] を渡すと、官公庁元請か民間元請かを判定する。
 rule.joinWorkName は複数の列（現場名１・現場名２など）を区切りなしでつなぎ、空白と先頭の「(仮称)」を除く。
+rule.place は市区町村・場所名だけの列に使い、columns に [場所名の列, 都道府県の列（あれば）] を渡す（住所の列は rule.addressCity）。
 ai.inferPrefecture / ai.inferPlace は columns に [工事名の列…, 注文者の列] を渡すと、AI が工事場所を推定する。都道府県・場所名が元データに無い（列が無い・列が空）ときだけ使う。
 
 ## 列の計画を作るとき

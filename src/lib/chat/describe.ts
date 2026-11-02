@@ -21,7 +21,29 @@ function shownValue(stored: string, letters: PersonLetters) {
 
 /** 変更案の1項目を画面に出す形。where はどこを、from・to は今と承認したあと。values なら from・to はセルの値（文字の差分を色分けする） */
 /** note は値に添える根拠（AI の案）、guess は推定の値か（編集の guessed） */
-export type ChangeLine = { where: string; what: string; from: string; to: string; values?: true; links?: string[]; note?: string; guess?: boolean }
+/**
+ * parts は1項目で2つ以上のセルを変えるとき（工事場所の都道府県・場所名）のセルごとの「今 → 承認したあと」。from・to はそれをつないだ文。
+ * source は値の出どころ（工事場所の調査の、前の年度に承認した結果・AI の知識・Web 検索）
+ */
+export type ChangePart = { label: string; from: string; to: string }
+export type ChangeLine = {
+  where: string
+  /** where を短くしたときの元の文（ツールチップ） */
+  whereTitle?: string
+  what: string
+  from: string
+  to: string
+  values?: true
+  parts?: ChangePart[]
+  source?: string
+  links?: string[]
+  note?: string
+  guess?: boolean
+}
+
+/** 工事名を見出しに使う長さ（承認の前の一覧は狭い画面でも1行に収める） */
+const SHORT_NAME = 20
+const short = (s: string) => ([...s].length > SHORT_NAME ? `${[...s].slice(0, SHORT_NAME - 1).join("")}…` : s)
 
 /** 顧客の回答から読んだ変更（record_answers）は、項目の名前に添えて分かるようにする（聞いていない項目の訂正は「顧客の訂正」） */
 const BY_NOTE: Partial<Record<Extract<ChatChange, { kind: "cell" }>["edit"]["by"], string>> = { customer: "（顧客の回答）", confirmed: "（顧客が確認）" }
@@ -80,14 +102,25 @@ export function describeChange(c: ChatChange, view: TableView, byKey: ReadonlyMa
     case "inquiryMail":
       return { where: "問い合わせ", what: "メールの件名・前置き", from: "", to: `件名: ${c.subject} / ${c.intro}` }
     case "location": {
-      const first = byKey.get(c.rowKeys[0]!)
-      const now = first ? [first.cells.prefecture.value, first.cells.place.value].filter(Boolean).join(" ") : ""
-      const site = [c.site.workName, c.site.client].filter(Boolean).join(" / ")
+      // 値（都道府県・場所名）と、出どころ・AI の文（根拠や迷った点）は分けて出す（値の欄に文を混ぜない）
+      const first = byKey.get(c.rowKeys[0]!)?.cells
+      const parts: ChangePart[] = [
+        { label: fieldLabel("prefecture"), from: first?.prefecture.value ?? "", to: c.prefecture },
+        // 場所名が分からなかった（都道府県だけ）ときは今の場所名を残す（applyChanges と同じ）
+        { label: fieldLabel("place"), from: first?.place.value ?? "", to: c.place || (first?.place.value ?? "") },
+      ]
+      const name = c.site.workName || c.site.client
       return {
-        where: `${site}${c.rowKeys.length > 1 ? `（${c.rowKeys.length}行）` : ""}`,
+        where: `${short(name)}${c.rowKeys.length > 1 ? `（${c.rowKeys.length}行）` : ""}`,
+        whereTitle: [c.site.workName, c.site.client].filter(Boolean).join(" / "),
         what: "工事場所",
-        from: now,
-        to: `${[c.prefecture, c.place].filter(Boolean).join(" ")}（${[SOURCE_LABELS[c.source], c.urls.length ? "" : "根拠の URL なし", c.note].filter(Boolean).join(" / ")}）`,
+        from: parts.map((p) => p.from).filter(Boolean).join(" "),
+        to: parts.map((p) => p.to).filter(Boolean).join(" "),
+        values: true,
+        parts,
+        source: [SOURCE_LABELS[c.source], c.urls.length ? "" : "根拠の URL なし"].filter(Boolean).join("・"),
+        ...(c.note ? { note: c.note } : {}),
+        ...(c.confident ? {} : { guess: true }),
         links: c.urls,
       }
     }

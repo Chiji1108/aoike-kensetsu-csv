@@ -1,5 +1,6 @@
 import { z } from "zod"
 import { GYOSHU } from "../spec/code-sets"
+import { PLACE_FORMAT } from "../spec/place"
 import { GYOSHU_GUESS_RULE, gyoshuSuggestionItem } from "./gyoshu-guess"
 
 /**
@@ -80,8 +81,7 @@ export const AI_TASKS = {
   inferLocation: {
     label: "所在地の推定",
     item: locationItem,
-    instruction:
-      "input は工事名（現場名）と注文者を空白でつないだもの。施設名・地名・注文者から工事場所を推定し、都道府県 prefecture（47都道府県名と完全一致）と場所名 place（市区町村。政令指定都市は区まで。都道府県名は含めない）を返す。複数の地域にまたがるときは place に「広島市南区、三原市」のように並べてよい。推定できない側は空文字にする。少しでも自信がなければ needsReview を true にし、note に根拠か迷った点を短く書く。",
+    instruction: `input は工事名（現場名）と注文者を空白でつないだもの。施設名・地名・注文者から工事場所を推定し、都道府県 prefecture（47都道府県名と完全一致）と場所名 place を返す。${PLACE_FORMAT}。複数の地域にまたがるときは主な現場の1つにし、needsReview を true にして note に書く。推定できない側は空文字にする。少しでも自信がなければ needsReview を true にし、note に根拠か迷った点を短く書く。`,
   },
   personName: {
     label: "氏名の区切り",

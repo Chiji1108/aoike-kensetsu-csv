@@ -4,6 +4,7 @@ import type { CellResult } from "../convert/convert"
 import { hasPersons } from "../convert/persons"
 import { collapseSpaces, nfkc, removeSpaces } from "../convert/text"
 import { INFERRED_NOTE } from "../convert/transforms"
+import { PLACE_LIST, placeIssue, tidyPlace } from "../spec/place"
 
 /**
  * 工事場所を調べる（P5）。CSV に載せる行のうち、都道府県が空か、場所が AI の推定で自信の無い行の現場を、工事名と注文者でまとめて調べる。
@@ -47,10 +48,13 @@ const decided = (c: CellResult) => c.by !== undefined || c.ask === true
  */
 const unsure = (c: CellResult) => c.guessed === true || (c.byAi === true && c.status === "warning" && c.message !== INFERRED_NOTE)
 
-/** 調べる行か: 都道府県が空か、都道府県・場所名が自信の無い AI の値で、どちらもまだ決まっていない */
+/**
+ * 調べる行か: 都道府県が空か、都道府県・場所名が自信の無い AI の値か、場所名が決まり（spec/place.ts）を守らない値（施設名だけ・郡だけ）で、
+ * どちらもまだ決まっていない
+ */
 export function needsLookup(prefecture: CellResult, place: CellResult) {
   if (decided(prefecture) || decided(place)) return false
-  return prefecture.value === "" || unsure(prefecture) || unsure(place)
+  return prefecture.value === "" || unsure(prefecture) || unsure(place) || placeIssue(place.value) !== undefined
 }
 
 type Row = TableView["output"][number]
@@ -152,7 +156,8 @@ export const outcomeSchema: z.ZodType<Outcome> = z.discriminatedUnion("kind", [
 
 /**
  * 結果を保存・変更案にできる形にそろえる（D1 に書く前・チャットの変更案にする前に1か所で）。AI の文（note）は切り、根拠の URL は形と数をそろえる。
- * 都道府県・場所名が長すぎる答えは切ると誤った場所になるので使わず、その現場だけ「調べられなかった」にする（ほかの現場は続ける）
+ * 都道府県・場所名が長すぎる答えは切ると誤った場所になるので使わず、その現場だけ「調べられなかった」にする（ほかの現場は続ける）。
+ * 場所名が決まり（spec/place.ts）を守らない結果（前の版で覚えた「広島市南区、三原市」など）は場所名を使わず（今の場所名を残す）、顧客に確かめる
  */
 export function normalizeOutcome(o: Outcome): Outcome {
   const note = (s: string) => s.slice(0, MAX_NOTE)
@@ -161,7 +166,11 @@ export function normalizeOutcome(o: Outcome): Outcome {
       const fits = foundSchema.shape.prefecture.safeParse(o.prefecture).success && foundSchema.shape.place.safeParse(o.place).success
       if (!fits) return { kind: "failed", note: "AI の答えの都道府県・場所名が長すぎるため使えませんでした" }
       const urls = [...new Set(o.urls.filter((u) => url.safeParse(u).success))].slice(0, MAX_URLS)
-      return { ...o, urls, note: note(o.note) }
+      // 検算（location/check.ts）と同じ決まった処理で直してから決まりを確かめる（末尾の括弧書き・都道府県名は直す）
+      const tidy = tidyPlace(o.place, o.prefecture)
+      if (tidy.issue)
+        return { ...o, place: "", confident: false, urls, note: note([`場所名「${o.place}」は${PLACE_LIST.test(tidy.value) ? "複数の地域なので" : "市区町村の名前でないため"}使いません`, o.note].filter(Boolean).join(" / ")) }
+      return { ...o, place: tidy.value, urls, note: note(o.note) }
     }
     case "notFound":
     case "failed":

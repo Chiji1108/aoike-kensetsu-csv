@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Item, ItemActions, ItemContent, ItemDescription, ItemMedia, ItemTitle } from "@/components/ui/item"
 import type { TableView } from "@/lib/cases/view"
-import { describeChange } from "@/lib/chat/describe"
+import { describeChange, type ChangeLine, type ChangePart } from "@/lib/chat/describe"
 import { decisionOf, isAnswered, pendingOf, type ChatChange, type OpenProposal, type Proposal } from "@/lib/chat/proposals"
 import { cn } from "@/lib/utils"
 import type { MappingPlan } from "@/lib/convert/plan"
@@ -49,6 +49,7 @@ export function ProposalCard({
   plan?: MappingPlan<KojiFieldId> | null
 }) {
   const [open, setOpen] = useState(false)
+  const byKey = view ? rowsByKey(view) : null
   if (!proposal) return <p className="text-xs text-muted-foreground">この変更案は今の案件にはありません（変換の元を変えたなど）。</p>
   const question = proposal.question
   const waiting = question !== null && question.answer === null
@@ -109,10 +110,20 @@ export function ProposalCard({
           </ItemActions>
         </Item>
       )}
+      {view && byKey && pending.length > 0 && <PendingPreview proposal={proposal} changes={changes} pending={pending} view={view} byKey={byKey} actions={actions} busy={busy} onOpenAll={() => setOpen(true)} />}
       <UndoLine id={proposal.id} actions={actions} busy={busy} />
-      {view && <ProposalDialog open={open} onOpenChange={setOpen} proposal={proposal} changes={changes} view={view} actions={actions} busy={busy} plan={plan} />}
+      {view && byKey && <ProposalDialog open={open} onOpenChange={setOpen} proposal={proposal} changes={changes} view={view} byKey={byKey} actions={actions} busy={busy} plan={plan} />}
     </div>
   )
+}
+
+type RowsByKey = ReadonlyMap<string, TableView["shown"][number]>
+/** 表の行を key で引く表（表ごとに1回だけ作り、同じ表を見る変更案のカードで使い回す） */
+const rowsByKeyCache = new WeakMap<TableView, RowsByKey>()
+function rowsByKey(view: TableView): RowsByKey {
+  let m = rowsByKeyCache.get(view)
+  if (!m) rowsByKeyCache.set(view, (m = new Map(view.shown.map((r) => [r.key, r]))))
+  return m
 }
 
 const EXTERNAL_LABELS = { rule: "ルールの項目", location: "顧客の覚えた工事場所" } as const
@@ -132,6 +143,110 @@ function UndoLine({ id, actions, busy }: { id: string; actions: ProposalActions;
       {u.undone && !u.can && <span data-testid="proposal-undone">承認を取り消しました</span>}
       {u.tooLarge && <span>変更が大きいので、この承認は取り消せません</span>}
       {external && <span>{external}は取り消しても残ります（全体ルール・顧客の画面で直してください）</span>}
+    </div>
+  )
+}
+
+/** 承認の前に見せる未決の項目の数（多ければ残りは一覧で） */
+const PREVIEW_ITEMS = 5
+
+/**
+ * 承認の前に、未決の項目がどの行のどの欄に何を入れるか（今 → 承認したあと）を見せる。項目ごとに「外す」（その項目だけ却下）でき、
+ * 残りをまとめて承認できる。多ければ先頭だけ出し、残りは一覧で。列の対応の変更は上の箇条書きで見せるので出さない
+ */
+function PendingPreview({
+  proposal,
+  changes,
+  pending,
+  view,
+  byKey,
+  actions,
+  busy,
+  onOpenAll,
+}: {
+  proposal: OpenProposal
+  changes: readonly ChatChange[]
+  pending: readonly number[]
+  view: TableView
+  byKey: RowsByKey
+  actions: ProposalActions
+  busy: boolean
+  onOpenAll: () => void
+}) {
+  const shown = pending.filter((i) => changes[i]?.kind !== "plan")
+  const lines = useMemo(() => shown.slice(0, PREVIEW_ITEMS).map((i) => [i, describeChange(changes[i]!, view, byKey)] as const), [shown.join(","), changes, view, byKey])
+  if (!lines.length) return null
+  const rest = shown.length - lines.length
+  return (
+    <div className="grid gap-1 rounded-lg border bg-background p-2 text-xs" data-testid="proposal-preview">
+      <ul className="grid gap-1.5">
+        {lines.map(([i, l]) => (
+          <li key={i} className="flex flex-wrap items-start gap-x-2 gap-y-0.5 border-b pb-1.5 last:border-b-0 last:pb-0" data-testid="proposal-preview-item">
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-muted-foreground" title={l.whereTitle ?? l.where}>
+                {l.where}・{l.what}
+              </div>
+              {l.parts ? (
+                <div className="grid gap-0.5">
+                  {l.parts.map((p) => (
+                    <PartLine key={p.label} part={p} />
+                  ))}
+                </div>
+              ) : (
+                <FromTo from={l.from} to={l.to} />
+              )}
+              <LineNote line={l} />
+            </div>
+            <Button
+              size="xs"
+              variant="ghost"
+              disabled={busy}
+              onClick={() => actions.decide(proposal.id, [i], "rejected")}
+              aria-label={`${l.where}の${l.what}を外す`}
+              data-testid="proposal-preview-reject"
+            >
+              <X /> 外す
+            </Button>
+          </li>
+        ))}
+      </ul>
+      {rest > 0 && (
+        <button type="button" className="justify-self-start text-blue-700 underline" onClick={onOpenAll} data-testid="proposal-preview-more">
+          ほか {rest} 件を一覧で確かめる
+        </button>
+      )}
+    </div>
+  )
+}
+
+/** 1つの欄の「今 → 承認したあと」（同じなら「今のまま」） */
+function PartLine({ part }: { part: ChangePart }) {
+  return (
+    <div className="flex flex-wrap items-baseline gap-x-1.5" data-testid="change-part" data-label={part.label}>
+      <span className="text-muted-foreground">{part.label}:</span>
+      {part.from === part.to ? <span>{part.to || "（空）"}（今のまま）</span> : <FromTo from={part.from} to={part.to} />}
+    </div>
+  )
+}
+
+function FromTo({ from, to }: { from: string; to: string }) {
+  return (
+    <span className="inline-flex flex-wrap items-baseline gap-x-1">
+      <span className={cn(from ? "text-red-700 line-through decoration-red-300" : "text-muted-foreground")}>{from || "（空）"}</span>
+      <span className="text-muted-foreground">→</span>
+      <span className="font-medium text-emerald-700" data-testid="change-to">
+        {to || "（空）"}
+      </span>
+    </span>
+  )
+}
+
+/** 出どころ・根拠や迷った点・推定の印（値とは別の行） */
+function LineNote({ line }: { line: ChangeLine }) {
+  if (!line.source && !line.note && !line.guess) return null
+  return (
+    <div className={cn("text-[11px]", line.guess ? "text-amber-800" : "text-muted-foreground")} data-testid="change-note">
+      {[line.source && `出典: ${line.source}`, line.guess && "推定（顧客に確かめる）", line.note].filter(Boolean).join("・")}
     </div>
   )
 }
@@ -207,6 +322,7 @@ function ProposalDialog({
   proposal,
   changes,
   view,
+  byKey,
   actions,
   busy,
   plan,
@@ -216,11 +332,11 @@ function ProposalDialog({
   proposal: OpenProposal
   changes: readonly ChatChange[]
   view: TableView
+  byKey: RowsByKey
   actions: ProposalActions
   busy: boolean
   plan?: MappingPlan<KojiFieldId> | null
 }) {
-  const byKey = useMemo(() => new Map(view.shown.map((r) => [r.key, r])), [view])
   const lines = useMemo(() => (open ? changes.map((c) => describeChange(c, view, byKey, plan)) : []), [open, changes, view, byKey, plan])
   const answered = isAnswered(proposal)
   return (
@@ -246,9 +362,39 @@ function ProposalDialog({
                 const decision = decisionOf(proposal, i)
                 return (
                   <tr key={i} className={cn("border-t align-top", decision !== "pending" && "opacity-60")} data-testid="proposal-item" data-decision={decision}>
-                    <td className="px-2 py-1 whitespace-nowrap text-muted-foreground">{l.where}</td>
+                    <td className="max-w-56 truncate px-2 py-1 whitespace-nowrap text-muted-foreground" title={l.whereTitle ?? l.where}>
+                      {l.where}
+                    </td>
                     <td className="px-2 py-1 whitespace-nowrap">{l.what}</td>
-                    {l.values ? (
+                    {l.parts ? (
+                      <>
+                        <td className="px-2 py-1" data-testid="diff-from">
+                          {l.parts.map((p) => (
+                            <div key={p.label} className="whitespace-nowrap">
+                              <span className="text-muted-foreground">{p.label}: </span>
+                              {p.from || "（空）"}
+                            </div>
+                          ))}
+                        </td>
+                        <td className="px-2 py-1" data-testid="diff-to">
+                          {l.parts.map((p) => (
+                            <div key={p.label} className="whitespace-nowrap" data-testid="change-part" data-label={p.label}>
+                              <span className="text-muted-foreground">{p.label}: </span>
+                              <span className={p.from === p.to ? "text-muted-foreground" : "rounded-sm bg-emerald-100 text-emerald-800"} data-testid="change-to">
+                                {p.to || "（空）"}
+                              </span>
+                              {p.from === p.to && <span className="text-muted-foreground">（今のまま）</span>}
+                            </div>
+                          ))}
+                          <LineNote line={l} />
+                          {l.links?.map((href) => (
+                            <a key={href} href={href} target="_blank" rel="noreferrer noopener" className="block truncate text-blue-700 underline" data-testid="proposal-link">
+                              {href}
+                            </a>
+                          ))}
+                        </td>
+                      </>
+                    ) : l.values ? (
                       <ValueDiff from={l.from} to={l.to} note={l.note} guess={l.guess} />
                     ) : (
                       <>

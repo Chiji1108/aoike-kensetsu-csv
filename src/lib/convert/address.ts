@@ -1,5 +1,6 @@
 import { PREFECTURES, type Prefecture } from "../spec/prefectures"
 import { z } from "zod"
+import { jaSchema, placeIndex, readPlace, type PlaceIndex } from "../spec/place"
 import { nfkc, removeSpaces } from "./text"
 
 /**
@@ -11,7 +12,7 @@ import { nfkc, removeSpaces } from "./text"
 export type AddressSplit = {
   /** 住所に書いてあった都道府県（正式名か「神奈川」のような省略形）。書いていなければ無い（市区町村から推し量らない） */
   prefecture?: Prefecture
-  /** 市区町村（政令市は区まで、郡部は郡＋町村）。住所データの正式な表記 */
+  /** 市区町村（政令市は区まで、郡部の郡の扱いは spec/place.ts の決まり）。住所データの正式な表記 */
   city?: string
 }
 
@@ -33,7 +34,6 @@ const shortName = (p: Prefecture) => (p === "北海道" ? p : p.slice(0, -1))
 type Normalize = (typeof import("@geolonia/normalize-japanese-addresses"))["normalize"]
 
 /** 住所データ（ja.json）のうち、政令市の区の一覧に使うところ */
-const jaSchema = z.object({ data: z.array(z.object({ pref: z.string(), cities: z.array(z.object({ city: z.string(), ward: z.string().optional() })) })) })
 
 /** 都道府県ごとの、政令市の区の名前 → 政令市の名前（同じ区の名前が県内の2つの政令市にあれば両方） */
 type Wards = ReadonlyMap<string, ReadonlyMap<string, readonly string[]>>
@@ -61,30 +61,31 @@ function cityNamesOf(ja: z.infer<typeof jaSchema>): CityNames {
       if (!pref) return []
       const names = p.cities.flatMap((c) => {
         const name = fold(c.city + (c.ward ?? ""))
-        const town = /^.+?郡(.+)$/.exec(name)?.[1]
-        // 政令市は区まで書かないこともある（「横浜市」）ので、市の名前も入れる
-        return [name, ...(town ? [town] : []), ...(c.ward ? [fold(c.city)] : [])]
+        // 郡から書いた住所（「愛甲郡愛川町」）と、区まで書かない政令市（「横浜市」）も候補にする
+        return [name, ...(c.county ? [fold(c.county) + name] : []), ...(c.ward ? [fold(c.city)] : [])]
       })
       return [[pref, names] as const]
     }),
   )
 }
 
-type Reader = { normalize: Normalize; wards: Wards; cities: CityNames }
+/** places は市区町村の名前を決まりの形（spec/place.ts。郡の扱いも）にそろえる索引 */
+type Reader = { normalize: Normalize; wards: Wards; cities: CityNames; places: PlaceIndex }
 
 /**
  * 都道府県 p の市区町村として読めたら、その市区町村（住所データの表記）。町字のデータで候補を絞ろうとした（同梱していない）ときも読めない。
  * withWard なら、政令市の名前を省いた区（「千葉県花見川区」）も、県内にその区を持つ政令市が1つだけなら政令市の区として読む。
  * 区まで書いていない政令市（「横浜市」）は市として読む
  */
-async function cityIn({ normalize, wards }: Reader, p: Prefecture, rest: string, withWard: boolean) {
+async function cityIn(reader: Reader, p: Prefecture, rest: string, withWard: boolean) {
   try {
-    const r = await normalize(p + rest, { level: 2 })
-    if (r.level >= 2 && r.pref === p && r.city) return r.city
+    const r = await reader.normalize(p + rest, { level: 2 })
+    // ライブラリは郡部を「郡＋町村」で返すので、住所データの索引で決まりの形の名前にする
+    if (r.level >= 2 && r.pref === p && r.city) return readPlace(reader.places, p, r.city) ?? r.city
   } catch {
     // 下の区・政令市の照合に進む
   }
-  const designated = wards.get(p) ?? new Map<string, readonly string[]>()
+  const designated = reader.wards.get(p) ?? new Map<string, readonly string[]>()
   if (withWard) {
     const found = [...designated].filter(([ward]) => rest.startsWith(ward))
     const cities = found.flatMap(([ward, cs]) => cs.map((c) => c + ward))
@@ -138,7 +139,7 @@ function readerFor(api: string): Promise<Reader> {
       .catch((e: unknown) => {
         throw new Error("住所データを読めませんでした", { cause: e })
       })
-    return { normalize, wards: wardsOf(ja), cities: cityNamesOf(ja) }
+    return { normalize, wards: wardsOf(ja), cities: cityNamesOf(ja), places: placeIndex(ja) }
   })()
   readers.set(api, loading)
   loading.catch(() => readers.delete(api))

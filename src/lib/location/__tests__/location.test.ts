@@ -78,14 +78,48 @@ describe("調べる現場を集める", () => {
 const found = (over: Partial<Found> = {}): Found => ({ prefecture: "東京都", place: "港区", urls: ["https://example.com/a"], source: "search", confident: true, note: "", ...over })
 
 describe("住所データでの検算", () => {
-  test("都道府県の省略形・場所名の都道府県・後ろの町名をそろえ、政令市は区まで・区の無い政令市・郡を付けた町村（住所データの表記の郡なしにする）・半角の表記も読む", () => {
+  test("都道府県の省略形・場所名の都道府県・後ろの町名をそろえ、政令市は区まで・区の無い政令市・郡を付けた町村（決まりの形の郡ありにする）・半角の表記も読む", () => {
     expect(checkFound(index, found({ prefecture: "東京", place: "東京都港区赤坂" }))).toEqual({ ok: true, found: found() })
     expect(checkFound(index, found({ prefecture: "神奈川県", place: "横浜市西区" }))).toMatchObject({ ok: true, found: { place: "横浜市西区", confident: true } })
     expect(checkFound(index, found({ prefecture: "神奈川県", place: "横浜市" }))).toMatchObject({ ok: true, found: { place: "横浜市", confident: true } })
-    expect(checkFound(index, found({ prefecture: "広島県", place: "広島市南区、三原市" }))).toMatchObject({ ok: true, found: { place: "広島市南区、三原市" } })
-    expect(checkFound(index, found({ prefecture: "北海道", place: "ﾆｾｺ町" }))).toMatchObject({ ok: true, found: { place: "ニセコ町", confident: true } })
-    expect(checkFound(index, found({ prefecture: "新潟県", place: "三島郡出雲崎町" }))).toMatchObject({ ok: true, found: { place: "出雲崎町", confident: true } })
+    expect(checkFound(index, found({ prefecture: "北海道", place: "ﾆｾｺ町" }))).toMatchObject({ ok: true, found: { place: "虻田郡ニセコ町", confident: true } })
+    expect(checkFound(index, found({ prefecture: "新潟県", place: "三島郡出雲崎町" }))).toMatchObject({ ok: true, found: { place: "三島郡出雲崎町", confident: true } })
     expect(checkFound(index, found({ prefecture: "福島県", place: "郡山市" }))).toMatchObject({ ok: true, found: { place: "郡山市", confident: true } })
+    expect(checkFound(index, found({ prefecture: "兵庫県", place: "赤穂郡上郡町" }))).toMatchObject({ ok: true, found: { place: "赤穂郡上郡町", confident: true } })
+    // 括弧書き・説明が続く答えは、市区町村まで読む
+    expect(checkFound(index, found({ prefecture: "神奈川県", place: "横浜市中区（赤レンガ倉庫）" }))).toMatchObject({ ok: true, found: { place: "横浜市中区", confident: true } })
+    expect(checkFound(index, found({ prefecture: "神奈川県", place: "横浜市中区、赤レンガ倉庫の所在地" }))).toMatchObject({ ok: true, found: { place: "横浜市中区", confident: true } })
+  })
+
+  test("郡＋町村のあとに大字・番地が続く答え・名前に郡を含む市・郡を書かない町村も読む（郡は住所データで補う）", () => {
+    expect(checkFound(index, found({ prefecture: "新潟県", place: "三島郡出雲崎町大字乙茂" }))).toMatchObject({ ok: true, found: { place: "三島郡出雲崎町", confident: true } })
+    expect(checkFound(index, found({ prefecture: "神奈川県", place: "愛甲郡愛川町中津" }))).toMatchObject({ ok: true, found: { place: "愛甲郡愛川町", confident: true } })
+    expect(checkFound(index, found({ prefecture: "神奈川県", place: "愛川町" }))).toMatchObject({ ok: true, found: { place: "愛甲郡愛川町", confident: true } })
+    expect(checkFound(index, found({ prefecture: "愛知県", place: "蒲郡市三谷町" }))).toMatchObject({ ok: true, found: { place: "蒲郡市", confident: true } })
+    expect(checkFound(index, found({ prefecture: "奈良県", place: "大和郡山市北郡山町" }))).toMatchObject({ ok: true, found: { place: "大和郡山市", confident: true } })
+    // 直した値で読めなければ元の答えでも読む（後ろの括弧書きの中に地名があっても市区町村まで）
+    expect(checkFound(index, found({ prefecture: "神奈川県", place: "神奈川県横浜市中区(山下町)" }))).toMatchObject({ ok: true, found: { place: "横浜市中区", confident: true } })
+  })
+
+  test("同じ市区町村の言い直し・説明は1つの地域に数える。区だけの略記も地域に数える", () => {
+    expect(checkFound(index, found({ prefecture: "神奈川県", place: "横浜市中区、横浜市の赤レンガ倉庫" }))).toMatchObject({ ok: true, found: { place: "横浜市中区", confident: true } })
+    expect(checkFound(index, found({ prefecture: "神奈川県", place: "横浜市中区、中区" }))).toMatchObject({ ok: true, found: { place: "横浜市中区", confident: true } })
+    const r = checkFound(index, found({ prefecture: "神奈川県", place: "横浜市中区、西区" }))
+    expect(r).toMatchObject({ ok: true, found: { place: "", confident: false } })
+    expect(r.ok && r.found.note).toContain("複数の地域")
+  })
+
+  test("複数の地域を並べた答え・決まり（市区町村で終わる）を守らない答えは場所名を使わず、自信なしにする", () => {
+    for (const [prefecture, place] of [
+      ["広島県", "広島市南区、三原市"],
+      ["広島県", "広島市南区・三原市"],
+      ["神奈川県", "米軍厚木"],
+      ["神奈川県", "愛甲郡"],
+    ] as const) {
+      const r = checkFound(index, found({ prefecture, place }))
+      expect(r).toMatchObject({ ok: true, found: { prefecture, place: "", confident: false } })
+      expect(r.ok && r.found.note).toContain(place)
+    }
   })
 
   test("47都道府県に無い都道府県は使わず、その都道府県に無い市区町村は値を残して自信なしにする", () => {

@@ -527,7 +527,13 @@ async function answersOf(list: readonly { cell: MarkedCell; row: KojiRow; raws: 
     const t = getTransform(p.transform)
     return t.kind === "rule" || t.ai ? t : null
   }
-  const addresses = await ai.lookup(list.flatMap((x) => (ruleOf(x.cell)?.readsAddress && x.raws[0] ? [x.raws[0]] : [])))
+  const addresses = await ai.lookup(
+    list.flatMap((x) => {
+      const t = ruleOf(x.cell)
+      const key = t?.readsAddress ? (t.addressOf?.(x.raws) ?? x.raws[0]) : undefined
+      return key ? [key] : []
+    }),
+  )
   return list.map(({ cell, raws }): AiAnswer => {
     const text = raws.filter(Boolean).join(" ")
     const t = ruleOf(cell)
