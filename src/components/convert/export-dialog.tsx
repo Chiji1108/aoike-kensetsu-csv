@@ -2,12 +2,12 @@ import { useMemo } from "react"
 import { ChevronRight, CircleAlert, CircleCheck, Download, FileSpreadsheet, TriangleAlert } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
-import { GyoshuSummaryTable } from "@/components/convert/summary-panel"
+import { BasisSection, enteredGyoshuCount, ShortGyoshuTable } from "@/components/convert/summary-panel"
 import { remainingSteps, type NextStepsData, type StepId } from "@/components/cases/next-steps"
 import { FIX_ACTIONS, fixActionText, type FixActionId } from "@/components/convert/status"
 import { exportCheck, issueLabel } from "@/lib/cases/export-check"
 import type { RowResult } from "@/lib/convert/convert"
-import { RULE7_TAX_LABELS, type Basis, type GyoshuSummary, type Rule7Tax } from "@/lib/convert/koji-selection"
+import { type Basis, type GyoshuSummary, type Rule7Tax } from "@/lib/convert/koji-selection"
 import type { KojiFieldId } from "@/lib/spec/koji-keireki"
 import { cn } from "@/lib/utils"
 
@@ -15,8 +15,8 @@ const fmt = (n: number) => Math.round(n).toLocaleString("ja-JP")
 const SIDE = { total: "完成工事高", motouke: "うち元請" } as const
 
 /**
- * 書き出す前の確認（1枚）。載せる件数・7割に届いたか・業種ごとの完成工事高と元請の額・エラーと要確認の残り・Shift_JIS で書けない文字を出し、
- * 決算書の業種ごとの完成工事高（7割の基準額と同じ値）を入れると表の合計と照らす。合わなくても止めない。
+ * 書き出す前の確認（1枚）。載せる件数・7割に届いたか（届かない業種だけ表で出す）・エラーと要確認の残り・Shift_JIS で書けない文字を出し、
+ * 「決算書の額を入れる」で業種ごとの完成工事高（7割の基準額と同じ値）を入れると表の合計と照らす。合わなくても止めない。
  * 出すのは最後の Excel（職員がこれまで作っていた形。Excel で確かめて「CSV で保存」する。直して上げ直すと表に戻る）。CSV は控え
  */
 export function ExportDialog({
@@ -51,14 +51,15 @@ export function ExportDialog({
   canSuggest: boolean
 }) {
   const check = useMemo(() => (open ? exportCheck(output, summary, basis) : null), [open, output, summary, basis])
+  const entered = enteredGyoshuCount(summary, basis) > 0
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-5xl" data-testid="export-dialog">
+      <DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-3xl" data-testid="export-dialog">
         <DialogHeader>
           <DialogTitle>
             書き出す（<span className="num" data-testid="export-rows">{output.length}</span> 件）
           </DialogTitle>
-          <DialogDescription>決算書の業種ごとの完成工事高（{RULE7_TAX_LABELS[rule7Tax]}・千円）を入れると、表の合計と照らします。</DialogDescription>
+          <DialogDescription>書き出す前に、残りと7割を確かめます。</DialogDescription>
         </DialogHeader>
         {check && (
           <div className="grid gap-3 text-sm">
@@ -66,12 +67,17 @@ export function ExportDialog({
             <ul className="grid gap-1.5" data-testid="export-checks">
               <CheckLine ok={check.short.length === 0} testId="export-rule7">
                 {check.short.length === 0
-                  ? "7割を超えています"
-                  : `7割に届いていない: ${check.short.map((s) => `${s.label}（${SIDE[s.side]}）`).join("・")}`}
+                  ? `7割: すべての業種で満たしています${entered ? "" : "（基準は顧客の表の合計）"}`
+                  : `7割に届かない: ${check.short.map((s) => `${s.label}（${SIDE[s.side]}）`).join("・")}`}
               </CheckLine>
+              {check.short.length > 0 && (
+                <li className="pl-6">
+                  <ShortGyoshuTable summary={summary} basis={basis} />
+                </li>
+              )}
               <CheckLine ok={check.mismatches.length === 0} testId="export-basis">
                 {check.mismatches.length === 0
-                  ? Object.keys(basis).length
+                  ? entered
                     ? "決算書の額と合っています"
                     : "決算書の額はまだ入れていません"
                   : check.mismatches.map((m) => `${m.label}の${SIDE[m.side]}: 決算書 ${fmt(m.entered)} 千円・表の合計 ${fmt(m.rows)} 千円（差 ${m.diff > 0 ? "+" : ""}${fmt(m.diff)} 千円）`).join(" / ")}
@@ -89,6 +95,7 @@ export function ExportDialog({
                   : `Shift_JIS で書けない文字 ${check.unencodable.length} セル（${[...new Set(check.unencodable.flatMap((u) => u.chars))].join(" ")}）。Excel の「CSV で保存」で「?」になります`}
               </CheckLine>
             </ul>
+            <BasisSection summary={summary} basis={basis} rule7Tax={rule7Tax} onBasisChange={onBasisChange} />
             {check.issues.length > 0 && (
               <details className="rounded-lg border bg-muted/20 px-3 py-2 text-xs" data-testid="export-issues">
                 <summary className="cursor-pointer font-medium">内訳</summary>
@@ -101,7 +108,6 @@ export function ExportDialog({
                 </ul>
               </details>
             )}
-            <GyoshuSummaryTable summary={summary} basis={basis} rule7Tax={rule7Tax} onBasisChange={onBasisChange} />
             <p className="text-xs text-muted-foreground" data-testid="export-note">
               Excel で直したら、その Excel をチャットの📎でアップロードすると表に戻ります。取込は1回だけ（追加になる）、「1行目が項目行」は外す。
             </p>
