@@ -1,7 +1,8 @@
 import ExcelJS from "exceljs"
+import type { SheetGrid } from "../convert/plan"
 import { readWorkbook } from "../convert/workbook"
 import { addInquiryWorksheet, ASK_FILL, HEADER_FILL, inquiryLead } from "./inquiry-xlsx"
-import { markability } from "./markable"
+import type { Markability } from "./markable"
 import { ADDED_SHEET_NAME, MARKED_SHEET_NAME, markedCheckOf, markedSheetRows, type MarkPlan } from "./marked"
 
 /**
@@ -17,9 +18,9 @@ function noteText(note: ExcelJS.Cell["note"] | undefined): string {
   return (note.texts ?? []).map((t) => t.text).join("")
 }
 
-export async function markedXlsx(source: { name: string; bytes: Uint8Array }, plan: MarkPlan, excelKey: string, customer: string): Promise<MarkedXlsx> {
-  const can = markability(source.name, source.bytes)
-  if (!can.ok) return can
+/** source は変換の元（読んだときのバイト列・シート・印付きにできるか＝markable.ts の markability。取り直さない） */
+export async function markedXlsx(source: { name: string; bytes: Uint8Array; sheets: readonly SheetGrid[]; markable: Markability }, plan: MarkPlan, excelKey: string, customer: string): Promise<MarkedXlsx> {
+  if (!source.markable.ok) return source.markable
   const wb = new ExcelJS.Workbook()
   try {
     await wb.xlsx.load(source.bytes.slice().buffer as ArrayBuffer)
@@ -81,8 +82,8 @@ export async function markedXlsx(source: { name: string; bytes: Uint8Array }, pl
 }
 
 /** 書いた Excel を読み直し、元のシートの並びと、元のセルの値（足した列の見出しと足した値のセルを除く）がすべて同じで、照合用のシートが読めるか */
-function sameValues(source: { name: string; bytes: Uint8Array }, bytes: Uint8Array, plan: MarkPlan) {
-  const before = readWorkbook(source.name, source.bytes)
+function sameValues(source: { name: string; sheets: readonly SheetGrid[] }, bytes: Uint8Array, plan: MarkPlan) {
+  const before = source.sheets
   const after = readWorkbook(source.name, bytes)
   if (before.some((s, i) => after[i]?.name !== s.name)) return false
   const ours = new Set([...plan.columns.map((c) => `${c.sheet}\t${c.headerRow}\t${c.col}`), ...plan.cells.flatMap((c) => (c.value !== undefined ? [`${c.sheet}\t${c.row}\t${c.col}`] : []))])

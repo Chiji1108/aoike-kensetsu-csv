@@ -172,7 +172,7 @@ export const askLabel = (field: KojiFieldId) => (columnOf(field)?.header ?? fiel
 /** 前の記入用Excelにあった、行ごとの質問の欄の見出し（今は作らない。前に送った記入用Excelが返ってきたときに書き足しを見分ける） */
 export const QUESTION_HEADER = "ご質問"
 
-/** この画面がセルに付けるメモの頭（推定の確かめ）。返ってきたファイルで、顧客が付けたメモと見分ける */
+/** この画面がセルに付けるメモの頭（推定の確かめ。値が推定だと分かるように） */
 export const REVIEW_NOTE_PREFIX = "推定です"
 
 /** 推定に自信がない値のセルに付けるメモ（記入用Excel・印付きの Excel で同じ） */
@@ -534,10 +534,12 @@ export function outsideCells(sheets: readonly SheetGrid[], rows: readonly KojiRo
   let n = 0
   let found = false
   for (const s of sheets) {
-    n += (s.notes ?? []).filter((x) => !x.text.startsWith(REVIEW_NOTE_PREFIX)).length
+    /** この画面が付けたメモ（聞いた行の推定の確かめ。照合用の値から作り直して同じ文か比べる。前の形の決まった文も） */
+    const ours = new Set(LEGACY_REVIEW_NOTES)
+    const theirNotes = () => (s.notes ?? []).filter((x) => !ours.has(x.text)).length
     const headerRow = found ? -1 : s.rows.findIndex((r) => r.some((c) => c.trim() === MANAGEMENT_HEADER))
     if (headerRow < 0) {
-      n += s.rows.reduce((k, r) => k + filled(r), 0)
+      n += theirNotes() + s.rows.reduce((k, r) => k + filled(r), 0)
       continue
     }
     found = true
@@ -549,6 +551,7 @@ export function outsideCells(sheets: readonly SheetGrid[], rows: readonly KojiRo
       const row = now.get(cells[keyCol]?.trim() ?? "")
       const meta = askedCol < 0 ? undefined : parseAskedRow(cells[askedCol] ?? "")
       const sent = meta && row ? meta.asked.map((a): CellInquiry => ({ kind: "cell", rowKey: row.key, ...a })) : []
+      for (const q of sent) if (q.reason === "needsReview") ours.add(reviewNoteOf(columnOf(q.field)!, asSent(row!, sent)))
       cells.forEach((value, i) => {
         if (i === keyCol || i === askedCol) return
         // 質問の欄は、書いた文から変わっていれば顧客の書き足し（照合用に文が無い前の Excel にはこの欄が無い）。消しただけ（空）は書き足しではない。
@@ -567,9 +570,13 @@ export function outsideCells(sheets: readonly SheetGrid[], rows: readonly KojiRo
         if (value.trim() !== column.show(asSent(row, sent)).trim()) n++
       })
     }
+    n += theirNotes()
   }
   return n
 }
+
+/** 前の記入用Excelが付けた決まった文のメモ */
+const LEGACY_REVIEW_NOTES = ["推定です。正しいか確認し、違えば書き直してください", "推定です。姓と名の区切りを確認してください"]
 
 /** 返ってきた Excel（印付き・記入用Excel）の、色付きの欄で読めなかった記入を AI に読ませる指示（チャットの「AI で読む」と照合で同じ） */
 export const aiAnswerPrompt = (fileName: string) =>

@@ -15,6 +15,7 @@ import type { AiBatchRequest } from "../../convert/ai-tasks"
 import { KOJI_KEIREKI, KOJI_PLAN_HINTS, type KojiFieldId } from "../../spec/koji-keireki"
 import { ADDRESSEE_PLACEHOLDER, DEFAULT_SUBJECT, inquiryEmail } from "../email"
 import { EMPTY_INQUIRY_TEXT } from "../text"
+import { sheetItems } from "../marked"
 import { collectInquiries, inquirySheet, mergeAnswers, readAnswers, type AnswerReport, type CellInquiry, type Inquiry } from "../inquiry"
 
 const full = {
@@ -138,7 +139,7 @@ describe("記入用Excelとメール", () => {
   })
 
   test("メールは宛名の空欄・税込税抜の質問・記入件数を含む", () => {
-    const { subject, body: mail } = inquiryEmail(qs, { kind: "sheet", askCount: sheet.askCount, hints: sheet.hints }, EMPTY_INQUIRY_TEXT)
+    const { subject, body: mail } = inquiryEmail(qs, { kind: "sheet", askCount: sheet.askCount, byItem: sheetItems(sheet), hints: sheet.hints }, EMPTY_INQUIRY_TEXT)
     expect(subject).toBe(DEFAULT_SUBJECT)
     expect(mail.startsWith(`${ADDRESSEE_PLACEHOLDER} 様`)).toBe(true)
     expect(mail).toContain("1. いただいた資料の請負代金は、税込・税抜のどちらでしょうか。")

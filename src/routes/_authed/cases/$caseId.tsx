@@ -69,7 +69,7 @@ import type { UsdJpy } from "@/lib/fx"
 import { errorMessage } from "@/lib/errors"
 import { saveFile } from "@/lib/save-file"
 import { aiAnswerPrompt, collectInquiries, inquiryKey, inquirySheet, mergeAnswers, outsideCells, readAnswers, type AnswerReport, type CellInquiry } from "@/lib/inquiry/inquiry"
-import { chooseAttachment, placeMarks, planMarks, readMarked } from "@/lib/inquiry/marked"
+import { chooseAttachment, placeMarks, placementKey, planMarks, readMarked } from "@/lib/inquiry/marked"
 import type { Markability } from "@/lib/inquiry/markable"
 import { INQUIRY_TEXT_PROMPT } from "@/lib/inquiry/text"
 import { REVIEW_PROMPT } from "@/lib/chat/review"
@@ -113,8 +113,8 @@ const ASK_KINDS: Record<PlanAskKind, { label: string; options: { value: "exclude
 const reportUndoId = (questionId: string) => `report:${questionId}`
 
 type Plan = MappingPlan<KojiFieldId>
-/** 変換の元。markable は印付きの Excel にできるか（lib/inquiry/markable.ts） */
-type Source = { fileId: string; name: string; sheets: SheetGrid[]; markable: Markability }
+/** 変換の元。bytes は読んだファイル（印付きの Excel を書くのに使う。取り直さない）、markable は印付きの Excel にできるか（lib/inquiry/markable.ts） */
+type Source = { fileId: string; name: string; bytes: Uint8Array; sheets: SheetGrid[]; markable: Markability }
 
 /** 列の計画の前に、去年の Excel を読み終えるのを待つ長さ */
 const PREVIOUS_WAIT_MS = 3_000
@@ -381,7 +381,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
       const bytes = await fetchCaseFile(file.id)
       const sheets = readWorkbook(file.name, bytes)
       if (!primarySheet(SPEC, KOJI_PLAN_HINTS, sheets)) throw new Error("シートが空です")
-      const src = { fileId: file.id, name: file.name, sheets, markable: markability(file.name, bytes) }
+      const src = { fileId: file.id, name: file.name, bytes, sheets, markable: markability(file.name, bytes) }
       setSource(src)
       setLoadingSource(null)
       if (replan && chatEnabled) await startPlanning(src)
@@ -658,14 +658,20 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
   const activeInquiries = inquiries.filter((q) => !dismissed.has(inquiryKey(q))).length
   /** 外していないセルの問い合わせ（添付の Excel に色を付けるもの） */
   const activeCells = useMemo(() => inquiries.filter((q): q is CellInquiry => q.kind === "cell" && !dismissed.has(inquiryKey(q))), [inquiries, dismissed])
-  /** 印付きの Excel を書いてみて、元を壊さずに書けなかった変換の元と理由（それからはメールも記入用Excelに合わせる。保存しない） */
-  const [markFailure, setMarkFailure] = useState<{ fileId: string; reason: string } | null>(null)
-  /** 添付する Excel（変換の元に印を付けられれば印付き、書けなければ理由を添えて記入用Excel） */
+  /** 今の変換の元（読み終えたもの） */
+  const currentSource = source && plan && source.fileId === work.sourceFileId ? source : null
+  /** 印を付ける場所（印付きにできる元のときだけ。添付の判定とダウンロードで同じものを使う） */
+  const placement = useMemo(
+    () => (currentSource?.markable.ok && plan && output ? placeMarks(currentSource.sheets, plan, output, activeCells) : null),
+    [currentSource, plan, output, activeCells],
+  )
+  const placementId = useMemo(() => (placement ? placementKey(placement) : null), [placement])
+  /** 添付する Excel（変換の元に印を付けられれば印付き。書けない元・前に書いてみて書けなかった同じ場所なら、理由を添えて記入用Excel） */
+  const markFailure = work.markFailure
   const attachment = useMemo(() => {
-    const src = source && plan && source.fileId === work.sourceFileId ? source : null
-    const failed = src && markFailure?.fileId === src.fileId ? markFailure.reason : null
-    return chooseAttachment(src && failed ? { ...src, markable: { ok: false, reason: failed } } : src, plan, output ?? NO_ROWS, activeCells)
-  }, [source, plan, work.sourceFileId, output, activeCells, markFailure])
+    const failed = currentSource && markFailure && markFailure.fileId === currentSource.fileId && markFailure.key === placementId ? markFailure.reason : null
+    return chooseAttachment(currentSource ? (failed ? { ok: false, reason: failed } : currentSource.markable) : null, placement, output ?? NO_ROWS, activeCells)
+  }, [currentSource, markFailure, placementId, placement, output, activeCells])
   const summary = useMemo(() => (edited && selected ? summarizeKoji(edited, selected, { tax, basis, rule7Tax }) : []), [edited, selected, tax, basis, rule7Tax])
 
   /** 計画の聞き返しと、その対象の表の行（元の Excel のセルで決める。答えで載せないにした行も数える） */
@@ -1108,17 +1114,13 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
       saveFile(bytes, name, type)
       void keepFile("inquiry_sheet", new Blob([bytes as BlobPart], { type }), name)
     }
-    const src = live.current.source
-    const sourceFileId = workRef.current.sourceFileId
-    if (attachment.kind === "marked" && src && plan && sourceFileId === src.fileId) {
-      const placement = placeMarks(src.sheets, plan, output, activeCells)
-      if (placement) {
-        const marks = await planMarks(src.sheets, placement, { caseId: kase.id, sourceFileId, excelKey })
-        const out = await markedXlsx({ name: src.name, bytes: await fetchCaseFile(src.fileId) }, marks, excelKey, customer.name)
-        if (out.ok) return save(out.bytes, datedFileName("確認のお願い", customer.name, new Date(), "xlsx"))
-        setMarkFailure({ fileId: src.fileId, reason: out.reason })
-        toast.warning(`${out.reason}、記入用Excelにしました（メールの本文も記入用Excelに合わせました）`)
-      }
+    if (attachment.kind === "marked" && currentSource && placement && placementId) {
+      const marks = await planMarks(currentSource.sheets, placement, { caseId: kase.id, sourceFileId: currentSource.fileId, excelKey })
+      const out = await markedXlsx(currentSource, marks, excelKey, customer.name)
+      if (out.ok) return save(out.bytes, datedFileName("確認のお願い", customer.name, new Date(), "xlsx"))
+      // 同じ元・同じ場所では記入用Excelにする（保存する。メールの本文も合わせる）
+      set("markFailure", { fileId: currentSource.fileId, key: placementId, reason: out.reason })
+      toast.warning(`${out.reason}、記入用Excelにしました（メールの本文も記入用Excelに合わせました）`)
     }
     save(await inquiryXlsx(inquirySheet(output, activeCells), customer.name), datedFileName("記入のお願い", customer.name, new Date(), "xlsx"))
   }

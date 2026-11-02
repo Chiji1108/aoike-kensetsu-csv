@@ -14,9 +14,9 @@ export const DEFAULT_INTRO = [
 
 /**
  * 添付する Excel。marked: 顧客の元の Excel に色とメモを付けたもの（印付き）。sheet: こちらの形の記入用Excel。
- * askCount は色付きのセルの数、hints は記入のしかた（inquiry.ts の answerHints）
+ * askCount は記入してほしい欄の数、byItem はその項目ごとの内訳（合計は askCount。marked.ts）、hints は記入のしかた（inquiry.ts の answerHints）
  */
-export type InquiryAttachment = { kind: "marked" | "sheet"; askCount: number; hints: readonly string[] }
+export type InquiryAttachment = { kind: "marked" | "sheet"; askCount: number; byItem: readonly { label: string; count: number }[]; hints: readonly string[] }
 
 /** 項目ごとの、聞く工事の数（工事場所の都道府県と場所名は1件。並びは記入用Excelの欄の順） */
 export function countsByItem(inquiries: readonly Inquiry[]): { label: string; count: number }[] {
@@ -43,7 +43,7 @@ export function inquiryEmail(inquiries: readonly Inquiry[], attachment: InquiryA
     sections.push(
       [
         `${cases.length + 1}. ${what}の色付きの欄にご記入ください（${attachment.askCount}件）。`,
-        `　${countsByItem(inquiries).map((c) => `${c.label} ${c.count}件`).join("、")}`,
+        `　${attachment.byItem.map((c) => `${c.label} ${c.count}件`).join("、")}`,
         ...attachment.hints.map((h) => `　※${h}`),
         attachment.kind === "marked"
           ? "　※行や列の並びは変えずに、色付きの欄に書き込んでください。"

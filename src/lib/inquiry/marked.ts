@@ -14,7 +14,6 @@ import {
   outsideCells,
   readAiAnswers,
   readAnswers,
-  REVIEW_NOTE_PREFIX,
   SHEET_COLUMNS,
   reviewNoteOf,
   type AiAnswer,
@@ -50,24 +49,44 @@ export const ADDED_SHEET_NAME = "追加の確認"
 /** 足した列の見出し（「注文者（ご記入ください）」） */
 export const addedHeader = (column: SheetColumn) => `${askLabel(column.fields[0]!)}（ご記入ください）`
 
-const metaSchema = z.object({
+const metaSchema = z.strictObject({
   caseId: z.string().min(1).max(64),
   sourceFileId: z.string().min(1).max(64),
   exportedAt: z.string().max(40),
   keyMark: z.string().regex(/^[0-9a-f]{16}$/),
 })
 const hashSchema = z.string().regex(/^[0-9a-f]{24}$/)
-const indexSchema = z.coerce.number().int().min(0).max(1_048_575)
-const colsSchema = z.array(z.number().int().min(0).max(16_383)).min(1).max(20)
+const indexSchema = z.number().int().min(0).max(1_048_575)
+const colSchema = z.number().int().min(0).max(16_383)
+const columnSchema = z.strictObject({ sheet: z.string().min(1), col: colSchema, headerRow: z.number().int().min(-1), column: z.string().min(1) })
+/** 行のセルごとの HMAC（4バイト。印を付けた列は空）。「,」でつなぐ */
+const rowSchema = z.strictObject({ sheet: z.string().min(1), row: indexSchema, skip: z.array(colSchema), cells: z.string().regex(/^([0-9a-f]{8})?(,([0-9a-f]{8})?)*$/) })
+const cellSchema = z.strictObject({
+  rowKey: z.string().min(1).max(200),
+  field: fieldIdSchema,
+  reason: z.enum(["missing", "needsReview"]),
+  sheet: z.string().min(1),
+  row: indexSchema,
+  cols: z.array(colSchema).min(1).max(20),
+  added: z.boolean(),
+  current: hashSchema,
+  sent: hashSchema,
+})
+const noteSchema = z.strictObject({ sheet: z.string().min(1), row: indexSchema, col: colSchema, text: z.string().max(2000) })
 
 export type MarkedMeta = z.infer<typeof metaSchema>
 /** 足した列。column は記入用Excelの欄の見出し（どの項目の列か）、headerRow は見出しを書いた行（無ければ -1） */
 export type MarkedColumn = { sheet: string; col: number; headerRow: number; column: string }
-/** 印を付けた行の照合（印を付けた列を除いた行の中身の HMAC。顧客が行を足した・消したときに行を探す） */
-export type MarkedRow = { sheet: string; row: number; width: number; skip: number[]; hash: string }
+/**
+ * 印を付けた行の照合: 印を付けた列（skip。同じ結合の列も）を除いたセルごとの HMAC（cells は列ごとに「,」でつなぐ。skip の列は空）。
+ * 顧客が行を足した・消した・印の無いセルを少し直したときも、大半のセルが合う行を探す
+ */
+export type MarkedRow = { sheet: string; row: number; skip: number[]; cells: string }
 /** 聞いたセル。cols は印を付けた列（added なら足した列）。current は聞いたときのセルの値、sent は印を付けたセルに書いてあった文字の HMAC */
 export type MarkedCell = { rowKey: string; field: KojiFieldId; reason: InquiryReason; sheet: string; row: number; cols: number[]; added: boolean; current: string; sent: string }
-export type MarkedCheck = { meta: MarkedMeta; columns: MarkedColumn[]; rows: MarkedRow[]; cells: MarkedCell[] }
+/** この画面が付けたメモ（返ってきたファイルで、顧客が付けたメモと見分ける。工事場所・年月のほかは決まった文で、個人名は入らない） */
+export type MarkedNote = { sheet: string; row: number; col: number; text: string }
+export type MarkedCheck = { meta: MarkedMeta; columns: MarkedColumn[]; rows: MarkedRow[]; cells: MarkedCell[]; notes: MarkedNote[] }
 
 /** 印を付けるセル。note は推定の確かめのメモ、value は足した列に書く値 */
 export type MarkCell = { sheet: string; row: number; col: number; note?: string; value?: string }
@@ -78,20 +97,21 @@ export type MarkPlan = {
   /** 元のファイルに行の無い工事の問い合わせ（無ければ null） */
   added: InquirySheet | null
   check: MarkedCheck
-  /** 色を付けたセルの数（追加の確認のシートも） */
+  /** 記入してほしい欄の数（項目ごとの数の合計。メールと画面の件数） */
   askCount: number
+  /** 項目ごとの記入してほしい欄の数（印付きは色を付けたセル、追加の確認のシートも） */
+  byItem: { label: string; count: number }[]
   hints: string[]
 }
 
 export type MarkId = { caseId: string; sourceFileId: string; excelKey: string }
 
 const hashOf = (key: string, caseId: string, text: string) => hmac(key, `marked\n${caseId}\n${text}`, 12)
-/** 行の照合の文字（印を付けた列を空にし、元の幅で切る。右端の空のセルは除く） */
-function rowText(cells: readonly string[] | undefined, width: number, skip: readonly number[]) {
-  const values = Array.from({ length: width }, (_, i) => (skip.includes(i) ? "" : (cells?.[i] ?? "").trim()))
-  while (values.length && !values[values.length - 1]) values.pop()
-  return JSON.stringify(values)
-}
+/** 行の照合のセルの HMAC（短い。行を探すだけに使う） */
+const cellHashOf = (key: string, caseId: string, text: string) => hmac(key, `marked-cell\n${caseId}\n${text.trim()}`, 4)
+/** 行のセルごとの HMAC（元の幅まで。skip の列は空） */
+const rowHashes = (key: string, caseId: string, cells: readonly string[] | undefined, width: number, skip: readonly number[]) =>
+  Promise.all(Array.from({ length: width }, (_, i) => (skip.includes(i) ? "" : cellHashOf(key, caseId, cells?.[i] ?? ""))))
 /** 値のある最後の列の次（書式だけの右の列は数えない。足す列はここから） */
 const widthOf = (grid: SheetGrid) =>
   grid.rows.reduce((w, r) => {
@@ -106,10 +126,17 @@ const textAt = (grid: SheetGrid | undefined, row: number, cols: readonly number[
     .join(" ")
 const storedOf = (r: KojiRow, f: KojiFieldId) => r.cells[f].stored ?? r.cells[f].value
 
+/** その行のその列のセルを含む結合の範囲（無ければ undefined） */
+const mergeAt = (grid: SheetGrid, row: number, col: number) => grid.merges?.find((x) => x.s.r <= row && row <= x.e.r && x.s.c <= col && col <= x.e.c)
 /** その行のその列のセルと同じ結合の範囲にある列（結合していなければその列だけ） */
 function mergedColumns(grid: SheetGrid, row: number, col: number): number[] {
-  const m = grid.merges?.find((x) => x.s.r <= row && row <= x.e.r && x.s.c <= col && col <= x.e.c)
+  const m = mergeAt(grid, row, col)
   return m ? Array.from({ length: m.e.c - m.s.c + 1 }, (_, i) => m.s.c + i) : [col]
+}
+/** 色やメモを付けるセル（結合の中なら左上。結合の左上以外のセルの塗りは Excel に見えない） */
+function paintAt(grid: SheetGrid, row: number, col: number) {
+  const m = mergeAt(grid, row, col)
+  return m ? { row: m.s.r, col: m.s.c } : { row, col }
 }
 
 /**
@@ -163,12 +190,16 @@ export function placeMarks(sheets: readonly SheetGrid[], plan: Plan, rows: reado
       return { q, r, cols, added: !fromPlan }
     })
 
+  // 1つの結合に重なる問い合わせ（縦に結合した2行の工事など）は、結合の左上の1つのセルにまとめ、メモは重ねる。記入はどの行にもそのセルの値として読む
   const cells = new Map<string, MarkCell>()
+  const items = new Map<SheetColumn, Set<string>>()
   for (const { q, r, cols, added } of placed) {
     const column = columnOf(q.field)!
     cols.forEach((col, i) => {
-      const at = `${r.sheet}\t${r.row}\t${col}`
-      const cell = cells.get(at) ?? { sheet: r.sheet, row: r.row, col }
+      const p = added ? { row: r.row, col } : paintAt(gridOf.get(r.sheet)!, r.row, col)
+      const at = `${r.sheet}\t${p.row}\t${p.col}`
+      if (i === 0) items.set(column, (items.get(column) ?? new Set()).add(at))
+      const cell = cells.get(at) ?? { sheet: r.sheet, row: p.row, col: p.col }
       // 推定の確かめは最初の列にだけ。足した列には推定の値を書いておく（そのままなら確認）
       const note = q.reason === "needsReview" && i === 0 ? reviewNoteOf(column, r) : undefined
       if (note && !cell.note?.includes(note)) cell.note = cell.note ? `${cell.note}\n${note}` : note
@@ -178,12 +209,16 @@ export function placeMarks(sheets: readonly SheetGrid[], plan: Plan, rows: reado
   }
   const added = extra.length ? inquirySheet(rows, extra) : null
   const review = placed.some((p) => p.q.reason === "needsReview")
+  const counts = new Map([...items].map(([c, set]) => [c, set.size]))
+  for (const [c, n] of added ? sheetCounts(added) : []) counts.set(c, (counts.get(c) ?? 0) + n)
+  const byItem = itemCounts(counts)
   return {
     cells: [...cells.values()],
     columns,
     added,
     placed,
-    askCount: cells.size + (added?.askCount ?? 0),
+    byItem,
+    askCount: byItem.reduce((n, x) => n + x.count, 0),
     hints: [...new Set([...answerHints([...new Set(placed.map((p) => columnOf(p.q.field)!))], review), ...(added?.hints ?? [])])],
   }
 }
@@ -203,9 +238,8 @@ export async function planMarks(sheets: readonly SheetGrid[], placement: MarkPla
   const markedRows = await Promise.all(
     [...byRow.values()].map(async ({ sheet, row, skip }) => {
       const grid = gridOf.get(sheet)!
-      const width = widthOf(grid)
       const s = [...skip].sort((a, b) => a - b)
-      return { sheet, row, width, skip: s, hash: await hashOf(id.excelKey, id.caseId, rowText(grid.rows[row], width, s)) }
+      return { sheet, row, skip: s, cells: (await rowHashes(id.excelKey, id.caseId, grid.rows[row], widthOf(grid), s)).join(",") }
     }),
   )
   const valueAt = new Map(rest.cells.map((c) => [`${c.sheet}\t${c.row}\t${c.col}`, c.value ?? ""]))
@@ -232,8 +266,35 @@ export async function planMarks(sheets: readonly SheetGrid[], placement: MarkPla
       columns: rest.columns.map(({ header: _, ...c }) => c),
       rows: markedRows,
       cells: markedCells,
+      notes: rest.cells.flatMap((c) => (c.note ? [{ sheet: c.sheet, row: c.row, col: c.col, text: c.note }] : [])),
     },
   }
+}
+
+/** 記入用Excelの形のシートの、欄ごとの記入してほしいセルの数 */
+function sheetCounts(sheet: InquirySheet): Map<SheetColumn, number> {
+  const out = new Map<SheetColumn, number>()
+  sheet.columns.forEach((c, i) => {
+    const column = SHEET_COLUMNS.find((x) => x.header === c.header)
+    const n = sheet.rows.filter((r) => r.cells[i]?.ask).length
+    if (column && n) out.set(column, n)
+  })
+  return out
+}
+
+/** 項目ごとの数（記入用Excelの欄の順） */
+const itemCounts = (counts: ReadonlyMap<SheetColumn, number>) =>
+  [...counts].sort(([a], [b]) => SHEET_COLUMNS.indexOf(a) - SHEET_COLUMNS.indexOf(b)).map(([c, count]) => ({ label: askLabel(c.fields[0]!), count }))
+
+/** 記入用Excelの項目ごとの数（メールの内訳。合計は askCount と同じ） */
+export const sheetItems = (sheet: InquirySheet) => itemCounts(sheetCounts(sheet))
+
+/** 印を付ける場所の印（同じ場所なら同じ。書けなかったことを覚えておき、問い合わせや列の対応が変わったら判定し直す） */
+export function placementKey(p: MarkPlacement): string {
+  const text = JSON.stringify([p.cells.map((c) => [c.sheet, c.row, c.col, c.value ?? null]), p.columns.map((c) => [c.sheet, c.col, c.headerRow]), p.added?.rows.length ?? 0])
+  let h = 0x811c9dc5
+  for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 0x01000193) >>> 0
+  return `${text.length.toString(16)}-${h.toString(16)}`
 }
 
 /** 足す列の並び（記入用Excelの欄の順） */
@@ -241,14 +302,18 @@ const SHEET_ORDER = (q: CellInquiry) => SHEET_COLUMNS.indexOf(columnOf(q.field)!
 
 // ---- 照合用の隠しシート ----
 
-/** 隠しシートのセル（1行目は印、そのあと識別・足した列・行・セル、最後に全体の HMAC）。全セル文字列 */
+/**
+ * 隠しシートのセル（1行目は印、そのあと識別・足した列・行・セル・メモを1行に1つ、最後に全体の HMAC）。全セル文字列。
+ * 中身は JSON の文字（頭と終わりが括弧）にするので、読み直すときの前後の空白の扱いで HMAC が変わらない
+ */
 export async function markedSheetRows(check: MarkedCheck, excelKey: string): Promise<string[][]> {
   const body: string[][] = [
     [MARKED_MARK, String(MARKED_VERSION)],
     ["meta", JSON.stringify(check.meta)],
-    ...check.columns.map((c) => ["column", c.sheet, String(c.col), String(c.headerRow), c.column]),
-    ...check.rows.map((r) => ["row", r.sheet, String(r.row), String(r.width), JSON.stringify(r.skip), r.hash]),
-    ...check.cells.map((c) => ["cell", c.rowKey, c.field, c.reason, c.sheet, String(c.row), JSON.stringify(c.cols), c.added ? "1" : "0", c.current, c.sent]),
+    ...check.columns.map((c) => ["column", JSON.stringify(c)]),
+    ...check.rows.map((r) => ["row", JSON.stringify(r)]),
+    ...check.cells.map((c) => ["cell", JSON.stringify(c)]),
+    ...check.notes.map((n) => ["note", JSON.stringify(n)]),
   ]
   return [...body, ["sig", await signatureOf(body, excelKey, check.meta.caseId)]]
 }
@@ -276,40 +341,34 @@ export function markedCheckOf(sheets: readonly SheetGrid[]): ParsedCheck | { err
   const rows = sheet.rows.filter((r) => r.some((c) => c.trim()))
   const sigRow = rows[rows.length - 1]
   if (sigRow?.[0] !== "sig" || !sigRow[1]) return { error: BROKEN }
-  // 空のセルは SheetJS が読まない（右端の空は無い）ので、書いたときの形に戻してから HMAC を比べる
-  const body = rows.slice(0, -1).map((r) => {
-    const out = [...r]
-    while (out.length && out[out.length - 1] === "") out.pop()
-    return out
-  })
-  let meta: MarkedMeta | undefined
-  const columns: MarkedColumn[] = []
-  const markedRows: MarkedRow[] = []
-  const cells: MarkedCell[] = []
-  for (const r of body.slice(1)) {
-    const [kind, ...v] = r
-    if (kind === "meta") {
-      const p = metaSchema.safeParse(json(v[0] ?? ""))
-      if (!p.success) return { error: BROKEN }
-      meta = p.data
-    } else if (kind === "column") {
-      const p = z.object({ sheet: z.string().min(1), col: indexSchema, headerRow: z.coerce.number().int().min(-1), column: z.string().min(1) }).safeParse({ sheet: v[0], col: v[1], headerRow: v[2], column: v[3] })
-      if (!p.success) return { error: BROKEN }
-      columns.push(p.data)
-    } else if (kind === "row") {
-      const p = z.object({ sheet: z.string().min(1), row: indexSchema, width: indexSchema, skip: z.array(z.number().int().min(0)), hash: hashSchema }).safeParse({ sheet: v[0], row: v[1], width: v[2], skip: json(v[3] ?? ""), hash: v[4] })
-      if (!p.success) return { error: BROKEN }
-      markedRows.push(p.data)
-    } else if (kind === "cell") {
-      const p = z
-        .object({ rowKey: z.string().min(1).max(200), field: fieldIdSchema, reason: z.enum(["missing", "needsReview"]), sheet: z.string().min(1), row: indexSchema, cols: colsSchema, added: z.enum(["0", "1"]), current: hashSchema, sent: hashSchema })
-        .safeParse({ rowKey: v[0], field: v[1], reason: v[2], sheet: v[3], row: v[4], cols: json(v[5] ?? ""), added: v[6], current: v[7], sent: v[8] })
-      if (!p.success || !columnOf(p.data.field as KojiFieldId)) return { error: BROKEN }
-      cells.push({ ...p.data, field: p.data.field as KojiFieldId, added: p.data.added === "1" })
-    } else return { error: BROKEN }
+  const body = rows.slice(0, -1).map((r) => r.slice(0, 2))
+  body[0] = [MARKED_MARK, String(MARKED_VERSION)]
+  const check: MarkedCheck = { meta: undefined as unknown as MarkedMeta, columns: [], rows: [], cells: [], notes: [] }
+  let meta = false
+  for (const [kind, payload] of body.slice(1)) {
+    const value = json(payload ?? "")
+    const read = <T>(schema: z.ZodType<T>, push: (v: T) => void) => {
+      const p = schema.safeParse(value)
+      if (!p.success) return false
+      push(p.data)
+      return true
+    }
+    const ok =
+      kind === "meta"
+        ? read(metaSchema, (v) => ((check.meta = v), (meta = true)))
+        : kind === "column"
+          ? read(columnSchema, (v) => check.columns.push(v))
+          : kind === "row"
+            ? read(rowSchema, (v) => check.rows.push(v))
+            : kind === "cell"
+              ? read(cellSchema, (v) => check.cells.push({ ...v, field: v.field as KojiFieldId }))
+              : kind === "note"
+                ? read(noteSchema, (v) => check.notes.push(v))
+                : false
+    if (!ok) return { error: BROKEN }
   }
-  if (!meta) return { error: BROKEN }
-  return { check: { meta, columns, rows: markedRows, cells }, body, sig: sigRow[1] }
+  if (!meta || check.cells.some((c) => !columnOf(c.field))) return { error: BROKEN }
+  return { check, body, sig: sigRow[1] }
 }
 
 /** 返ってきた印付きの Excel の読み方の結果。outside は印の無いセルで顧客が書き換えた・書き足したセルの数（入れない。AI で読める） */
@@ -337,28 +396,36 @@ export async function readMarked(sheets: readonly SheetGrid[], rows: readonly Ko
   const now = new Map(rows.map((r) => [r.key, r]))
   const report: AiAnswerReport = { ...emptyReport(), uncorrected: [] }
 
-  // 行を探す: 同じ行の中身が同じならその行、違えば同じ中身の行がシートに1つだけあればその行（行の中身の HMAC は、同じ幅・同じ印の列の組ごとに1回だけ数える）
+  // 行を探す: 書いた位置の行のセルが大半合えばその行（印の無いセルを少し直しても見失わない。直したセルは印の無いセルの書き換えとして数える）。
+  // 合わなければ（行を足した・消した）、いちばん合う行が1つだけで大半合えばその行
   const found = new Map<string, number | null>()
-  const indexes = new Map<string, Map<string, number[]>>()
-  async function indexOf(grid: SheetGrid, width: number, skip: readonly number[]) {
-    const k = JSON.stringify([grid.name, width, skip])
-    let index = indexes.get(k)
-    if (!index) {
-      index = new Map()
-      const hashes = await Promise.all(grid.rows.map((r) => hash(rowText(r, width, skip))))
-      for (const [i, h] of hashes.entries()) index.set(h, [...(index.get(h) ?? []), i])
-      indexes.set(k, index)
-    }
-    return index
+  const cellHash = new Map<string, Promise<string>>()
+  const hashAt = (grid: SheetGrid, r: number, c: number) => {
+    const k = `${grid.name}\t${r}\t${c}`
+    let h = cellHash.get(k)
+    if (!h) cellHash.set(k, (h = cellHashOf(id.excelKey, id.caseId, grid.rows[r]?.[c] ?? "")))
+    return h
   }
+  const empty = await cellHashOf(id.excelKey, id.caseId, "")
   for (const r of check.rows) {
     const grid = gridOf.get(r.sheet)
+    const want = r.cells.split(",")
+    const cols = want.flatMap((h, c) => (h ? [c] : []))
+    // 合わなくてよいセルの数（1つは必ず許す）。空でないセルが1つも合わない行は別の行
+    const allowed = Math.max(1, Math.floor(cols.length / 5))
+    const score = async (i: number) => {
+      const got = await Promise.all(cols.map((c) => hashAt(grid!, i, c)))
+      const miss = cols.filter((c, k) => got[k] !== want[c]).length
+      const hit = cols.some((c, k) => got[k] === want[c] && want[c] !== empty)
+      return hit ? miss : Infinity
+    }
     let at: number | null = null
     if (grid) {
-      if ((await hash(rowText(grid.rows[r.row], r.width, r.skip))) === r.hash) at = r.row
+      if ((await score(r.row)) <= allowed) at = r.row
       else {
-        const hits = (await indexOf(grid, r.width, r.skip)).get(r.hash) ?? []
-        at = hits.length === 1 ? hits[0]! : null
+        const misses = await Promise.all(grid.rows.map((_, i) => score(i)))
+        const best = Math.min(...misses)
+        at = best <= allowed && misses.filter((m) => m === best).length === 1 ? misses.indexOf(best) : null
       }
     }
     found.set(`${r.sheet}\t${r.row}`, at)
@@ -399,7 +466,9 @@ export async function readMarked(sheets: readonly SheetGrid[], rows: readonly Ko
     const raws = (cols as number[]).map((c) => (gridOf.get(cell.sheet)!.rows[at]?.[c] ?? "").trim())
     const text = raws.filter(Boolean).join(" ")
     if ((await hash(storedOf(row, cell.field))) !== cell.current) {
+      // 聞いたあとにセルの値が変わった: 記入があれば答えを比べ、記入が無い・書いたときのままなら未記入
       if (text && (await hash(text)) !== cell.sent) stale.push({ cell, row, raws })
+      else report.unanswered.push(q)
       continue
     }
     if ((await hash(text)) === cell.sent || !text) {
@@ -477,7 +546,16 @@ function changedOutside(sheets: readonly SheetGrid[], source: readonly SheetGrid
   for (const s of sheets) {
     if (s.name === MARKED_SHEET_NAME || s.name === ADDED_SHEET_NAME) continue
     const before = source.find((x) => x.name === s.name)
-    const theirs = (s.notes ?? []).filter((x) => !x.text.startsWith(REVIEW_NOTE_PREFIX) && !before?.notes?.some((b) => b.row === x.row && b.column === x.column && b.text === x.text))
+    // この画面が付けたメモ（もとのメモがあったセルは、この画面のメモに続けたもの）と、もとからあったメモは数えない
+    const ours = new Set(
+      check.notes
+        .filter((x) => x.sheet === s.name)
+        .flatMap((x) => {
+          const b = before?.notes?.find((y) => y.row === x.row && y.column === x.col)
+          return b ? [x.text, `${x.text}\n――\n${b.text}`] : [x.text]
+        }),
+    )
+    const theirs = (s.notes ?? []).filter((x) => !ours.has(x.text) && !before?.notes?.some((b) => b.text === x.text))
     n += theirs.length
     if (!before) {
       n += s.rows.reduce((k, r) => k + filled(r), 0)
@@ -491,6 +569,19 @@ function changedOutside(sheets: readonly SheetGrid[], source: readonly SheetGrid
       const set = markedAt.get(c.row) ?? new Set<number>()
       for (const x of c.cols) set.add(addedAt.get(`${c.sheet}\t${x}`) ?? -1)
       markedAt.set(c.row, set)
+    }
+    // 印を付けたセルを含む結合（縦の結合のほかの行も）
+    for (const c of check.cells) {
+      if (c.sheet !== s.name || c.added) continue
+      for (const col of c.cols) {
+        const m = mergeAt(before, c.row, col)
+        if (!m) continue
+        for (let r = m.s.r; r <= m.e.r; r++) {
+          const set = markedAt.get(r) ?? new Set<number>()
+          for (let x = m.s.c; x <= m.e.c; x++) set.add(x)
+          markedAt.set(r, set)
+        }
+      }
     }
     const added = new Set(check.columns.filter((c) => c.sheet === s.name).flatMap((c) => [addedAt.get(`${c.sheet}\t${c.col}`) ?? -1]))
     const moved = s.rows.length !== before.rows.length || check.rows.some((r) => r.sheet === s.name && found.get(`${r.sheet}\t${r.row}`) !== r.row)
@@ -523,25 +614,24 @@ function changedOutside(sheets: readonly SheetGrid[], source: readonly SheetGrid
 }
 
 /** 添付する Excel の選び方（画面の「Excel をダウンロード」とメール）。marked なら印付き、sheet なら記入用Excel と理由 */
-export type AttachmentChoice = { kind: "marked"; askCount: number; hints: string[] } | { kind: "sheet"; askCount: number; hints: string[]; reason: string }
+export type AttachmentChoice = { askCount: number; byItem: { label: string; count: number }[]; hints: string[] } & ({ kind: "marked" } | { kind: "sheet"; reason: string })
 
 /**
- * どちらの Excel を添付するかを決める。source は変換の元（sheets と、印付きにできるか＝markable.ts の markability）。
- * 印付きにできなければ、理由を添えて記入用Excel
+ * どちらの Excel を添付するかを決める。markable は変換の元を印付きにできるか（markable.ts の markability か、書いてみて書けなかった理由）、
+ * placement は印を付ける場所（placeMarks。画面は1回だけ求めて、ダウンロードにも使う）。印付きにできなければ、理由を添えて記入用Excel
  */
 export function chooseAttachment(
-  source: { sheets: readonly SheetGrid[]; markable: { ok: true } | { ok: false; reason: string } } | null,
-  plan: Plan | null,
+  markable: { ok: true } | { ok: false; reason: string } | null,
+  placement: MarkPlacement | null,
   rows: readonly KojiRow[],
   inquiries: readonly CellInquiry[],
 ): AttachmentChoice {
   const sheet = (reason: string): AttachmentChoice => {
     const s = inquirySheet(rows, inquiries)
-    return { kind: "sheet", askCount: s.askCount, hints: s.hints, reason }
+    return { kind: "sheet", askCount: s.askCount, byItem: sheetItems(s), hints: s.hints, reason }
   }
-  if (!source || !plan) return sheet("元の Excel が無いので")
-  if (!source.markable.ok) return sheet(source.markable.reason)
-  const placed = placeMarks(source.sheets, plan, rows, inquiries)
-  if (!placed) return sheet("聞く工事がどれも元の Excel に無いので")
-  return { kind: "marked", askCount: placed.askCount, hints: placed.hints }
+  if (!markable) return sheet("元の Excel が無いので")
+  if (!markable.ok) return sheet(markable.reason)
+  if (!placement) return sheet("聞く工事がどれも元の Excel に無いので")
+  return { kind: "marked", askCount: placement.askCount, byItem: placement.byItem, hints: placement.hints }
 }

@@ -14,27 +14,33 @@ const guessedEnd = (n: number) => {
 const rows = [guessedEnd(2), guessedEnd(3), kojiRow({ ...full, engineer: "" }, 4), kojiRow({ ...full, engineer: "", prefecture: "", place: "" }, 5)]
 const qs = collectInquiries(rows, { tax: "unknown" })
 const cells = qs.filter((q): q is CellInquiry => q.kind === "cell")
+/** 添付の Excel の項目ごとの数（合計は askCount と同じ） */
+const ITEMS = [
+  { label: "完成年月", count: 2 },
+  { label: "工事場所", count: 1 },
+  { label: "配置技術者", count: 2 },
+]
 
 describe("メールの件名と前置き", () => {
   test("承認した件名と前置きを使い、無ければ決まった文。前の作業の質問の文（questions）は読み捨てる", () => {
     const text = applyInquiryChange(EMPTY_INQUIRY_TEXT, { kind: "inquiryMail", subject: "工事経歴書のご確認", intro: "資料ありがとうございました。いくつか教えてください。" })
-    const mail = inquiryEmail(qs, { kind: "marked", askCount: 5, hints: [] }, text)
+    const mail = inquiryEmail(qs, { kind: "marked", askCount: 5, byItem: ITEMS, hints: [] }, text)
     expect(mail.subject).toBe("工事経歴書のご確認")
     expect(mail.body).toContain("資料ありがとうございました。")
-    expect(inquiryEmail(qs, { kind: "marked", askCount: 5, hints: [] }, EMPTY_INQUIRY_TEXT).subject).toBe(DEFAULT_SUBJECT)
+    expect(inquiryEmail(qs, { kind: "marked", askCount: 5, byItem: ITEMS, hints: [] }, EMPTY_INQUIRY_TEXT).subject).toBe(DEFAULT_SUBJECT)
     const legacy = { subject: "件名", intro: null, questions: [{ id: "a", text: "前の質問", targets: [{ field: "engineer" }], by: "ai" }] }
     expect(inquiryTextSchema.parse(legacy)).toEqual({ subject: "件名", intro: null })
   })
 
-  test("本文は宛名・税込税抜の質問・添付の Excel の色付きの欄の件数と項目ごとの件数だけ（質問の文は書かない）。印付きと記入用Excelで添える注意が違う", () => {
-    const marked = inquiryEmail(qs, { kind: "marked", askCount: 5, hints: ["メモの付いた欄は資料から推定した値です。"] }, EMPTY_INQUIRY_TEXT).body
+  test("本文は宛名・税込税抜の質問・添付の Excel の色付きの欄の件数と項目ごとの内訳（合計は件数と同じ）だけ（質問の文は書かない）。印付きと記入用Excelで添える注意が違う", () => {
+    const marked = inquiryEmail(qs, { kind: "marked", askCount: 5, byItem: ITEMS, hints: ["メモの付いた欄は資料から推定した値です。"] }, EMPTY_INQUIRY_TEXT).body
     expect(marked).toContain(`${ADDRESSEE_PLACEHOLDER} 様`)
     expect(marked).toContain("1. いただいた資料の請負代金は、税込・税抜のどちらでしょうか。")
     expect(marked).toContain("2. 添付のExcel（お預かりした表に色を付けたもの）の色付きの欄にご記入ください（5件）。")
     expect(marked).toContain("完成年月 2件、工事場所 1件、配置技術者 2件")
     expect(marked).toContain("行や列の並びは変えずに")
     expect(marked).not.toContain("管理番号")
-    const sheet = inquiryEmail(qs, { kind: "sheet", askCount: 5, hints: [] }, EMPTY_INQUIRY_TEXT).body
+    const sheet = inquiryEmail(qs, { kind: "sheet", askCount: 5, byItem: ITEMS, hints: [] }, EMPTY_INQUIRY_TEXT).body
     expect(sheet).toContain("2. 添付のExcelの色付きの欄にご記入ください（5件）。")
     expect(sheet).toContain("「管理番号」の列は照合に使います")
   })

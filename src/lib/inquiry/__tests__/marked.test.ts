@@ -32,9 +32,9 @@ const DATA: (string | number | Date | null)[][] = [
 ]
 
 /** 顧客の元の Excel（表題の結合・見出しの塗り・罫線・金額の書式・合計の数式・メモのシート） */
-async function sourceXlsx(opts: { mergeEnd?: true } = {}) {
+async function sourceXlsx(opts: { mergeEnd?: true; mergeDown?: true; sheetName?: string } = {}) {
   const wb = new ExcelJS.Workbook()
-  const ws = wb.addWorksheet("工事経歴")
+  const ws = wb.addWorksheet(opts.sheetName ?? "工事経歴")
   ws.getCell("A1").value = "令和6年度 工事経歴一覧"
   ws.getCell("A1").font = { bold: true, size: 14, name: "游ゴシック" }
   ws.mergeCells("A1:J1")
@@ -65,9 +65,17 @@ async function sourceXlsx(opts: { mergeEnd?: true } = {}) {
     ws.getCell("J5").value = null
     ws.mergeCells("I5:J5")
   }
+  // 2行目と3行目のデータの完成日を縦に結合する（どちらも空になる）
+  if (opts.mergeDown) {
+    ws.getCell("I6").value = null
+    ws.mergeCells("I5:I6")
+  }
   wb.addWorksheet("メモ").getCell("A1").value = "担当者メモ"
-  return { name: "工事経歴.xlsx", bytes: new Uint8Array(await wb.xlsx.writeBuffer()) }
+  return withSource("工事経歴.xlsx", new Uint8Array(await wb.xlsx.writeBuffer()))
 }
+
+/** 画面が変換の元を読んだときと同じ形（バイト列・シート・印付きにできるか） */
+const withSource = (name: string, bytes: Uint8Array) => ({ name, bytes, sheets: readWorkbook(name, bytes), markable: markability(name, bytes) })
 
 async function convertSource(source: { name: string; bytes: Uint8Array }) {
   const sheets = readWorkbook(source.name, source.bytes)
@@ -79,7 +87,7 @@ async function convertSource(source: { name: string; bytes: Uint8Array }) {
   return { sheets, plan, rows, inquiries }
 }
 
-async function marked(opts: { mergeEnd?: true } = {}) {
+async function marked(opts: Parameters<typeof sourceXlsx>[0] = {}) {
   const source = await sourceXlsx(opts)
   const c = await convertSource(source)
   const placement = placeMarks(c.sheets, c.plan, c.rows, c.inquiries)
@@ -143,7 +151,7 @@ describe("印付きの Excel を書く", () => {
     const wb = new ExcelJS.Workbook()
     await wb.xlsx.load((await sourceXlsx()).bytes.slice().buffer as ArrayBuffer)
     wb.getWorksheet("工事経歴")!.getCell(3, 11).value = { formula: 'IF(A3="","","")', result: "" }
-    const source = { name: "工事経歴.xlsx", bytes: new Uint8Array(await wb.xlsx.writeBuffer()) }
+    const source = withSource("工事経歴.xlsx", new Uint8Array(await wb.xlsx.writeBuffer()))
     const c = await convertSource(source)
     const plan = await planMarks(c.sheets, placeMarks(c.sheets, c.plan, c.rows, c.inquiries)!, ID)
     expect(plan.columns[0]?.col).toBe(10)
@@ -192,6 +200,14 @@ describe("印付きにできるか", () => {
     expect(markability("工事経歴.xlsx", (await sourceXlsx()).bytes)).toEqual({ ok: true })
   })
 
+  test("スレッド形式のコメントや拡張の入力規則のような書き戻すと消える部分があれば書かない", async () => {
+    const source = await sourceXlsx()
+    const zip = XLSX.CFB.read(source.bytes, { type: "array" })
+    XLSX.CFB.utils.cfb_add(zip, "xl/threadedComments/threadedComment1.xml", new TextEncoder().encode("<ThreadedComments/>"))
+    const threaded = new Uint8Array(XLSX.CFB.write(zip, { type: "array", fileType: "zip" }) as ArrayLike<number>)
+    expect(markability("工事経歴.xlsx", threaded)).toEqual({ ok: false, reason: "元のファイルにスレッド形式のコメントがあり、壊さずに書けないので" })
+  })
+
   test("グラフや外部リンクのような書き戻すと消える部分があれば書かない", async () => {
     const source = await sourceXlsx()
     const zip = XLSX.CFB.read(source.bytes, { type: "array" })
@@ -203,11 +219,18 @@ describe("印付きにできるか", () => {
   test("書けないときは理由を添えて記入用Excel。聞く工事がどれも元の Excel に無いときも記入用Excel", async () => {
     const source = await sourceXlsx()
     const c = await convertSource(source)
-    expect(chooseAttachment({ sheets: c.sheets, markable: { ok: true } }, c.plan, c.rows, c.inquiries).kind).toBe("marked")
-    expect(chooseAttachment({ sheets: c.sheets, markable: { ok: false, reason: "元のファイルが .xls（古い形）なので" } }, c.plan, c.rows, c.inquiries)).toMatchObject({ kind: "sheet", reason: "元のファイルが .xls（古い形）なので" })
-    expect(chooseAttachment(null, null, c.rows, c.inquiries)).toMatchObject({ kind: "sheet" })
+    const placement = placeMarks(c.sheets, c.plan, c.rows, c.inquiries)
+    const marked = chooseAttachment({ ok: true }, placement, c.rows, c.inquiries)
+    expect(marked.kind).toBe("marked")
+    // メールの件数と項目ごとの内訳の合計は同じ
+    expect(marked.byItem.reduce((n, x) => n + x.count, 0)).toBe(marked.askCount)
+    expect(chooseAttachment({ ok: false, reason: "元のファイルが .xls（古い形）なので" }, placement, c.rows, c.inquiries)).toMatchObject({ kind: "sheet", reason: "元のファイルが .xls（古い形）なので" })
+    const sheet = chooseAttachment(null, null, c.rows, c.inquiries)
+    expect(sheet).toMatchObject({ kind: "sheet" })
+    expect(sheet.byItem.reduce((n, x) => n + x.count, 0)).toBe(sheet.askCount)
     const added = c.rows.map((r) => ({ ...r, key: `add-${r.key}` }))
-    expect(chooseAttachment({ sheets: c.sheets, markable: { ok: true } }, c.plan, added, c.inquiries.map((q) => ({ ...q, rowKey: `add-${q.rowKey}` })))).toMatchObject({ kind: "sheet" })
+    const addedQs = c.inquiries.map((q) => ({ ...q, rowKey: `add-${q.rowKey}` }))
+    expect(chooseAttachment({ ok: true }, placeMarks(c.sheets, c.plan, added, addedQs), added, addedQs)).toMatchObject({ kind: "sheet" })
   })
 })
 
@@ -215,7 +238,7 @@ describe("返ってきた印付きの Excel を読む", () => {
   /** 顧客が記入する（ExcelJS で開いて書く） */
   async function answer(bytes: Uint8Array, write: (ws: ExcelJS.Worksheet) => void) {
     const wb = await load(bytes)
-    write(wb.getWorksheet("工事経歴")!)
+    write(wb.worksheets[0]!)
     return readWorkbook("返信.xlsx", new Uint8Array(await wb.xlsx.writeBuffer()))
   }
   const read = (m: Awaited<ReturnType<typeof marked>>, sheets: ReturnType<typeof readWorkbook>, id = ID) => readMarked(sheets, m.rows, m.sheets, { ...id, plan: m.plan === null ? null : planOf(m) }, noAi())
@@ -245,6 +268,67 @@ describe("返ってきた印付きの Excel を読む", () => {
     expect(r.outside).toBe(1)
   })
 
+  test("印の無いセルを1つ直した行も見失わずに読み、直したセルは印の無いセルの書き換えとして数える", async () => {
+    const m = await marked()
+    const r = await read(
+      m,
+      await answer(m.bytes, (ws) => {
+        ws.getCell("C5").value = "テスト倉庫照明工事（追加）"
+        ws.getCell("I5").value = new Date(Date.UTC(2024, 10, 15))
+      }),
+    )
+    if ("error" in r) throw new Error(r.error)
+    expect(r.report.edits).toContainEqual([editKey(m.rows[1]!.key, "endYm"), { value: "202411", by: "customer" }])
+    expect(r.report.unreadable).toEqual([])
+    expect(r.outside).toBe(1)
+    // 行を足したうえで1つ直しても見つける
+    const moved = await read(
+      m,
+      await answer(m.bytes, (ws) => {
+        ws.spliceRows(2, 0, ["（顧客が足した行）"])
+        ws.getCell("C6").value = "テスト倉庫照明工事（追加）"
+        ws.getCell("I6").value = new Date(Date.UTC(2024, 10, 15))
+      }),
+    )
+    if ("error" in moved) throw new Error(moved.error)
+    expect(moved.report.edits).toContainEqual([editKey(m.rows[1]!.key, "endYm"), { value: "202411", by: "customer" }])
+    expect(moved.report.unreadable).toEqual([])
+  })
+
+  test("顧客が付けたメモは「推定です」で始まっても数え、この画面が付けたメモは数えない", async () => {
+    const m = await marked()
+    expect((await read(m, readWorkbook("返信.xlsx", m.bytes))) as object).toMatchObject({ outside: 0 })
+    const r = await read(m, await answer(m.bytes, (ws) => void (ws.getCell("D4").note = "推定ですが、注文者は別の会社です")))
+    expect(r).toMatchObject({ outside: 1 })
+  })
+
+  test("シート名の前後に空白があっても、照合用のシートを読める", async () => {
+    const m = await marked({ sheetName: " 工事経歴 " })
+    const r = await read(m, await answer(m.bytes, (ws) => void (ws.getCell(4, 11).value = "試験 太郎")))
+    if ("error" in r) throw new Error(r.error)
+    expect(r.report.edits).toContainEqual([editKey(m.rows[0]!.key, "engineer"), { value: "試験　太郎", by: "customer" }])
+  })
+
+  test("縦に結合したセルは左上に色を付け、重なる問い合わせは1つのセルにまとめる。記入はどちらの行にも入る", async () => {
+    const m = await marked({ mergeDown: true })
+    expect(m.plan.cells.filter((c) => c.col === 8).map((c) => c.row)).toEqual([4])
+    const keys = m.inquiries.filter((q) => q.field === "endYm").map((q) => q.rowKey)
+    expect(keys).toEqual([m.rows[1]!.key, m.rows[2]!.key])
+    const r = await read(m, await answer(m.bytes, (ws) => void (ws.getCell("I5").value = new Date(Date.UTC(2024, 10, 15)))))
+    if ("error" in r) throw new Error(r.error)
+    for (const k of keys) expect(r.report.edits).toContainEqual([editKey(k, "endYm"), { value: "202411", by: "customer" }])
+    expect(r.outside).toBe(0)
+  })
+
+  test("聞いたあとに表の値が変わったセルで、記入が無いか書いたときのままなら未記入に数える", async () => {
+    const m = await marked()
+    const key = m.rows[0]!.key
+    const rows = m.rows.map((r) => (r.key === key ? { ...r, cells: { ...r.cells, engineer: { ...r.cells.engineer, value: "試験　次郎" } } } : r))
+    const r = await readMarked(readWorkbook("返信.xlsx", m.bytes), rows, m.sheets, { ...ID, plan: planOf(m) }, noAi())
+    if ("error" in r) throw new Error(r.error)
+    expect(r.report.unanswered.some((q) => q.rowKey === key && q.field === "engineer")).toBe(true)
+  })
+
   test("顧客が上に行を足しても、行の中身で探して読む", async () => {
     const m = await marked()
     const sheets = await answer(m.bytes, (ws) => {
@@ -263,7 +347,7 @@ describe("返ってきた印付きの Excel を読む", () => {
     expect(await read(m, sheets, { ...ID, caseId: "case-2" })).toHaveProperty("error")
     expect(await read(m, sheets, { ...ID, excelKey: "cd".repeat(32) })).toHaveProperty("error")
     expect(await read(m, sheets, { ...ID, sourceFileId: "file-2" })).toHaveProperty("error")
-    const tampered = sheets.map((s) => (s.name === MARKED_SHEET_NAME ? { ...s, rows: s.rows.map((r) => (r[0] === "cell" ? r.map((v, i) => (i === 2 ? "client" : v)) : r)) } : s))
+    const tampered = sheets.map((s) => (s.name === MARKED_SHEET_NAME ? { ...s, rows: s.rows.map((r) => (r[0] === "cell" ? [r[0]!, r[1]!.replace('"reason":"missing"', '"reason":"needsReview"')] : r)) } : s))
     expect(await read(m, tampered)).toHaveProperty("error")
   })
 
