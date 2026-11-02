@@ -173,6 +173,13 @@ export type GyoshuSummary = {
   motoukeTotal: number
   /** 7割の基準額（入力が無い側は行の合計） */
   basis: { total: number; motouke: number }
+  /** 基準額に決算書の額（入力）を使った側 */
+  fromBook: { total: boolean; motouke: boolean }
+  /** 元請の側がある（元請の工事があるか、うち元請を入れた）。無ければ元請の割合も無い */
+  hasMotouke: boolean
+  /** 載せる工事の合計・載せる元請の合計（7割の対象の行から。比率の分子） */
+  selectedTotal: number
+  selectedMotoukeTotal: number
   /** 載せる元請の合計 / 元請の基準額（基準額が 0 なら undefined） */
   motoukeRatio?: number
   /** 載せる工事の合計 / 全体の基準額 */
@@ -209,6 +216,10 @@ export function summarizeKoji(rows: readonly KojiRow[], inclusion: ReadonlyMap<s
         total: sum11(candidates) / unit,
         motoukeTotal: sum11(candidates.filter(isMotouke)) / unit,
         basis: { total: b.total / unit, motouke: b.motouke / unit },
+        fromBook: { total: isUsableBasis(opts.basis?.[code]?.total), motouke: isUsableBasis(opts.basis?.[code]?.motouke) },
+        hasMotouke: b.motouke > 0,
+        selectedTotal: selectedTotal / unit,
+        selectedMotoukeTotal: selectedMotouke / unit,
         motoukeRatio: b.motouke > 0 ? selectedMotouke / b.motouke : undefined,
         totalRatio: b.total > 0 ? selectedTotal / b.total : undefined,
         short: { motouke: b.motouke > 0 && !over70(selectedMotouke, b.motouke), total: b.total > 0 && !over70(selectedTotal, b.total) },

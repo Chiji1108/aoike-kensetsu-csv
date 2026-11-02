@@ -254,6 +254,7 @@ describe("7割ルール", () => {
       {
         code: "9", label: "管", count: 5, selected: 3, total: 52000, motoukeTotal: 20000,
         basis: { total: 52000, motouke: 20000 }, motoukeRatio: 0.8, totalRatio: 46000 / 52000,
+        fromBook: { total: false, motouke: false }, hasMotouke: true, selectedTotal: 46000, selectedMotoukeTotal: 16000,
         short: { motouke: false, total: false }, fromExcluded: { count: 0, total: 0 },
       },
     ])
@@ -266,7 +267,7 @@ describe("7割ルール", () => {
     const excl = { ...netTax, basis: { "9": { total: 20000, motouke: 20000 } } }
     expect(selectBy7Rule(rows, incl)).toEqual(selectBy7Rule(rows, excl))
     const [g] = summarizeKoji(rows, selectKojiRows(rows, { ...incl, manual: new Map() }), incl)
-    expect(g).toMatchObject({ total: 22000, basis: { total: 22000 }, totalRatio: 0.8 })
+    expect(g).toMatchObject({ total: 22000, basis: { total: 22000 }, totalRatio: 0.8, fromBook: { total: true, motouke: true } })
     // 同じ基準額 20,000 を税込として読むと、税抜の 18,182 相当なので少なく選ぶ
     expect(selectBy7Rule(rows, { ...netTax, rule7Tax: "included", basis: { "9": { total: 20000, motouke: 20000 } } }).size).toBe(2)
     expect(selectBy7Rule(rows, excl).size).toBe(2)
@@ -323,6 +324,7 @@ describe("7割ルール", () => {
     expect(g).toEqual({
       code: "8", label: "電気", count: 2, selected: 1, total: 10000, motoukeTotal: 10000,
       basis: { total: 10000, motouke: 10000 }, motoukeRatio: 0.6, totalRatio: 0.6,
+      fromBook: { total: false, motouke: false }, hasMotouke: true, selectedTotal: 6000, selectedMotoukeTotal: 6000,
       short: { motouke: true, total: true }, fromExcluded: { count: 1, total: 50000 },
     })
   })
