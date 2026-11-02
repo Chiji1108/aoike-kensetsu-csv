@@ -39,10 +39,18 @@ const CONTENT_TYPES: Record<string, string> = {
   txt: "text/plain",
   eml: "message/rfc822",
   docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  // スキャン・手書きの写真（チャットの AI がそのまま見る。lib/chat/view-file.ts。HEIC は AI が見られないが、届いたファイルとして保存はする）
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  png: "image/png",
+  gif: "image/gif",
+  webp: "image/webp",
+  heic: "image/heic",
+  heif: "image/heif",
 }
 
 /** ファイルを付けるボタンで選べるファイル（ドラッグしたときは選ばない。表として読めないファイルは届いたファイルとして保存し、チャットの AI が読む） */
-export const ATTACH_ACCEPT = ".xlsx,.xls,.csv,.pdf,.txt,.eml,.docx"
+export const ATTACH_ACCEPT = ".xlsx,.xls,.csv,.pdf,.txt,.eml,.docx,.jpg,.jpeg,.png,.gif,.webp,.heic,.heif"
 
 /** 保存して返すときの種類。名前の拡張子で決め、送り手の Content-Type は使わない（ほかの種類は中身を開かせない octet-stream） */
 export function contentTypeOf(name: string) {
@@ -54,7 +62,7 @@ export const containerName = (i: number, fileName: string) => `file-${i + 1}${/\
 
 export const fileUrl = (fileId: string) => `/api/files/${fileId}`
 
-/** 届いたファイルがあり、そのどれも表のファイル（変換の元にできるもの）でない（PDF だけの案件。AI に一から表を作らせる） */
+/** 届いたファイルがあり、そのどれも表のファイル（変換の元にできるもの）でない（PDF・画像だけの案件。AI に一から表を作らせる） */
 export function onlyNonSheetSources(files: readonly CaseFile[]) {
   const sources = files.filter((f) => f.kind === "source")
   return sources.length > 0 && !sources.some((f) => isSheetFile(f.name))

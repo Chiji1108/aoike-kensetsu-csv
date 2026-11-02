@@ -130,4 +130,10 @@ describe("指示のあとの会話", () => {
     expect(settleSession(session, aborted, false)).toEqual({ ...session, generated: ["file_old", "file_b"] })
     expect(settleSession(session, aborted, true).container).toBeNull()
   })
+
+  test("view_file が切り出して上げたページの PDF は、終わった回でも止めた回でも作ったファイルとして記録する（会話を終えるときに消す）", () => {
+    const aborted = { completed: null, steps: [], container: null }
+    expect(settleSession(session, aborted, false, ["file_page"]).generated).toEqual(["file_old", "file_page"])
+    expect(settleSession(session, { completed: [], steps: [], container: null }, false, ["file_page", "file_old"]).generated).toEqual(["file_old", "file_page"])
+  })
 })

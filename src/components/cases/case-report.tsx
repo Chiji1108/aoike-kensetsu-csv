@@ -109,7 +109,7 @@ function Body(p: ReportProps) {
   if (phase.kind === "noSheet")
     return (
       <p className="text-sm" data-testid="no-sheet-source">
-        表として読めるファイルがありません。「PDF から表を作って」と頼んでください。
+        表として読めるファイルがありません。チャットで「PDF から表を作って」と頼んでください（スキャン・手書きの PDF や写真も AI が見て読みます）。
       </p>
     )
   if (phase.kind === "reading" || phase.kind === "planning" || phase.kind === "converting")

@@ -44,6 +44,7 @@ import { personalChecker } from "./location-guard"
 import { namesOfSaved, readSavedCase } from "./case-names"
 import { guardPersonal, type Site } from "@/lib/location/sites"
 import { GYOSHU } from "@/lib/spec/code-sets"
+import { viewedInHistory, type FileViewer } from "@/lib/chat/view-file"
 
 
 const requestSchema = z.object({
@@ -211,6 +212,24 @@ async function runTurn(request: Request, caseId: string): Promise<Response> {
   /** ほかの顧客の名前（問い合わせのメールの下書きと要望に入れない。指示の間で1回だけ読む） */
   let others: Promise<readonly string[]> | undefined
   const otherCustomers = () => (others ??= store.otherCustomerNames(db, kase.customerId))
+  // 案件のファイルを AI にそのまま見せる（view_file。文字の層の無い PDF・画像）。コンテナに置いたのと同じ Files API のファイルを見せ、
+  // PDF のページを切り出したときだけ新しく上げる（上げたものは state.viewUploads に溜め、会話の作ったファイルとして記録して会話を終えるときに消す）
+  const sizeOf = new Map(files.map((f) => [f.id, f.size]))
+  const viewer: FileViewer = {
+    // 案件から消したファイルは見せない（会話の履歴にはまだあるが、元のファイルが無い）
+    files: session.files.flatMap((f) => {
+      const size = sizeOf.get(f.caseFileId)
+      return size === undefined ? [] : [{ name: f.name, original: f.original, id: f.anthropicId, size }]
+    }),
+    read: async (name) => {
+      const f = session.files.find((x) => x.name === name)
+      const row = f && (await store.getFileRow(db, f.caseFileId))
+      const object = row && (await env.FILES.get(row.r2Key))
+      return object ? new Uint8Array(await object.arrayBuffer()) : null
+    },
+    upload: async (bytes, name) => (await anthropic().files.upload({ file: await toFile(bytes, name, { type: "application/pdf" }) })).id,
+    viewed: viewedInHistory(session.model),
+  }
   // 注文者・工事名に AI が書いた値は、変換と同じ匿名化の AI に通す（lib/chat/turn.ts の anonymizeChanges）
   const state = newTurnState(
     fromWire(body.table),
@@ -250,6 +269,7 @@ async function runTurn(request: Request, caseId: string): Promise<Response> {
       names: async () => [customer?.name ?? "", ...(await otherCustomers())],
       known: [rules.global, rules.customer],
     },
+    viewer,
   )
   /** 履歴・作ったファイル・費用を書き終えたら resolve する。印がまだ自分のもの（画面の会話を書いて下ろしてよい）なら true */
   const recorded = Promise.withResolvers<boolean>()
@@ -298,7 +318,7 @@ async function runTurn(request: Request, caseId: string): Promise<Response> {
           deleteProposal: () => env.FILES.delete(proposalKey(caseId, proposal!.id)),
           cleanup: () => env.FILES.delete(stopKey(caseId, turn.id)),
           record: (ok) => {
-            const settled = settleSession(session, ok ? outcome : { ...outcome, completed: null }, added.length > 0)
+            const settled = settleSession(session, ok ? outcome : { ...outcome, completed: null }, added.length > 0, state.viewUploads)
             // 去年のコードを添えた回が履歴に入ったら、この会話ではもう添えない
             return record(caseId, loaded, ok && outcome.completed && carryText ? { ...settled, carryover: true } : settled)
           },

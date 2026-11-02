@@ -51,6 +51,7 @@ import { KOJI_KEIREKI, KOJI_PLAN_HINTS, type KojiFieldId } from "../src/lib/spec
 import { batchWithClaude, planWithClaude } from "../src/server/claude"
 import { containerName, contentTypeOf } from "../src/lib/cases/types"
 import { recordCost, type RunSummary } from "../src/lib/eval/report"
+import { localViewer } from "./view-local"
 
 const ROOT = new URL("..", import.meta.url).pathname
 const apiKey = process.env.ANTHROPIC_API_KEY ?? readFileSync(join(ROOT, ".dev.vars"), "utf8").match(/ANTHROPIC_API_KEY\s*=\s*"?([^"\n]+)/)?.[1]
@@ -349,13 +350,14 @@ async function chatPhase(p: {
   /** 今の列の対応（set_plan を承認すると変わる。画面と同じく、変えたら変換し直す） */
   let plan = p.plan
   const conversionCache = new Map()
-  const uploads: { id: string; name: string; original: string; mediaType: string; isSource: boolean }[] = []
+  const uploads: { id: string; name: string; original: string; mediaType: string; isSource: boolean; path: string }[] = []
   let table = p.table
   const messages: ModelMessage[] = []
   let containerId: string | undefined
   let total = 0
   const log: TurnLogEntry[] = []
   const generated = new Set<string>()
+  const viewUploads: string[][] = []
   /** 要望（本番の csv_feedback の代わり。この会話の間だけ持つ。同じ要望は件数を足す） */
   const { deps: feedback } = memoryFeedback([def!.customerName], [GLOBAL_RULES, ...p.customerItems])
   let status: RunSummary["status"] = "done"
@@ -367,7 +369,7 @@ async function chatPhase(p: {
       const name = containerName(i, original)
       const mediaType = contentTypeOf(original)
       const up = await anthropic.files.upload({ file: await toFile(readFileSync(path(path_)), name, { type: mediaType }) })
-      uploads.push({ id: up.id, name, original, mediaType, isSource: i === 0 })
+      uploads.push({ id: up.id, name, original, mediaType, isSource: i === 0, path: path(path_) })
     }
     for (const [i, text] of p.turns.entries()) {
       // 画面は指示のたびに今の列の対応で文脈を作る
@@ -402,7 +404,10 @@ async function chatPhase(p: {
         p.review ?? null,
         p.inquiry ?? null,
         feedback,
+        localViewer(anthropic, uploads, messages),
       )
+      // view_file が切り出して上げたページは、落ちても消す（state.viewUploads は道具が上げるたびに足される）
+      viewUploads.push(state.viewUploads)
       const result = startTurn({ apiKey: apiKey!, system, messages, state, containerId })
       let reply = ""
       const calls: string[] = []
@@ -458,7 +463,7 @@ async function chatPhase(p: {
     reason = String(e).slice(0, 200)
     error = e
   } finally {
-    for (const id of [...uploads.map((u) => u.id), ...generated]) await anthropic.files.delete(id).catch((e) => console.log("delete failed", id, String(e).slice(0, 120)))
+    for (const id of [...uploads.map((u) => u.id), ...generated, ...viewUploads.flat()]) await anthropic.files.delete(id).catch((e) => console.log("delete failed", id, String(e).slice(0, 120)))
   }
   return { table, plan, log, messages, total, status, reason, error }
 }

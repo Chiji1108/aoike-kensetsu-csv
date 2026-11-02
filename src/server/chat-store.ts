@@ -143,10 +143,10 @@ export type TurnOutcome = { completed: ModelMessage[] | null; steps: ModelMessag
 /**
  * 指示のあとの会話。終わった回は履歴とコンテナを進める。止めた・失敗した回は履歴を変えず、この回で上げたファイルが
  * コンテナに届いていないかもしれないので、上げたものがあればコンテナを捨てる（次の指示で全部を新しいコンテナに付け直す）。
- * どちらでも、コード実行が作ったファイルは記録する（会話を終えるときに消す）
+ * どちらでも、コード実行が作ったファイルと、この回で道具が上げたファイル（view_file が切り出した PDF のページ）は記録する（会話を終えるときに消す）
  */
-export function settleSession(session: ChatSession, outcome: TurnOutcome, uploadedThisTurn: boolean): ChatSession {
-  const generated = [...new Set([...session.generated, ...generatedFileIds(outcome.steps), ...generatedFileIds(outcome.completed ?? [])])]
+export function settleSession(session: ChatSession, outcome: TurnOutcome, uploadedThisTurn: boolean, uploadedByTools: readonly string[] = []): ChatSession {
+  const generated = [...new Set([...session.generated, ...generatedFileIds(outcome.steps), ...generatedFileIds(outcome.completed ?? []), ...uploadedByTools])]
   if (outcome.completed) return { ...session, model: [...session.model, ...outcome.completed], container: outcome.container, generated }
   return { ...session, container: uploadedThisTurn ? null : session.container, generated }
 }

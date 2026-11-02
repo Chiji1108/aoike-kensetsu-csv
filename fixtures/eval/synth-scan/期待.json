@@ -1,0 +1,110 @@
+[
+ {
+  "file": "工事経歴_スキャン.pdf p1（活字）",
+  "client": "さいたま市",
+  "workName": "サンプル中学校体育館照明LED化工事",
+  "motoukeShitauke": "0",
+  "prefecture": "埼玉県",
+  "place": "さいたま市浦和区",
+  "engineer": "青池　一郎",
+  "amount": "18640",
+  "startYm": "202405",
+  "endYm": "202408"
+ },
+ {
+  "file": "工事経歴_スキャン.pdf p1（活字）",
+  "client": "株式会社サンプル物流",
+  "workName": "物流センター受変電設備更新工事",
+  "motoukeShitauke": "2",
+  "prefecture": "千葉県",
+  "place": "市川市",
+  "engineer": "佐藤　花子",
+  "amount": "32150",
+  "startYm": "202406",
+  "endYm": "202411"
+ },
+ {
+  "file": "工事経歴_スキャン.pdf p1（活字）",
+  "client": "サンプル住宅管理組合",
+  "workName": "共同住宅共用部電気設備改修工事",
+  "motoukeShitauke": "1",
+  "prefecture": "東京都",
+  "place": "練馬区",
+  "engineer": "鈴木　次郎",
+  "amount": "7480",
+  "startYm": "202409",
+  "endYm": "202410"
+ },
+ {
+  "file": "工事経歴_スキャン.pdf p1（活字）",
+  "client": "株式会社サンプル建設",
+  "workName": "店舗新築電気設備工事",
+  "motoukeShitauke": "2",
+  "prefecture": "神奈川県",
+  "place": "相模原市中央区",
+  "engineer": "青池　一郎",
+  "amount": "11920",
+  "startYm": "202410",
+  "endYm": "202501"
+ },
+ {
+  "file": "工事経歴_スキャン.pdf p2（手書き）",
+  "client": "株式会社サンプル運輸",
+  "workName": "倉庫屋外照明増設工事",
+  "motoukeShitauke": "1",
+  "prefecture": "東京都",
+  "place": "江東区",
+  "engineer": "佐藤　花子",
+  "amount": "2860",
+  "startYm": "202411",
+  "endYm": "202412"
+ },
+ {
+  "file": "工事経歴_スキャン.pdf p2（手書き）",
+  "client": "株式会社サンプル商事",
+  "workName": "事務所分電盤交換工事",
+  "motoukeShitauke": "1",
+  "prefecture": "埼玉県",
+  "place": "川越市",
+  "engineer": "鈴木　次郎",
+  "amount": "1540",
+  "startYm": "202501",
+  "endYm": "202502"
+ },
+ {
+  "file": "手書きメモ.jpg",
+  "client": "株式会社サンプル製作所",
+  "workName": "工場動力配線工事",
+  "motoukeShitauke": "2",
+  "prefecture": "神奈川県",
+  "place": "厚木市",
+  "engineer": "青池　一郎",
+  "amount": "5270",
+  "startYm": "202501",
+  "endYm": "202503"
+ },
+ {
+  "file": "手書きメモ.jpg",
+  "client": "社会福祉法人サンプル会",
+  "workName": "保育園防犯カメラ設置工事",
+  "motoukeShitauke": "1",
+  "prefecture": "東京都",
+  "place": "杉並区",
+  "engineer": "佐藤　花子",
+  "amount": "980",
+  "startYm": "202502",
+  "endYm": "202502"
+ },
+ {
+  "file": "手書きメモ.jpg",
+  "client": "サンプル不動産株式会社",
+  "workName": "マンション電気容量増設工事",
+  "motoukeShitauke": "1",
+  "prefecture": "千葉県",
+  "place": "柏市",
+  "engineer": "鈴木　次郎",
+  "amount": "3310",
+  "startYm": "202503",
+  "endYm": "202503"
+ }
+]
