@@ -88,10 +88,11 @@ async function upload(page: Page) {
   await expect(page.getByTestId("preview-table")).toBeVisible()
 }
 
-const fixCount = async (page: Page) => Number(/(\d+)/.exec((await page.getByTestId("next-step-fix").textContent()) ?? "0")?.[1] ?? 0)
+/** 次にやることの「業種を決める」の行数（業種は直すに数えない） */
+const gyoshuCount = async (page: Page) => Number(/(\d+)/.exec((await page.getByTestId("next-step-gyoshu").textContent()) ?? "0")?.[1] ?? 0)
 const tableRow = (page: Page, text: string) => page.locator('[data-testid="preview-table"] tbody tr[data-row-key]').filter({ has: page.getByTestId("row-fix").filter({ hasText: text }) })
 
-test("業種が空の行に業種のタブで AI の案を出し、承認すると直すが減る。決まった値は選ぶ欄で選ぶ（キーボードでも）。顧客に聞くは問い合わせへ", async ({ page }) => {
+test("業種が空の行に業種のタブで AI の案を出し、承認すると業種を決める行が減る。決まった値は選ぶ欄で選ぶ（キーボードでも）。顧客に聞くは問い合わせへ", async ({ page }) => {
   const { customer } = await openNewCase(page)
   created.push(customer)
   await fakePlan(page, [])
@@ -104,18 +105,18 @@ test("業種が空の行に業種のタブで AI の案を出し、承認する�
   await expect.poll(() => csvCount(page)).toBe(7)
   await openTab(page, "table")
 
-  await test.step("直すの上に、まとめて頼める操作が出る。行の理由の横にも同じ直し方が出る", async () => {
+  await test.step("業種は直すに数えず「業種を決める」の段に数える。行の理由の横に「業種を決める」が出る", async () => {
     await page.getByTestId("row-filters-fix").click()
-    const action = page.locator('[data-testid="fix-action"][data-action="decideGyoshu"]')
-    await expect(action).toHaveText("業種が空の 7 行を一覧で決める")
+    await expect(page.locator('[data-testid="fix-action"][data-action="decideGyoshu"]')).toHaveCount(0)
+    await expect(page.getByTestId("next-step-fix")).not.toHaveAttribute("title", /業種/)
+    await expect(page.getByTestId("next-step-gyoshu")).toHaveText(/業種を決める\s*7行/)
+    await page.getByTestId("row-filters-all").click()
     await expect(page.locator('[data-testid="row-fix-action"][data-action="decideGyoshu"]').first()).toHaveText("業種を決める")
-    // 次にやることの「直す」のツールチップと書き出すの確認も同じ言葉
-    await expect(page.getByTestId("next-step-fix")).toHaveAttribute("title", /業種が空の 7 行を一覧で決める/)
   })
 
-  const before = await fixCount(page)
+  const before = await gyoshuCount(page)
   await test.step("業種のタブで頼むと、AI の案がチャットの流れに変更案として出る（結果はそのまま表に入らない）。推し量った案は根拠に推定と出る", async () => {
-    await page.locator('[data-testid="fix-action"][data-action="decideGyoshu"]').click()
+    await page.locator('[data-testid="row-fix-action"][data-action="decideGyoshu"]').first().click()
     await expect(page.getByTestId("tab-gyoshu")).toHaveAttribute("aria-selected", "true")
     await page.getByTestId("gyoshu-suggest").click()
     const panel = page.getByTestId("fix-suggestion")
@@ -124,7 +125,7 @@ test("業種が空の行に業種のタブで AI の案を出し、承認する�
     expect(sent).toHaveLength(1)
     // 決まった処理で数えた傾向を添える（ここでは決まっている業種が無い）
     expect(sent[0]).toContain("決まっている工事がない")
-    expect(await fixCount(page)).toBe(before)
+    expect(await gyoshuCount(page)).toBe(before)
     // 業種の AI の案は「答える」でなく「業種を決める」の段で決める
     await expect(page.getByTestId("next-step-gyoshu")).toHaveAttribute("data-done", "0")
     await panel.getByTestId("proposal-open").click()
@@ -136,22 +137,20 @@ test("業種が空の行に業種のタブで AI の案を出し、承認する�
     await page.keyboard.press("Escape")
   })
 
-  await test.step("承認すると入り、直すが減る。表には名前で出る", async () => {
+  await test.step("承認すると入り、業種を決める行が減る。表には名前で出る", async () => {
     await page.getByTestId("fix-suggestion").getByTestId("proposal-apply-all").click()
-    await expect.poll(() => fixCount(page)).toBeLessThan(before)
+    await expect.poll(() => gyoshuCount(page)).toBe(2)
     await openTab(page, "table")
     await expect(tableRow(page, "業種が空")).toHaveCount(2)
     // 承認した値は推定の印を外して入る（AI の推定として直すに残らない）
     await expect(page.locator('[data-testid="preview-table"] tbody tr[data-row-key]').filter({ has: page.getByTestId("row-fix").filter({ hasText: "業種: AI の推定" }) })).toHaveCount(0)
     await page.getByTestId("row-filters-all").click()
     await expect(page.locator('td[data-field="gyoshu"] [data-code="2"]').first()).toContainText("建築一式")
-    await page.getByTestId("row-filters-fix").click()
   })
 
   await test.step("業種を選ぶ欄で、名前で絞り込んで Enter で選ぶ（キーボードだけ）", async () => {
     const row = tableRow(page, "業種が空").first()
     await expect(tableRow(page, "業種が空")).toHaveCount(2)
-    const left = await fixCount(page)
     await row.locator('td[data-field="gyoshu"] button').focus()
     await page.keyboard.press("Enter")
     const picker = page.getByTestId("cell-picker")
@@ -161,7 +160,7 @@ test("業種が空の行に業種のタブで AI の案を出し、承認する�
     await page.keyboard.press("Enter")
     await expect(picker).toBeHidden()
     await expect(tableRow(page, "業種が空")).toHaveCount(1)
-    expect(await fixCount(page)).toBeLessThanOrEqual(left)
+    await expect.poll(() => gyoshuCount(page)).toBe(1)
     // 閉じたらセルに戻る
     await expect(page.locator('tr[data-row-key] td[data-field="gyoshu"] button:focus')).toContainText("電気")
   })
@@ -201,9 +200,8 @@ test("業種が空の行に業種のタブで AI の案を出し、承認する�
 
   await test.step("理由で絞ると、まとめての操作もその理由の見えている行だけを数える", async () => {
     await page.getByTestId("row-filters-fix").click()
-    // 工事場所の AI の推定は自信のある推定なので調べない（操作を出さない）。必須が空で絞ると業種の1行だけ
-    await page.getByTestId("fix-reason-empty").click()
-    await expect(page.getByTestId("fix-action")).toHaveText(["業種が空の 1 行を一覧で決める"])
+    // 工事場所の AI の推定は自信のある推定なので調べない（操作を出さない）。業種は直すの操作に出さない
+    await expect(page.locator('[data-testid="fix-action"][data-action="decideGyoshu"]')).toHaveCount(0)
     await page.getByTestId("fix-reason-guess").click()
     await expect(page.getByTestId("fix-action")).toHaveCount(0)
     await page.getByTestId("fix-reason-guess").click()

@@ -10,7 +10,6 @@ import type { AddedRow } from "./added"
 import { addedRowSchema } from "./added"
 import type { SavedPlan } from "./state"
 import { diffInquiryText, inquiryTextDiffSchema, revertInquiryText, type InquiryText, type InquiryTextDiff } from "../inquiry/text"
-import { proposalSchema, type Proposal } from "../chat/proposals"
 
 /**
  * 承認の取り消し。変更案を承認するたびに、承認で変わった値の前と後を1件の記録にして案件の作業に残す（保存・2つのタブの食い違いは作業と同じ仕組み）。
@@ -67,11 +66,6 @@ export type UndoEntry = {
    * （答えのあとにチャットなどで変えた計画の部分は残す）。この項目より前の記録には無い
    */
   exclusions?: ValueFilter[]
-  /**
-   * 変更案の外（業種の一覧）で決めた変更案の項目の、変更案の前と後。取り消すと、後のままの変更案を前に戻す（項目を決める前に開き直す）。
-   * 変更案そのものの承認の記録には無い（承認を取り消しても変更案は「取り消した」と出して開き直さない）。この項目より前の記録には無い
-   */
-  reopen?: [before: Proposal, after: Proposal][]
   /** 戻さない外への書き込み */
   external: ("rule" | "location")[]
   /** 記録が大きすぎて中身を残さなかった（取り消せない） */
@@ -89,7 +83,7 @@ const same = (a: unknown, b: unknown) => a === b || JSON.stringify(a) === JSON.s
 export function undoEntry(
   before: Undoable,
   after: Undoable,
-  meta: { id: string; proposalId: string; items?: number[]; label: string; at: number; external?: UndoEntry["external"]; exclusions?: ValueFilter[]; reopen?: [Proposal, Proposal][] },
+  meta: { id: string; proposalId: string; items?: number[]; label: string; at: number; external?: UndoEntry["external"]; exclusions?: ValueFilter[] },
 ): UndoEntry | null {
   const edits: UndoEntry["edits"] = []
   for (const [k, v] of after.edits) if (before.edits.get(k) !== v) edits.push([k, before.edits.get(k) ?? null, v])
@@ -103,12 +97,11 @@ export function undoEntry(
     before.reportAnswers[k] === after.reportAnswers[k] ? [] : [[k, before.reportAnswers[k] ?? null, after.reportAnswers[k] ?? null] as [string, string | null, string | null]],
   )
   const text = before.inquiryText === after.inquiryText ? null : diffInquiryText(before.inquiryText, after.inquiryText)
-  const { exclusions: _exclusions, reopen: _reopen, ...metaRest } = meta
+  const { exclusions: _exclusions, ...metaRest } = meta
   const entry: UndoEntry = {
     ...metaRest,
     external: meta.external ?? [],
     ...(meta.exclusions?.length ? { exclusions: meta.exclusions } : {}),
-    ...(meta.reopen?.length ? { reopen: meta.reopen } : {}),
     edits,
     manual,
     added,
@@ -152,7 +145,7 @@ export type UndoResult<W> = { work: W; reverted: number; kept: number; planChang
  * 記録を取り消す。「後」のままの値だけを「前」に戻し、承認のあとに変わった値は残して kept に数える。
  * 足した行は、その行の値を後から変えていなければ外す。計画を戻したら planChanged（変換し直す）
  */
-export function undo<W extends Undoable & { undo: readonly UndoEntry[]; proposals?: readonly Proposal[] }>(work: W, entryId: string): UndoResult<W> | null {
+export function undo<W extends Undoable & { undo: readonly UndoEntry[] }>(work: W, entryId: string): UndoResult<W> | null {
   const entry = work.undo.find((e) => e.id === entryId)
   if (!entry || !canUndo(entry)) return null
   let reverted = 0
@@ -232,10 +225,6 @@ export function undo<W extends Undoable & { undo: readonly UndoEntry[]; proposal
     plan,
     inquiryText: text.text,
     reportAnswers: answersAfter,
-    // 決めた変更案の項目を開き直す（後のままのものだけ。あとで別に決めた変更案はそのまま）
-    ...(entry.reopen?.length && work.proposals
-      ? { proposals: work.proposals.map((p) => entry.reopen!.find(([, after]) => after.id === p.id && same(after, p))?.[0] ?? p) }
-      : {}),
     undo: work.undo.map((e) => (e.id === entryId ? { ...e, undone: true as const } : e)),
   }
   // 聞き返しの答えの記録は、答え1つを1件と数える（答えで変えた設定・計画は答えの一部）
@@ -263,7 +252,6 @@ export const undoEntrySchema: z.ZodType<UndoEntry> = z.object({
   inquiryText: inquiryTextDiffSchema.optional(),
   reportAnswers: z.array(z.tuple([z.string(), z.string().max(100).nullable(), z.string().max(100).nullable()])).optional(),
   exclusions: z.array(valueFilterSchema).max(20).optional(),
-  reopen: z.array(z.tuple([proposalSchema, proposalSchema])).optional(),
   external: z.array(z.enum(["rule", "location"])),
   tooLarge: z.literal(true).optional(),
   undone: z.literal(true).optional(),

@@ -54,38 +54,44 @@ export function cellFix(c: CellResult, field: string, asked: boolean): CellFixKi
 
 /**
  * 行の片付けること: 職員が直すセル（fixes。action はその理由の直し方。無ければセルで直す。confirm は「これでよい」で片付くか）と、
- * 顧客に聞くセルの項目（ask）
+ * 顧客に聞くセルの項目（ask）、業種の未決（gyoshu）。
+ * 業種は業種のタブで7割で載りうる行とまとめて決める（決めるたびに載せる行が入れ替わる）ので、直すの理由（fixes）には入れず、
+ * 「業種を決める」の段だけに数える（直すと業種を決めるで二重に数えない）
  */
-export type RowFix<F extends string = string> = { fixes: { field: F; kind: FixKind; action?: FixActionId; confirm?: true }[]; ask: F[] }
+export type RowFix<F extends string = string> = { fixes: { field: F; kind: FixKind; action?: FixActionId; confirm?: true }[]; ask: F[]; gyoshu?: FixKind }
 
 /** 行の片付けること。isAsked(field) はそのセルの問い合わせを外していないか */
 export function rowFix<F extends string>(row: RowResult<F>, isAsked: (field: F) => boolean): RowFix<F> {
   const fixes: RowFix<F>["fixes"] = []
   const ask: F[] = []
+  let gyoshu: FixKind | undefined
+  // 行をまたぐ検査は行ごとに1回だけ（「これでよい」を出すかに使う）
+  let rowIssues: ReadonlyMap<KojiFieldId, unknown> | null = null
+  const issuesOf = () => (rowIssues ??= checkRow(KOJI_KEIREKI, Object.fromEntries(KOJI_KEIREKI.fields.map((f) => [f.id, (row.cells as Record<string, CellResult>)[f.id]?.value ?? ""])) as Record<KojiFieldId, string>))
   for (const [field, c] of Object.entries<CellResult>(row.cells) as [F, CellResult][]) {
     const kind = cellFix(c, field, isAsked(field))
     if (kind === "ask") ask.push(field)
+    else if (kind && field === "gyoshu") gyoshu = kind
     else if (kind) {
       const action = fixActionOf(field, row.cells)
-      fixes.push({ field, kind, ...(action ? { action } : {}), ...(confirmable(kind, field, row.cells) ? { confirm: true as const } : {}) })
+      fixes.push({ field, kind, ...(action ? { action } : {}), ...(confirmable(kind, field, c, issuesOf) ? { confirm: true as const } : {}) })
     }
   }
-  return { fixes, ask }
+  return gyoshu ? { fixes, ask, gyoshu } : { fixes, ask }
 }
 
 export const NO_FIX: RowFix<never> = { fixes: [], ask: [] }
 
 /**
  * 「これでよい」: 要確認・AI の推定の値を、職員が同じ値を手で入れたのと同じ手直し（by staff）にして片付ける。
- * 手で入れた値も決まった検査（checkValue・checkRow）を通るので、検査の警告が残る値（姓と名の間の空白など）は片付かない。そういう値には出さない
+ * 手で入れた値も決まった検査（checkValue・checkRow）を通るので、検査の警告が残る値（姓と名の間の空白など）は片付かない。そういう値には出さない。
+ * 検査するのは画面の値（個人名は記号）: 手直しには本当の値（印）を書くが、finalizeRows は記号にした画面の値を検査するので、手直しのあとに検査されるのもこの値
  */
 export const CONFIRM_LABEL = "これでよい"
-function confirmable(kind: FixKind, field: string, cells: Readonly<Record<string, CellResult>>) {
-  if ((kind !== "review" && kind !== "guess") || !cells[field]!.value) return false
+function confirmable(kind: FixKind, field: string, c: CellResult, rowIssues: () => ReadonlyMap<KojiFieldId, unknown>) {
+  if ((kind !== "review" && kind !== "guess") || !c.value) return false
   const spec = KOJI_KEIREKI.fields.find((f) => f.id === field)
-  if (!spec || checkValue(spec, cells[field]!.value)) return false
-  const values = Object.fromEntries(KOJI_KEIREKI.fields.map((f) => [f.id, cells[f.id]?.value ?? ""])) as Record<KojiFieldId, string>
-  return !checkRow(KOJI_KEIREKI, values).has(field as KojiFieldId)
+  return !!spec && !checkValue(spec, c.value) && !rowIssues().has(field as KojiFieldId)
 }
 
 /** 顧客に聞く印の言葉（例「配置技術者は顧客に聞く」）。どの欄を聞くのかを書き、ほかの理由（業種など）と見分ける */
@@ -99,7 +105,7 @@ export const askText = (fields: readonly string[]) => `${fields.map(shortLabel).
 export function gyoshuTodo<F extends string>(rows: readonly RowResult<F>[], inclusion: ReadonlyMap<string, Inclusion>, fixes: ReadonlyMap<string, RowFix<F>>) {
   return rows.filter((r) => {
     const inc = inclusion.get(r.key)
-    return (inc?.included || inc?.reason === "unselected") && (fixes.get(r.key)?.fixes.some((f) => f.field === "gyoshu") ?? false)
+    return (inc?.included || inc?.reason === "unselected") && fixes.get(r.key)?.gyoshu !== undefined
   })
 }
 
@@ -203,13 +209,12 @@ export function fixActionGroups(
   return [...groups.values()].map((g) => ({ action: g.action, field: g.field, kinds: [...g.kinds], keys: [...g.keys] }))
 }
 
-/** まとめて頼む操作の言葉（例「業種が空の 3 行を一覧で決める」「注文者が空の 2 行を顧客に聞く」）。表の上・次にやること・書き出すの確認で同じ言葉 */
+/** まとめて頼む操作の言葉（例「工事場所が空の 3 行に AI で案を出す」「注文者が空の 2 行を顧客に聞く」）。表の上・次にやること・書き出すの確認で同じ言葉 */
 export function fixActionText(g: FixActionGroup) {
   const what = g.action === "findLocation" ? "工事場所" : shortLabel(g.field)
   const reasons = FIX_KINDS.filter((k) => g.kinds.includes(k)).map((k) => (k === "empty" ? "空" : FIX_LABELS[k]))
   const joined = reasons.join("・")
   // 「AI の推定」のように英字で始まるときは空白を挟む（「工事場所が AI の推定」）
   const target = `${what}が${/^[A-Za-z]/.test(joined) ? " " : ""}${joined}の ${g.keys.length} 行`
-  if (g.action === "decideGyoshu") return `${target}を一覧で決める`
   return g.action === "askCustomer" ? `${target}を${FIX_ACTIONS[g.action].label}` : `${target}に ${FIX_ACTIONS[g.action].label}`
 }

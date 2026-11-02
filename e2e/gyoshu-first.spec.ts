@@ -88,8 +88,9 @@ test("業種を一覧で先に決めると、7割で載せる行が入れ替わ�
   await test.step("次にやることの「業種を決める」は直すより先。行の「業種を決める」で業種のタブが開く", async () => {
     await expect(page.getByTestId("next-step-gyoshu")).toHaveText(/業種を決める\s*7行/)
     await expect(page.getByTestId("next-steps")).toHaveAttribute("data-current", "gyoshu")
-    await page.getByTestId("row-filters-fix").click()
-    await expect(page.locator('[data-testid="fix-action"][data-action="decideGyoshu"]')).toHaveText(`業種が空の ${loaded} 行を一覧で決める`)
+    // 業種は直すに数えない（「業種を決める」と二重にしない）
+    await expect(page.getByTestId("next-step-fix")).not.toHaveAttribute("title", /業種/)
+    await page.getByTestId("row-filters-all").click()
     await page.locator('[data-testid="row-fix-action"][data-action="decideGyoshu"]').first().click()
     await expect(page.getByTestId("tab-gyoshu")).toHaveAttribute("aria-selected", "true")
     // 載せる行だけでなく、7割の選び直しで載りうる行も一覧に出る
@@ -104,17 +105,19 @@ test("業種を一覧で先に決めると、7割で載せる行が入れ替わ�
     expect(await count(page)).toBe(7)
   })
 
-  await test.step("選んだ行だけ案のまま決める → 一覧から消える。取り消すと戻る", async () => {
+  await test.step("選んだ行だけ案のまま決める → 一覧から消える。取り消すと業種が空に戻り、選ばれていない行として一覧に戻る", async () => {
     await page.locator('[data-testid="gyoshu-row"][data-plan="2"]').first().getByTestId("gyoshu-check").click()
     await page.getByTestId("gyoshu-decide-selected").click()
     await expect.poll(() => count(page)).toBe(6)
     await page.getByTestId("gyoshu-undo").click()
     await expect.poll(() => count(page)).toBe(7)
+    // AI の案の項目は決めたまま（チャットの承認の取り消しと同じ）なので、戻った行は案なし。選択も残らない
+    await expect(page.locator('[data-testid="gyoshu-row"][data-plan=""]')).toHaveCount(2)
+    await expect(page.getByTestId("gyoshu-decide-all")).toBeVisible()
   })
 
   await test.step("違う行だけ選ぶ欄で決める（キーボードで）。次の行の欄に移る", async () => {
-    const row = page.locator('[data-testid="gyoshu-row"][data-plan=""]')
-    await expect(row).toHaveCount(1)
+    const row = page.locator('[data-testid="gyoshu-row"][data-plan=""]').first()
     await row.getByTestId("gyoshu-pick").focus()
     await page.keyboard.press("Enter")
     await expect(page.getByTestId("cell-picker-search")).toBeFocused()
@@ -125,8 +128,12 @@ test("業種を一覧で先に決めると、7割で載せる行が入れ替わ�
     await expect(page.locator('[data-testid="gyoshu-pick"]:focus')).toHaveCount(1)
   })
 
-  await test.step("残りを案のまま決めると一覧は空になり、次にやることの業種は済み。直すに業種が新しく出ない", async () => {
+  await test.step("残りを案のまま決め、案の無い行を選ぶと一覧は空になり、次にやることの業種は済み。直すに業種が新しく出ない", async () => {
     await page.getByTestId("gyoshu-decide-all").click()
+    await expect.poll(() => count(page)).toBe(1)
+    await page.getByTestId("gyoshu-pick").click()
+    await page.keyboard.type("建築")
+    await page.keyboard.press("Enter")
     await expect(page.getByTestId("gyoshu-done")).toBeVisible()
     await expect(page.getByTestId("next-step-gyoshu")).toHaveAttribute("data-done", "1")
     // チャットの AI の案の変更案は、一覧で決めたので閉じる
@@ -142,8 +149,10 @@ test("業種を一覧で先に決めると、7割で載せる行が入れ替わ�
   await test.step("一覧で決めたものを取り消すと、業種が空に戻り一覧に戻る", async () => {
     await openTab(page, "gyoshu")
     await page.getByTestId("gyoshu-undo").click()
-    await expect.poll(() => count(page)).toBe(6)
-    await page.getByTestId("gyoshu-decide-all").click()
+    await expect.poll(() => count(page)).toBe(1)
+    await page.getByTestId("gyoshu-pick").click()
+    await page.keyboard.type("建築")
+    await page.keyboard.press("Enter")
     await expect(page.getByTestId("gyoshu-done")).toBeVisible()
   })
 

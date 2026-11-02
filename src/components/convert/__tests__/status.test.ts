@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
-import type { CellResult, RowResult } from "@/lib/convert/convert"
+import { editKey, editSession, type CellResult, type RowResult } from "@/lib/convert/convert"
+import { personToken } from "@/lib/convert/persons"
 import { finalizeAll, kojiRow } from "@/lib/convert/__tests__/helpers"
 import { askReasonOf } from "@/lib/inquiry/inquiry"
 import type { Inclusion } from "@/lib/convert/koji-selection"
@@ -125,14 +126,16 @@ describe("直し方", () => {
     const fixes = new Map(shown.rows.map((r) => [r.key, rowFix(r, () => false)]))
     const inclusion = new Map(shown.rows.map((r) => [r.key, { included: r.key !== notIncluded.key }]))
     const groups = fixActionGroups(shown.rows, inclusion, fixes)
-    const gyoshu = groups.find((g) => g.action === "decideGyoshu")!
-    expect(gyoshu.keys).toEqual([empty.key, guessed.key])
-    expect(fixActionText(gyoshu)).toBe("業種が空・AI の推定の 2 行を一覧で決める")
+    // 業種は直すに入れず、業種のタブでまとめて決める（直すと「業種を決める」で二重に数えない）
+    expect(groups.some((g) => g.action === "decideGyoshu")).toBe(false)
+    expect(fixes.get(empty.key)!.gyoshu).toBe("empty")
+    expect(fixes.get(guessed.key)!.gyoshu).toBe("guess")
+    expect(fixes.get(empty.key)!.fixes.some((f) => f.field === "gyoshu")).toBe(false)
+    expect(fixes.get(guessed.key)!.fixes.some((f) => f.field === "gyoshu")).toBe(false)
+    expect(fixActionText(groups.find((g) => g.action === "findLocation")!)).toContain("に AI で案を出す")
     // 都道府県と場所名は1つの現場として1つにまとめる
     expect(groups.filter((g) => g.action === "findLocation").map((g) => g.keys.includes(noPlace.key))).toEqual([true])
     expect(fixText({ field: "gyoshu", kind: "empty" })).toBe("業種が空")
-    // 理由で絞ると、その理由の行だけを数える
-    expect(fixActionGroups(shown.rows, inclusion, fixes, "guess").find((g) => g.action === "decideGyoshu")!.keys).toEqual([guessed.key])
   })
 })
 
@@ -153,8 +156,8 @@ describe("業種を先に決める", () => {
 
   test("「これでよい」は要確認・AI の推定の値があり、手で入れても検査の警告が残らないときだけ", () => {
     const base = kojiRow({}).cells
-    const guess = { ...base, gyoshu: { value: "8", status: "ai" as const, source: "AI", original: "電工", guessed: true as const, message: "工事名から" } }
-    expect(rowFix({ ...kojiRow({}), cells: guess }, () => true).fixes.find((f) => f.field === "gyoshu")).toEqual({ field: "gyoshu", kind: "guess", action: "decideGyoshu", confirm: true })
+    const guess = { ...base, workName: { value: "倉庫改修工事", status: "ai" as const, source: "AI", original: "倉庫", guessed: true as const, message: "補った" } }
+    expect(rowFix({ ...kojiRow({}), cells: guess }, () => false).fixes.find((f) => f.field === "workName")).toEqual({ field: "workName", kind: "guess", action: "askCustomer", confirm: true })
     // 姓と名の間の空白の警告は手で同じ値を入れても残るので、「これでよい」を出さない
     const name = { ...base, engineer: { value: "見本花子", status: "warning" as const, source: "A列", original: "見本花子", message: "姓と名の間に全角スペースを1つ入れてください" } }
     expect(rowFix({ ...kojiRow({}), cells: name }, () => false).fixes.find((f) => f.field === "engineer")?.confirm).toBeUndefined()
@@ -167,4 +170,17 @@ describe("業種を先に決める", () => {
     expect(askText(["engineer"])).toBe("配置技術者は顧客に聞く")
     expect(askText(["client", "endYm"])).toBe("注文者・完成年月は顧客に聞く")
   })
+})
+
+test("「これでよい」の手直し（印の入った本当の値）は、手直しのあとの検査（記号にした画面の値）でも片付く", () => {
+  const raw = kojiRow({ workName: `${personToken("見本花子")}邸新築工事` }, 1)
+  const guessed = { ...raw, cells: { ...raw.cells, workName: { ...raw.cells.workName, status: "ai" as const, guessed: true as const, message: "推定" } } }
+  const [shown] = finalizeAll([guessed]).rows
+  const letters = finalizeAll([guessed]).letters
+  expect(shown!.cells.workName.value).toBe("Ａ邸新築工事")
+  expect(rowFix(shown!, () => false).fixes.find((f) => f.field === "workName")?.confirm).toBe(true)
+  const session = editSession(shown!.cells.workName, letters)
+  const [after] = finalizeAll([guessed], { edits: new Map([[editKey(raw.key, "workName"), session.read(session.text)]]) }).rows
+  expect(after!.cells.workName.value).toBe("Ａ邸新築工事")
+  expect(rowFix(after!, () => false).fixes.find((f) => f.field === "workName")).toBeUndefined()
 })

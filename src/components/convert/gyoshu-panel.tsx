@@ -51,8 +51,9 @@ export function GyoshuPanel({
   const [picking, setPicking] = useState<string | null>(null)
   const [anchor, setAnchor] = useState<HTMLElement | null>(null)
   const listRef = useRef<HTMLUListElement>(null)
-  // 一覧から消えた行（決めた行）の選択は外す
+  // 一覧から消えた行（決めた行・載りえなくなった行）の選択は外す（取り消しで一覧に戻っても選ばれたままにしない）
   const live = useMemo(() => new Set(items.map((i) => i.key)), [items])
+  if ([...checked].some((k) => !live.has(k))) setChecked(new Set([...checked].filter((k) => live.has(k))))
   const selected = [...checked].filter((k) => live.has(k))
   const withPlan = items.filter((i) => i.plan)
   const noPlan = items.filter((i) => !i.plan)

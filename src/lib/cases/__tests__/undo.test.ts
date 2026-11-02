@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { applyChanges, decide, newProposal, type ChatChange } from "../../chat/proposals"
+import { applyChanges, type ChatChange } from "../../chat/proposals"
 import { editKey, type CellEdit } from "../../convert/convert"
 import { fromSaved, newWork, type SavedPlan, savedWorkSchema, toSavedWork, toSavedAiCache, type CaseWork } from "../state"
 import { applyInquiryChange, EMPTY_INQUIRY_TEXT } from "../../inquiry/text"
@@ -213,24 +213,5 @@ describe("報告の聞き返しの答えの取り消し", () => {
     const answered: CaseWork = { ...before, reportAnswers: { "plan-ask-0": "keep" }, undo: [entry] }
     const r = undo(answered, "u2")!
     expect(r.work.reportAnswers).toEqual({})
-  })
-})
-
-describe("変更案の外で決めた変更案の項目", () => {
-  test("取り消すと、後のままの変更案を決める前に開き直す（あとで別に決めた変更案はそのまま）", () => {
-    const change: ChatChange = { kind: "cell", rowKey: "r1", field: "gyoshu", edit: { value: "2", by: "chat", guessed: true } }
-    const p = newProposal("p1", { kind: "fix", runId: "run", field: "gyoshu" }, [change, { ...change, rowKey: "r2" }], null)
-    const before = { ...newWork("f"), proposals: [p] }
-    const decided = decide(p, [0, 1], "applied")
-    const after = { ...before, edits: new Map([[editKey("r1", "gyoshu"), staff("2")]]), proposals: [decided] }
-    const entry = undoEntry(before, after, { id: "u1", proposalId: "gyoshu:1", label: "gyoshu:1", at: 0, reopen: [[p, decided]] })!
-    const w = reopen({ ...after, undo: pushUndo([], entry) })
-    const r = undo(w, "u1")!
-    expect(r.work.proposals).toEqual([p])
-    expect(r.work.edits.has(editKey("r1", "gyoshu"))).toBe(false)
-    // あとで変更案が変わっていたら開き直さない
-    const other = decide(decide(p, [0], "applied"), [1], "rejected")
-    const changed = undo({ ...w, proposals: [other] }, "u1")!
-    expect(changed.work.proposals).toEqual([other])
   })
 })

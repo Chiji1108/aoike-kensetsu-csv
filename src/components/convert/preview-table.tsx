@@ -534,11 +534,11 @@ export function PreviewTable({
 }
 
 /**
- * 載せる行の、片付けることの理由（例:「業種が空」「工事名: AI の推定」）と、その理由の直し方（status.ts の FIX_ACTIONS）。
+ * 載せる行の、片付けることの理由（例:「業種が空」「工事名: AI の推定」）と、その理由の直し方（status.ts の FIX_ACTIONS）。業種は「業種を決める」（業種のタブ）。
  * 要確認・AI の推定の値は「これでよい」でそのまま確かめた値にできる。顧客に聞くセルは直さなくてよいので、どの欄を聞くのかと問い合わせのタブへの道だけ出す
  */
 function RowReasons({ fix, onOpenInquiry, onFixAction, onConfirm }: { fix: RowFix<KojiFieldId>; onOpenInquiry: () => void; onFixAction: (a: FixActionId) => void; onConfirm: (field: KojiFieldId) => void }) {
-  if (!fix.fixes.length && !fix.ask.length) return null
+  if (!fix.fixes.length && !fix.ask.length && !fix.gyoshu) return null
   const shown = fix.fixes.slice(0, SHOWN_FIXES)
   const rest = fix.fixes.length - shown.length
   // 同じ直し方は1つだけ出す（例: 都道府県と場所名が空でも「AI で案を出す」は1つ）
@@ -546,6 +546,18 @@ function RowReasons({ fix, onOpenInquiry, onFixAction, onConfirm }: { fix: RowFi
   const link = "inline-flex items-center gap-0.5 underline-offset-2 hover:underline [&_svg]:size-3"
   return (
     <div className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] leading-4 whitespace-normal" data-testid="row-reasons">
+      {/* 業種は直すに数えず、業種のタブでまとめて決める（決めるたびに7割で載せる行が入れ替わる） */}
+      {fix.gyoshu && (
+        <span className="inline-flex flex-wrap items-center gap-x-1">
+          <span className="text-amber-800" data-testid="row-fix" data-field="gyoshu">
+            {fixText({ field: "gyoshu", kind: fix.gyoshu })}
+          </span>
+          <button type="button" className={cn(link, "text-violet-700")} title={FIX_ACTIONS.decideGyoshu.title} onClick={() => onFixAction("decideGyoshu")} data-testid="row-fix-action" data-action="decideGyoshu">
+            {ACTION_ICONS.decideGyoshu}
+            {FIX_ACTIONS.decideGyoshu.label}
+          </button>
+        </span>
+      )}
       {shown.map((f) => (
         <span key={f.field} className="inline-flex flex-wrap items-center gap-x-1">
           <span className="text-amber-800" title={fix.fixes.map(fixText).join("\n")} data-testid="row-fix" data-field={f.field}>
