@@ -1602,7 +1602,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
               undo={lastGyoshuUndo ? { count: lastGyoshuUndo.edits.length, onUndo: () => undoProposal(lastGyoshuUndo.proposalId, "業種の決定") } : null}
             />
           </TabsContent>
-          <TabsContent value="selection" keepMounted className="min-h-0 overflow-auto p-4">
+          <TabsContent value="selection" keepMounted className="min-h-0 overflow-auto p-4" data-testid="selection-section">
             <SelectionPanel
               rounding={rounding}
               onRounding={(r) => set("rounding", r)}
@@ -1851,7 +1851,7 @@ function SelectionPanel(p: {
         <Field label="千円未満">
           <Segmented label="千円未満の端数" value={p.rounding} options={ROUNDINGS.map((value) => ({ value, label: ROUNDING_LABELS[value] }))} onChange={p.onRounding} testId="rounding" />
         </Field>
-        <Field label="載せる工事" hint="全件: 7割以上なら件数は自由。顧客が絞ったデータもこちら">
+        <Field label="載せる工事" hint="7割ルール: 業種ごとに、元請を金額の大きい順に元請の基準額の7割を超えるまで、続いて残りを合計の基準額の7割を超えるまで載せます。軽微な工事（税込500万円未満、建築一式は1,500万円未満）は10件まで。全件: 7割以上なら件数は自由。顧客が絞ったデータもこちら">
           <Segmented label="載せる工事" value={p.selection} options={SELECTION_MODES.map((m) => ({ value: m, label: SELECTION_LABELS[m] }))} onChange={p.onSelection} testId="selection" />
         </Field>
         {p.manualCount > 0 && (
@@ -1862,10 +1862,11 @@ function SelectionPanel(p: {
       </div>
       {p.roundingTotals && <RoundingNote floor={p.roundingTotals.floor} round={p.roundingTotals.round} current={p.rounding} />}
       {p.children}
-      <p className="text-xs text-muted-foreground" title="業種ごとに、元請を金額の大きい順に元請の基準額の7割を超えるまで、続いて残りを合計の基準額の7割を超えるまで載せます。軽微な工事（税込500万円未満、建築一式は1,500万円未満）は10件まで">
-        基準額は決算書の業種ごとの完成工事高（{RULE7_TAX_LABELS[p.rule7Tax]}・千円）。空欄なら行の合計。
-        {p.tax === "unknown" && <strong data-testid="tax-unknown-note"> Excel の金額が分からないので、税込とみなして判定しています。</strong>}
-      </p>
+      {p.tax === "unknown" && (
+        <p className="text-xs font-semibold text-muted-foreground" data-testid="tax-unknown-note">
+          Excel の金額が分からないので、税込とみなして判定しています。
+        </p>
+      )}
     </div>
   )
 }

@@ -1,5 +1,5 @@
 import type { RowResult } from "../convert/convert"
-import type { Basis, GyoshuSummary } from "../convert/koji-selection"
+import type { GyoshuSummary } from "../convert/koji-selection"
 import { nonCp932Chars } from "../convert/text"
 import { fieldLabel, KOJI_KEIREKI, type KojiFieldId } from "../spec/koji-keireki"
 
@@ -24,6 +24,10 @@ export type ExportCheck = {
   unencodable: { field: KojiFieldId; chars: string[]; rowKey: string }[]
   /** 7割に届いていない業種 */
   short: { code: string; label: string; side: "total" | "motouke" }[]
+  /** 基準額が 0 で7割を確かめられない業種（金額の無い業種） */
+  unchecked: { code: string; label: string }[]
+  /** 決算書の額を入れた側の数（業種×完成工事高・うち元請） */
+  fromBook: { total: number; motouke: number }
   /** 入れた基準額（決算書の額）と表の行の合計（どちらも7割の計算の税）が合わない業種 */
   mismatches: BasisMismatch[]
 }
@@ -34,7 +38,7 @@ export type ExportCheck = {
  */
 const tolerance = (count: number) => Math.max(1, count)
 
-export function exportCheck(output: readonly Row[], summary: readonly GyoshuSummary[], basis: Basis): ExportCheck {
+export function exportCheck(output: readonly Row[], summary: readonly GyoshuSummary[]): ExportCheck {
   const byIssue = new Map<string, ExportIssue>()
   let errors = 0
   let warnings = 0
@@ -58,18 +62,25 @@ export function exportCheck(output: readonly Row[], summary: readonly GyoshuSumm
     ...(g.short.total ? [{ code: g.code, label: g.label, side: "total" as const }] : []),
     ...(g.short.motouke ? [{ code: g.code, label: g.label, side: "motouke" as const }] : []),
   ])
+  const unchecked = summary.filter((g) => g.totalRatio === undefined).map((g) => ({ code: g.code, label: g.label }))
+  const fromBook = fromBookCount(summary)
   const mismatches: BasisMismatch[] = []
   for (const g of summary) {
-    const entered = basis[g.code]
     for (const side of ["total", "motouke"] as const) {
-      const v = entered?.[side]
-      if (v === undefined || v <= 0) continue
+      if (!g.fromBook[side]) continue
+      const v = Math.round(g.basis[side])
       const rows = Math.round(side === "total" ? g.total : g.motoukeTotal)
       const diff = v - rows
       if (Math.abs(diff) > tolerance(g.count)) mismatches.push({ code: g.code, label: g.label, side, entered: v, rows, diff })
     }
   }
-  return { rows: output.length, errors, warnings, issues, unencodable, short, mismatches }
+  return { rows: output.length, errors, warnings, issues, unencodable, short, unchecked, fromBook, mismatches }
 }
 
 export const issueLabel = (i: ExportIssue) => `${fieldLabel(i.field)}: ${i.message}`
+
+/** 決算書の額を使った側の数（業種ごと）。7割と金額のタブの基準の1行と、書き出すの確認で同じ数 */
+export const fromBookCount = (summary: readonly GyoshuSummary[]) => ({
+  total: summary.filter((g) => g.fromBook.total).length,
+  motouke: summary.filter((g) => g.fromBook.motouke).length,
+})
