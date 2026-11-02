@@ -311,13 +311,13 @@ test("行の多い表: 仮想スクロールの先でも絞り込み・検索・
 
   await test.step("下書き: スクロールで隠れたまま別のセルを直し始めると、前の下書きを確定する", async () => {
     await placeOf(secondKey).locator("button").click()
-    await page.getByLabel("セルの値").fill("隠れた下書き")
+    await page.getByLabel("セルの値").fill("隠れた下書き町")
     await scrollTable(page, "bottom")
     await expect(page.getByLabel("セルの値")).toHaveCount(0)
     await placeOf(nextToLastKey).locator("button").click()
     await page.getByLabel("セルの値").press("Escape")
     await scrollTable(page, "top")
-    await expect(placeOf(secondKey).locator("button > span").first()).toHaveText("隠れた下書き")
+    await expect(placeOf(secondKey).locator("button > span").first()).toHaveText("隠れた下書き町")
     await placeOf(secondKey).locator("button").hover()
     await expect(cellNote(page)).toContainText("手入力")
   })
