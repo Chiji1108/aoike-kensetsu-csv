@@ -27,7 +27,7 @@ import { introSchema, otherCustomerTest, subjectSchema } from "../inquiry/text"
 import type { AddressLookup } from "../convert/address"
 import type { AiCache, AiCaller } from "../convert/pipeline"
 import type { Rounding } from "../convert/transforms"
-import { MAX_VIEW_PAGES, MAX_VIEW_PAGES_PER_CHAT, viewFile, viewFileInputSchema, viewResultOutput, type FileViewer, type ViewFileInput, type ViewResult } from "./view-file"
+import { MAX_VIEW_CALLS, MAX_VIEW_PAGES, MAX_VIEW_PAGES_PER_CHAT, newViewState, viewFile, viewFileInputSchema, viewResultOutput, type FileViewer, type ViewFileInput, type ViewResult, type ViewState } from "./view-file"
 
 /**
  * チャットの1回の指示。AI はコード実行（Anthropic のコンテナ）で元のファイルと今の表を読み、表の変更はコードから呼ぶ道具
@@ -112,7 +112,7 @@ ${fileLines || "（なし）"}
   - 要望を残しても職員への返事と作業は続ける。できないことはその場で職員に伝える（残したことは画面が知らせる）。
 - CSV は書かない（CSV の形式・7割の計算・字数・個人名の検査は決まった処理がやる）。
 - 最後に、何を何件変えたか、残った問題、職員に確かめたいことを短い日本語で返す。コードや JSON は返事に貼らない。
-- 道具を呼べるのは1回の指示で${MAX_TOOL_CALLS}回まで（コード実行は数えない）。表は get_table でまとめて読み、変更はまとめて送る。
+- 道具を呼べるのは1回の指示で${MAX_TOOL_CALLS}回まで（コード実行と view_file は数えない。view_file は別に${MAX_VIEW_CALLS}回まで）。表は get_table でまとめて読み、変更はまとめて送る。
 
 ## 14列
 ${fieldsDoc()}
@@ -187,12 +187,10 @@ export type TurnState = {
   feedbackListed: Set<string> | null
   /** この指示で残した要望（新しい要望と、件数を足した要望） */
   feedbackRecorded: { id: string; kind: FeedbackInput["kind"]; added: boolean }[]
-  /** 案件のファイルを AI に見せるもの（view_file）。無ければ道具は使えない */
-  viewer: FileViewer | null
-  /** この指示で view_file が見せたページ数と画像の数（会話の上限を履歴の分と合わせて数える） */
-  viewed: { pages: number; images: number }
-  /** view_file が PDF のページを切り出して Files API に上げた id（会話を終えるときに消す） */
-  viewUploads: string[]
+  /** 案件のファイルを AI に見せる状態（view_file。見せた数・範囲・上げたファイル）。無ければ道具は使えない */
+  view: ViewState | null
+  /** view_file を呼んだ回数（ほかの道具の toolCalls とは別に数える） */
+  viewCalls: number
 }
 
 export type { FeedbackDeps }
@@ -228,6 +226,8 @@ export function newTurnState(
   inquiry: InquiryDeps | null = null,
   feedback: FeedbackDeps | null = null,
   viewer: FileViewer | null = null,
+  /** 今の会話の履歴（view_file が見せた数・範囲を数える） */
+  history: readonly ModelMessage[] = [],
 ): TurnState {
   return {
     start: table,
@@ -253,9 +253,8 @@ export function newTurnState(
     feedback,
     feedbackListed: null,
     feedbackRecorded: [],
-    viewer,
-    viewed: { pages: 0, images: 0 },
-    viewUploads: [],
+    view: viewer ? newViewState(viewer, history) : null,
+    viewCalls: 0,
   }
 }
 
@@ -385,13 +384,18 @@ export function chatTools(state: TurnState) {
   let started: TableView | null = null
   const startView = () => (started ??= deriveTable(state.start))
   /** 回数の上限を数える。超えたら道具を動かさず、ここまでで返すよう伝える */
-  const counted =
-    <A,>(run: (args: A) => string | Promise<string>) =>
-    async (args: A) => {
-      if (++state.toolCalls > MAX_TOOL_CALLS)
-        return json({ ok: false, error: `この指示で道具を呼べる回数（${MAX_TOOL_CALLS}回）を使い切りました。ここまでの変更案と残りを職員に返してください。` })
+  const limited =
+    <A, R>(key: "toolCalls" | "viewCalls", max: number, refuse: (error: string) => R, run: (args: A) => R | Promise<R>) =>
+    async (args: A): Promise<R> => {
+      if (++state[key] > max)
+        return refuse(
+          key === "viewCalls"
+            ? `この指示でファイルを見られる回数（${max}回）を使い切りました。見られなかったファイル・ページを職員に伝え、ここまでの変更案を返してください。`
+            : `この指示で道具を呼べる回数（${max}回）を使い切りました。ここまでの変更案と残りを職員に返してください。`,
+        )
       return run(args)
     }
+  const counted = <A,>(run: (args: A) => string | Promise<string>) => limited<A, string>("toolCalls", MAX_TOOL_CALLS, (error) => json({ ok: false, error }), run)
   /** ルールの案・振り返りの材料の個人名（表の人と、分かっている個人名。指示の間で1回だけ作る。集められなければ道具は理由を返す） */
   // 名前は確かめるときの表（この指示で AI が入れた手直しも）から集める。分かっている個人名は指示の間で1回だけ読む
   let knownNames: Promise<Iterable<string>> | null = null
@@ -446,13 +450,13 @@ export function chatTools(state: TurnState) {
         `pages は PDF のページ（1 から。例「1-5」。省くと全部。1回${MAX_VIEW_PAGES}ページ・1つの会話で${MAX_VIEW_PAGES_PER_CHAT}ページまで）。` +
         "見せたファイルは以後の往復でも読み直すので、要るページだけを見る。{ok, file, pages?:{from, to, total}} とファイルを返す（見られなければ ok:false と error）。",
       inputSchema: viewFileInputSchema,
-      execute: async (input: ViewFileInput): Promise<ViewResult> => {
-        if (++state.toolCalls > MAX_TOOL_CALLS) return { ok: false, error: `この指示で道具を呼べる回数（${MAX_TOOL_CALLS}回）を使い切りました。ここまでの変更案と残りを職員に返してください。` }
-        if (!state.viewer) return { ok: false, error: "ファイルを見る道具は今使えません" }
-        const result = await viewFile(state.viewer, input, state.viewed, state.viewUploads)
-        state.log.push({ tool: "view_file", summary: result.ok ? `${result.file}${result.pages ? ` ${result.pages.from}-${result.pages.to}/${result.pages.total}ページ` : ""}` : `${input.file}: ${result.error}` })
+      execute: limited<ViewFileInput, ViewResult>("viewCalls", MAX_VIEW_CALLS, (error) => ({ ok: false, error }), async (input) => {
+        if (!state.view) return { ok: false, error: "ファイルを見る道具は今使えません" }
+        const result = await viewFile(state.view, input)
+        const pages = result.ok && result.pages ? ` ${result.pages.from}-${result.pages.to}/${result.pages.total}ページ` : ""
+        state.log.push({ tool: "view_file", summary: result.ok ? `${result.file}${pages}${"repeated" in result ? "（もう見せた）" : ""}` : `${input.file}: ${result.error}` })
         return result
-      },
+      }),
       toModelOutput: ({ output }) => viewResultOutput(output),
     }),
     get_table: tool({
@@ -496,7 +500,7 @@ export function chatTools(state: TurnState) {
           })
         return push(
           "set_cells",
-          anonymized.changes.map((c) => ({ kind: "cell", rowKey: c.key, field: c.field, edit: imageEdit(source, c.edit) })),
+          anonymized.changes.map((c) => ({ kind: "cell", rowKey: c.key, field: c.field, edit: source === "image" ? imageEdit(c.edit) : c.edit })),
           `${changes.length}セル`,
         )
       }),
@@ -667,9 +671,12 @@ export function chatTools(state: TurnState) {
           view().shown,
           { ctx: { rounding: state.current.rounding }, lookup: deps.lookup, cache: state.answerCache, callAi, fields: state.plan?.plan.fields ?? {} },
         )
+        const confirmed = new Set(items.flatMap((i) => (i.confirm ? [`${i.key}:${i.field}`] : [])))
         const changes = report.edits.map(([key, edit]): ChatChange => {
           const at = key.lastIndexOf(":")
-          return { kind: "cell", rowKey: key.slice(0, at), field: key.slice(at + 1) as KojiFieldId, edit: imageEdit(source, edit) }
+          const field = key.slice(at + 1) as KojiFieldId
+          // 印を付けるのは顧客が答えた値だけ（今の値のとおりという確認 confirm:true は、読んだ値ではない）
+          return { kind: "cell", rowKey: key.slice(0, at), field, edit: source === "image" && !confirmed.has(key) ? imageEdit(edit) : edit }
         })
         const result = answerResult(report)
         if (!changes.length) {
@@ -931,10 +938,14 @@ export function chatTools(state: TurnState) {
   }
 }
 
-/** 手書き・画像から読んだ値の手直しに印を付ける（セルのメモの前に IMAGE_READ_NOTE） */
-function imageEdit(source: ValueSource, edit: CellEdit): CellEdit {
-  const message = withImageNote(source, edit.message)
-  return message ? { ...edit, message } : edit
+/**
+ * 手書き・画像から読んだ値の手直し（set_cells・record_answers）: セルのメモの前に IMAGE_READ_NOTE を付け、要確認（warning）にする。
+ * 要確認は「直す」に出て、職員が元のファイルと見比べて「これでよい」で片付ける（読み違いを確かめないまま CSV に出さない）。
+ * 推定（guessed）にはしないので、顧客への問い合わせには回らない（読み違いは事務所で確かめる）。エラーの値はエラーのまま
+ */
+function imageEdit(edit: CellEdit): CellEdit {
+  const message = withImageNote("image", edit.message)
+  return { ...edit, ...(edit.status === "error" ? {} : { status: "warning" as const }), message }
 }
 
 /** 要望に入れない、案件の工事名とその注文者 */

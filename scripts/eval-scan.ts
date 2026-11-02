@@ -73,7 +73,7 @@ try {
     null,
     null,
     null,
-    localViewer(anthropic, uploads, []),
+    localViewer(anthropic, uploads),
   )
   const result = startTurn({ apiKey, system, messages, state })
   let reply = ""
@@ -111,5 +111,5 @@ try {
   console.log(JSON.stringify({ ...summary, usages: undefined, reply: reply.slice(0, 500) }, null, 1))
   for (const r of rows) for (const f of FIELDS) if (!r.cells[f]!.ok) console.log(`  ✗ ${r.file} ${f}: want「${r.cells[f]!.want}」 got「${r.cells[f]!.got}」`)
 } finally {
-  for (const id of [...uploads.map((u) => u.id), ...(state?.viewUploads ?? [])]) await anthropic.files.delete(id).catch((e) => console.log("delete failed", id, String(e).slice(0, 120)))
+  for (const id of [...uploads.map((u) => u.id), ...(state?.view?.uploads ?? [])]) await anthropic.files.delete(id).catch((e) => console.log("delete failed", id, String(e).slice(0, 120)))
 }

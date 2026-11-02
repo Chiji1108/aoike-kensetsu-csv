@@ -404,10 +404,11 @@ async function chatPhase(p: {
         p.review ?? null,
         p.inquiry ?? null,
         feedback,
-        localViewer(anthropic, uploads, messages),
+        localViewer(anthropic, uploads),
+        messages,
       )
-      // view_file が切り出して上げたページは、落ちても消す（state.viewUploads は道具が上げるたびに足される）
-      viewUploads.push(state.viewUploads)
+      // view_file が上げたファイルは、落ちても消す（state.view.uploads は道具が上げるたびに足される）
+      if (state.view) viewUploads.push(state.view.uploads)
       const result = startTurn({ apiKey: apiKey!, system, messages, state, containerId })
       let reply = ""
       const calls: string[] = []

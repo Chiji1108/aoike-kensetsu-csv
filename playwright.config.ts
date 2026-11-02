@@ -26,5 +26,5 @@ export default defineConfig({
     { name: "login", testMatch: /login\.setup\.ts/ },
     { name: "app", dependencies: ["login"], use: { storageState: STORAGE_STATE } },
   ],
-  webServer: { command: `bunx vite dev --port ${PORT}`, url: `http://localhost:${PORT}/login`, reuseExistingServer: true, timeout: 120_000 },
+  webServer: { command: `bun run dev -- --port ${PORT}`, url: `http://localhost:${PORT}/login`, reuseExistingServer: true, timeout: 120_000 },
 })
