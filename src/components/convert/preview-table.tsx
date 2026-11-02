@@ -11,7 +11,7 @@ import {
   type SortingState,
 } from "@tanstack/react-table"
 import { useVirtualizer } from "@tanstack/react-virtual"
-import { ArrowDown, ArrowUp, ArrowUpDown, Columns3, Loader2, MapPin, MessageCircleQuestion, RefreshCw, Search, Sparkles, X } from "lucide-react"
+import { ArrowDown, ArrowUp, ArrowUpDown, Check, Columns3, ListChecks, MapPin, MessageCircleQuestion, RefreshCw, Search, Undo2, X } from "lucide-react"
 import { Segmented } from "@/components/segmented"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -34,12 +34,14 @@ import { cn } from "@/lib/utils"
 import { choiceLabel, choicesOf } from "@/lib/spec/choices"
 import { CellPicker } from "./cell-picker"
 import {
+  CONFIRM_LABEL,
   FIX_ACTIONS,
   FIX_KINDS,
   FIX_LABELS,
   NO_FIX,
   ROW_FILTERS,
   STATUS,
+  askText,
   cellClass,
   changedCell,
   fixActionGroups,
@@ -126,16 +128,7 @@ const SHOWN_FIXES = 2
 /** 計画の聞き返しの対象の行（表で見る） */
 export type AskRows = { id: string; label: string; keys: ReadonlySet<string> }
 
-/** 「AI で案を出す」を押せるか（can）、頼んでいる最中か（running）、前の案をまだ決めていないか（pending） */
-export type SuggestState = { can: boolean; running: boolean; pending: boolean }
-
-/** 直し方の操作を押せないときの理由（押せるなら undefined） */
-function actionBlocked(action: FixActionId, s: SuggestState) {
-  if (action !== "suggestGyoshu" || s.can) return undefined
-  return s.running ? "AI が案を考えています" : s.pending ? "前の AI の案を、チャットで承認か却下してください" : "AI を使えません"
-}
-
-const ACTION_ICONS: Record<FixActionId, React.ReactNode> = { suggestGyoshu: <Sparkles />, findLocation: <MapPin />, askCustomer: <MessageCircleQuestion /> }
+export const ACTION_ICONS: Record<FixActionId, React.ReactNode> = { decideGyoshu: <ListChecks />, findLocation: <MapPin />, askCustomer: <MessageCircleQuestion /> }
 
 export function PreviewTable({
   spec,
@@ -151,7 +144,8 @@ export function PreviewTable({
   asks,
   onOpenInquiry,
   onFixAction,
-  suggest,
+  onConfirm,
+  confirmUndo,
 }: {
   spec: CsvSpec<KojiFieldId>
   rows: Row[]
@@ -173,7 +167,10 @@ export function PreviewTable({
   onOpenInquiry: () => void
   /** 直し方の操作を押したとき（keys はその行） */
   onFixAction: (action: FixActionId, keys: readonly string[]) => void
-  suggest: SuggestState
+  /** 「これでよい」: 要確認・AI の推定の値を、職員が確かめた値にする（取り消せる） */
+  onConfirm: (rowKey: string, field: KojiFieldId) => void
+  /** 直前の「これでよい」を取り消す（取り消せるときだけ） */
+  confirmUndo: (() => void) | null
 }) {
   const [editing, setEditing] = useState<Editing | null>(null)
   const setFilter = onFilterChange
@@ -290,7 +287,7 @@ export function PreviewTable({
             <Checkbox aria-label="CSVに載せる" checked={inc?.included ?? false} onCheckedChange={(checked) => onToggle(r.key, checked)} />
             <span className="text-[11px] text-muted-foreground">{inc ? INCLUSION_LABELS[inc.reason] : ""}</span>
           </label>
-          {inc?.included && <RowReasons fix={fixes.get(r.key) ?? NO_FIX} onOpenInquiry={onOpenInquiry} onFixAction={(a) => onFixAction(a, [r.key])} suggest={suggest} />}
+          {inc?.included && <RowReasons fix={fixes.get(r.key) ?? NO_FIX} onOpenInquiry={onOpenInquiry} onFixAction={(a) => onFixAction(a, [r.key])} onConfirm={(f) => onConfirm(r.key, f)} />}
           {!liveKeys.has(r.key) && (
             <span className="mt-0.5 block text-[11px] text-amber-700" data-testid="row-unmatched" title="手直しで、今の絞り込み・検索に合わなくなりました。「更新」で表から外れます">
               条件に合いません
@@ -429,27 +426,28 @@ export function PreviewTable({
         </DropdownMenu>
       </div>
 
-      {filter.kind === "fix" && !activeAsk && fixGroups.length > 0 && (
+      {filter.kind === "fix" && !activeAsk && (fixGroups.length > 0 || confirmUndo) && (
         <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="まとめて直す" data-testid="fix-actions">
-          {fixGroups.map((g) => {
-            const blocked = actionBlocked(g.action, suggest)
-            return (
-              <Button
-                key={`${g.action}:${g.field}`}
-                size="xs"
-                variant="outline"
-                className="bg-background"
-                disabled={!!blocked}
-                title={blocked ?? FIX_ACTIONS[g.action].title}
-                onClick={() => onFixAction(g.action, g.keys)}
-                data-testid="fix-action"
-                data-action={g.action}
-              >
-                {g.action === "suggestGyoshu" && suggest.running ? <Loader2 className="animate-spin" /> : ACTION_ICONS[g.action]}
-                {fixActionText(g)}
-              </Button>
-            )
-          })}
+          {fixGroups.map((g) => (
+            <Button
+              key={`${g.action}:${g.field}`}
+              size="xs"
+              variant="outline"
+              className="bg-background"
+              title={FIX_ACTIONS[g.action].title}
+              onClick={() => onFixAction(g.action, g.keys)}
+              data-testid="fix-action"
+              data-action={g.action}
+            >
+              {ACTION_ICONS[g.action]}
+              {fixActionText(g)}
+            </Button>
+          ))}
+          {confirmUndo && (
+            <Button size="xs" variant="ghost" onClick={confirmUndo} data-testid="confirm-undo">
+              <Undo2 />「{CONFIRM_LABEL}」を取り消す
+            </Button>
+          )}
         </div>
       )}
 
@@ -537,44 +535,45 @@ export function PreviewTable({
 
 /**
  * 載せる行の、片付けることの理由（例:「業種が空」「工事名: AI の推定」）と、その理由の直し方（status.ts の FIX_ACTIONS）。
- * 顧客に聞くセルは直さなくてよいので、問い合わせのタブへの道だけ出す
+ * 要確認・AI の推定の値は「これでよい」でそのまま確かめた値にできる。顧客に聞くセルは直さなくてよいので、どの欄を聞くのかと問い合わせのタブへの道だけ出す
  */
-function RowReasons({ fix, onOpenInquiry, onFixAction, suggest }: { fix: RowFix<KojiFieldId>; onOpenInquiry: () => void; onFixAction: (a: FixActionId) => void; suggest: SuggestState }) {
-  if (!fix.fixes.length && !fix.ask) return null
+function RowReasons({ fix, onOpenInquiry, onFixAction, onConfirm }: { fix: RowFix<KojiFieldId>; onOpenInquiry: () => void; onFixAction: (a: FixActionId) => void; onConfirm: (field: KojiFieldId) => void }) {
+  if (!fix.fixes.length && !fix.ask.length) return null
   const shown = fix.fixes.slice(0, SHOWN_FIXES)
   const rest = fix.fixes.length - shown.length
   // 同じ直し方は1つだけ出す（例: 都道府県と場所名が空でも「AI で案を出す」は1つ）
   const actions = [...new Set(fix.fixes.flatMap((f) => f.action ?? []))]
+  const link = "inline-flex items-center gap-0.5 underline-offset-2 hover:underline [&_svg]:size-3"
   return (
     <div className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] leading-4 whitespace-normal" data-testid="row-reasons">
-      {shown.length > 0 && (
-        <span className="text-amber-800" title={fix.fixes.map(fixText).join("\n")} data-testid="row-fix">
-          {shown.map(fixText).join("・")}
-          {rest > 0 && ` 他${rest}`}
+      {shown.map((f) => (
+        <span key={f.field} className="inline-flex flex-wrap items-center gap-x-1">
+          <span className="text-amber-800" title={fix.fixes.map(fixText).join("\n")} data-testid="row-fix" data-field={f.field}>
+            {fixText(f)}
+          </span>
+          {f.confirm && (
+            <button type="button" className={cn(link, "text-emerald-700")} title="この値のまま、職員が確かめた値にします" onClick={() => onConfirm(f.field)} data-testid="row-confirm" data-field={f.field}>
+              <Check />
+              {CONFIRM_LABEL}
+            </button>
+          )}
+        </span>
+      ))}
+      {rest > 0 && (
+        <span className="text-amber-800" title={fix.fixes.map(fixText).join("\n")}>
+          他{rest}
         </span>
       )}
-      {actions.map((a) => {
-        const blocked = actionBlocked(a, suggest)
-        return (
-          <button
-            key={a}
-            type="button"
-            disabled={!!blocked}
-            className="inline-flex items-center gap-0.5 text-violet-700 underline-offset-2 hover:underline disabled:text-muted-foreground disabled:no-underline [&_svg]:size-3"
-            title={blocked ?? FIX_ACTIONS[a].title}
-            onClick={() => onFixAction(a)}
-            data-testid="row-fix-action"
-            data-action={a}
-          >
-            {ACTION_ICONS[a]}
-            {FIX_ACTIONS[a].label}
-          </button>
-        )
-      })}
-      {fix.ask > 0 && (
-        <button type="button" className="inline-flex items-center gap-0.5 text-muted-foreground underline-offset-2 hover:underline" title="顧客への問い合わせに入っています（直さなくてよい）。問い合わせのタブを開きます" onClick={onOpenInquiry} data-testid="row-ask">
-          <MessageCircleQuestion className="size-3" />
-          顧客に聞く
+      {actions.map((a) => (
+        <button key={a} type="button" className={cn(link, "text-violet-700")} title={FIX_ACTIONS[a].title} onClick={() => onFixAction(a)} data-testid="row-fix-action" data-action={a}>
+          {ACTION_ICONS[a]}
+          {FIX_ACTIONS[a].label}
+        </button>
+      ))}
+      {fix.ask.length > 0 && (
+        <button type="button" className={cn(link, "text-muted-foreground")} title="顧客への問い合わせに入っています（直さなくてよい）。問い合わせのタブを開きます" onClick={onOpenInquiry} data-testid="row-ask">
+          <MessageCircleQuestion />
+          {askText(fix.ask)}
         </button>
       )}
     </div>

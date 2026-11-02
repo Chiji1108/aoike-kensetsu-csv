@@ -2,7 +2,8 @@ import { describe, expect, test } from "bun:test"
 import type { CellResult, RowResult } from "@/lib/convert/convert"
 import { finalizeAll, kojiRow } from "@/lib/convert/__tests__/helpers"
 import { askReasonOf } from "@/lib/inquiry/inquiry"
-import { cellFix, changedCell, countFixes, fixActionGroups, fixActionOf, fixActionText, fixText, inFilter, rowFix, type RowFix } from "../status"
+import type { Inclusion } from "@/lib/convert/koji-selection"
+import { askText, cellFix, changedCell, countFixes, fixActionGroups, fixActionOf, fixActionText, fixText, gyoshuTodo, inFilter, rowFix, type RowFix } from "../status"
 
 const ok: CellResult = { value: "x", status: "ok", source: "A列: x", original: "x" }
 const row = (key: string, other: Partial<CellResult>): RowResult<"a" | "b"> => ({
@@ -49,7 +50,7 @@ describe("表の絞り込み", () => {
     expect(counts.all).toBe(rows.length)
   })
   test("聞き返しの「表で見る」は対象の行だけ（載せない行も）", () => {
-    const none: RowFix = { fixes: [], ask: 0 }
+    const none: RowFix = { fixes: [], ask: [] }
     expect(inFilter({ kind: "all", ask: "q" }, none, false, (k) => k === "r1", "r1")).toBe(true)
     expect(inFilter({ kind: "all", ask: "q" }, none, true, (k) => k === "r1", "r2")).toBe(false)
   })
@@ -69,10 +70,10 @@ describe("直す行と顧客に聞く行", () => {
 
   test("問い合わせに回るセル（書類に要るのにデータに無い）は顧客に聞く（直さなくてよい）。問い合わせを外すと、空のままで片付く", () => {
     const asked = rowFix(view[1]!, () => true)
-    expect(asked.ask).toBeGreaterThan(0)
+    expect(asked.ask).toEqual(expect.arrayContaining(["prefecture", "place"]))
     expect(asked.fixes.filter((f) => f.field === "prefecture" || f.field === "place")).toEqual([])
     const dismissed = rowFix(view[1]!, () => false)
-    expect(dismissed.ask).toBe(0)
+    expect(dismissed.ask).toEqual([])
   })
   test("値のあるエラーは顧客に聞いても CSV に載らないので職員が直す。空の必須は問い合わせを外すと「必須が空」", () => {
     expect(cellFix({ ...ok, status: "error", value: "abc" }, "workName", true)).toBe("error")
@@ -99,11 +100,11 @@ describe("直す行と顧客に聞く行", () => {
 })
 
 describe("直し方", () => {
-  test("理由ごとの直し方は1か所の表で、行ける先と同じ判定: 業種は AI の案、調べる行は工事場所、問い合わせに載るセルは顧客に聞く。ほかはセルで直す", () => {
+  test("理由ごとの直し方は1か所の表で、行ける先と同じ判定: 業種は一覧で決める、調べる行は工事場所、問い合わせに載るセルは顧客に聞く。ほかはセルで直す", () => {
     const blank = kojiRow({}).cells
     const of = (field: string) => fixActionOf(field, blank)
     expect(["gyoshu", "prefecture", "place", "client", "workName", "startYm", "endYm", "engineer", "motoukeShitauke", "amount", "jv"].map(of)).toEqual([
-      "suggestGyoshu", "findLocation", "findLocation", "askCustomer", "askCustomer", "askCustomer", "askCustomer", "askCustomer", undefined, undefined, undefined,
+      "decideGyoshu", "findLocation", "findLocation", "askCustomer", "askCustomer", "askCustomer", "askCustomer", "askCustomer", undefined, undefined, undefined,
     ])
     // 問い合わせに載らないセル（値のあるエラー・職員が空にした欄）には「顧客に聞く」を出さない
     const err = { ...blank, endYm: { value: "2023", status: "error" as const, source: "", original: "2023", message: "年月として読めません" } }
@@ -124,13 +125,46 @@ describe("直し方", () => {
     const fixes = new Map(shown.rows.map((r) => [r.key, rowFix(r, () => false)]))
     const inclusion = new Map(shown.rows.map((r) => [r.key, { included: r.key !== notIncluded.key }]))
     const groups = fixActionGroups(shown.rows, inclusion, fixes)
-    const gyoshu = groups.find((g) => g.action === "suggestGyoshu")!
+    const gyoshu = groups.find((g) => g.action === "decideGyoshu")!
     expect(gyoshu.keys).toEqual([empty.key, guessed.key])
-    expect(fixActionText(gyoshu)).toBe("業種が空・AI の推定の 2 行に AI で案を出す")
+    expect(fixActionText(gyoshu)).toBe("業種が空・AI の推定の 2 行を一覧で決める")
     // 都道府県と場所名は1つの現場として1つにまとめる
     expect(groups.filter((g) => g.action === "findLocation").map((g) => g.keys.includes(noPlace.key))).toEqual([true])
     expect(fixText({ field: "gyoshu", kind: "empty" })).toBe("業種が空")
     // 理由で絞ると、その理由の行だけを数える
-    expect(fixActionGroups(shown.rows, inclusion, fixes, "guess").find((g) => g.action === "suggestGyoshu")!.keys).toEqual([guessed.key])
+    expect(fixActionGroups(shown.rows, inclusion, fixes, "guess").find((g) => g.action === "decideGyoshu")!.keys).toEqual([guessed.key])
+  })
+})
+
+describe("業種を先に決める", () => {
+  test("業種を決める行は、業種が決まっていない行のうち7割で載りうる行（載せる行と選ばれていない行）。除外・手動で外した行と業種の決まった行は入れない", () => {
+    const shown = finalizeAll([kojiRow({ gyoshu: "" }, 1), kojiRow({ gyoshu: "" }, 2), kojiRow({ gyoshu: "" }, 3), kojiRow({ gyoshu: "" }, 4), kojiRow({ gyoshu: "8" }, 5)])
+    const [inc, unselected, excluded, manualOut, decided] = shown.rows.map((r) => r.key)
+    const inclusion = new Map<string, Inclusion>([
+      [inc!, { included: true, reason: "rule7" }],
+      [unselected!, { included: false, reason: "unselected" }],
+      [excluded!, { included: false, reason: "excluded" }],
+      [manualOut!, { included: false, reason: "manual" }],
+      [decided!, { included: true, reason: "rule7" }],
+    ])
+    const fixes = new Map(shown.rows.map((r) => [r.key, rowFix(r, () => true)]))
+    expect(gyoshuTodo(shown.rows, inclusion, fixes).map((r) => r.key)).toEqual([inc, unselected])
+  })
+
+  test("「これでよい」は要確認・AI の推定の値があり、手で入れても検査の警告が残らないときだけ", () => {
+    const base = kojiRow({}).cells
+    const guess = { ...base, gyoshu: { value: "8", status: "ai" as const, source: "AI", original: "電工", guessed: true as const, message: "工事名から" } }
+    expect(rowFix({ ...kojiRow({}), cells: guess }, () => true).fixes.find((f) => f.field === "gyoshu")).toEqual({ field: "gyoshu", kind: "guess", action: "decideGyoshu", confirm: true })
+    // 姓と名の間の空白の警告は手で同じ値を入れても残るので、「これでよい」を出さない
+    const name = { ...base, engineer: { value: "見本花子", status: "warning" as const, source: "A列", original: "見本花子", message: "姓と名の間に全角スペースを1つ入れてください" } }
+    expect(rowFix({ ...kojiRow({}), cells: name }, () => false).fixes.find((f) => f.field === "engineer")?.confirm).toBeUndefined()
+    // 空のエラーは「これでよい」で片付かない
+    const empty = { ...base, gyoshu: { value: "", status: "error" as const, source: "", original: "" } }
+    expect(rowFix({ ...kojiRow({}), cells: empty }, () => true).fixes.find((f) => f.field === "gyoshu")?.confirm).toBeUndefined()
+  })
+
+  test("顧客に聞く印は、どの欄を聞くのかを書く", () => {
+    expect(askText(["engineer"])).toBe("配置技術者は顧客に聞く")
+    expect(askText(["client", "endYm"])).toBe("注文者・完成年月は顧客に聞く")
   })
 })

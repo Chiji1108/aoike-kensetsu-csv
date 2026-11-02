@@ -146,10 +146,11 @@ export function FixSuggestionPanel({
   )
 }
 
-function summaryText(r: FixRun) {
+/** 結果の言葉。list は業種の一覧に出すとき（一覧の欄で決める）、そうでなければチャットの流れ（変更案を承認する・業種のタブで選ぶ） */
+export function summaryText(r: FixRun, list = false) {
   const by = GYOSHU_BASES.filter((b) => r.byBasis[b]).map((b) => `${GYOSHU_BASIS_LABELS[b]} ${r.byBasis[b]}`)
   const head = r.proposed ? `${r.asked} 行のうち ${r.proposed} 行に案を出しました（${by.join("・")}）。` : r.failed.length === r.asked ? "" : `${r.asked - r.failed.length} 行に案を出せませんでした。`
-  const rest = r.undecided ? `決められなかった ${r.undecided} 行は、表で業種を選んでください。` : ""
-  const trend = r.byBasis.trend || r.byBasis.workName ? "推定の行は根拠を見て承認してください。" : ""
+  const rest = r.undecided ? `決められなかった ${r.undecided} 行は、${list ? "右の欄" : "業種のタブ"}で業種を選んでください。` : ""
+  const trend = r.byBasis.trend || r.byBasis.workName ? `推定の行は根拠を見て${list ? "決めて" : "承認して"}ください。` : ""
   return `${head}${trend}${rest}`
 }
