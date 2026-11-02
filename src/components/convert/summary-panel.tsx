@@ -6,6 +6,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { Input } from "@/components/ui/input"
 import { isUsableBasis, RULE7_TAX_LABELS, type Basis, type GyoshuSummary, type Rule7Tax } from "@/lib/convert/koji-selection"
 import { parseInputNumber } from "@/lib/convert/text"
+import { fromBookCount } from "@/lib/cases/export-check"
 import { cn } from "@/lib/utils"
 
 /** 千円の表示（整数・桁区切り） */
@@ -87,12 +88,6 @@ function BasisInput({ value, label, onChange }: { value: number | undefined; lab
 
 type Side = "total" | "motouke"
 type BasisChange = (code: string, side: Side, value: number | undefined) => void
-
-/** 決算書の額を使った側の数（業種ごと） */
-export const fromBookCount = (summary: readonly GyoshuSummary[]) => ({
-  total: summary.filter((g) => g.fromBook.total).length,
-  motouke: summary.filter((g) => g.fromBook.motouke).length,
-})
 
 /** 1つの側（完成工事高・うち元請）の基準。n は決算書の額を入れた業種の数、of はその側のある業種の数 */
 const sideBasis = (n: number, of: number) => (n === 0 ? "顧客の表の合計" : n >= of ? "決算書の額" : `決算書の額（${n} 業種）・ほかは顧客の表の合計`)

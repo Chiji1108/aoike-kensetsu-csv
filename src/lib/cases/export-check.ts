@@ -63,7 +63,7 @@ export function exportCheck(output: readonly Row[], summary: readonly GyoshuSumm
     ...(g.short.motouke ? [{ code: g.code, label: g.label, side: "motouke" as const }] : []),
   ])
   const unchecked = summary.filter((g) => g.totalRatio === undefined).map((g) => ({ code: g.code, label: g.label }))
-  const fromBook = { total: summary.filter((g) => g.fromBook.total).length, motouke: summary.filter((g) => g.fromBook.motouke).length }
+  const fromBook = fromBookCount(summary)
   const mismatches: BasisMismatch[] = []
   for (const g of summary) {
     for (const side of ["total", "motouke"] as const) {
@@ -78,3 +78,9 @@ export function exportCheck(output: readonly Row[], summary: readonly GyoshuSumm
 }
 
 export const issueLabel = (i: ExportIssue) => `${fieldLabel(i.field)}: ${i.message}`
+
+/** 決算書の額を使った側の数（業種ごと）。7割と金額のタブの基準の1行と、書き出すの確認で同じ数 */
+export const fromBookCount = (summary: readonly GyoshuSummary[]) => ({
+  total: summary.filter((g) => g.fromBook.total).length,
+  motouke: summary.filter((g) => g.fromBook.motouke).length,
+})
