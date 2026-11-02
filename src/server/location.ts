@@ -4,6 +4,7 @@ import { z } from "zod"
 import { parseAiResponse, type AiBatchRequest } from "@/lib/convert/ai-tasks"
 import { tokensOfMessage, usdOf } from "@/lib/cost"
 import { checkFound, type PlaceIndex } from "@/lib/location/check"
+import { PLACE_FORMAT } from "@/lib/spec/place"
 import { normalizeOutcome, siteInput, type Found, type Outcome, type Site } from "@/lib/location/sites"
 import type { AnonymizeCaller } from "@/lib/chat/turn"
 import { searchable } from "./location-store"
@@ -65,7 +66,7 @@ const reportTool: Anthropic.Beta.BetaTool = {
     type: "object",
     properties: {
       prefecture: { type: "string", description: "47都道府県名と完全一致（「東京」でなく「東京都」）。分からなければ空文字" },
-      place: { type: "string", description: "市区町村（政令指定都市は区まで。分からなければ市まで）。都道府県名は含めない。分からなければ空文字" },
+      place: { type: "string", description: `${PLACE_FORMAT}。分からなければ空文字` },
       confident: { type: "boolean", description: "自信があれば true。少しでも迷えば false" },
       note: { type: "string", description: "根拠や迷った点を短く" },
     },
@@ -76,7 +77,7 @@ const reportTool: Anthropic.Beta.BetaTool = {
 
 const SEARCH_SYSTEM = `あなたは行政書士事務所で建設業の工事経歴書を作る補助をする。工事名と注文者から、その工事の場所（都道府県と市区町村）を Web 検索で調べる。
 - 施設名・建物名・地名・注文者（会社・官公庁・学校など）の所在地や、工事の発注・入札の情報を手がかりにする。注文者の本社の所在地は工事の場所とは限らない（工事名に地名や施設名があればそちらを優先する）。
-- 調べるのは都道府県と市区町村まで。番地は要らない。複数の地域にまたがるときは place に「広島市南区、三原市」のように並べる。
+- 調べるのは都道府県と市区町村まで。${PLACE_FORMAT}。複数の地域にまたがるときは主な現場の1つにし、confident を false にして note に書く。
 - 調べ終えたら、${REPORT_TOOL} を1回だけ呼んで答える（返事の文には答えを書かなくてよい）。検索しても場所が分からなければ prefecture と place を空文字にする。少しでも迷えば confident を false にする。`
 
 /** 根拠の URL: 引用（検索結果のどこを使ったか）を先に、無ければ検索結果の上から。続けさせた返事（pause_turn）の分も合わせて見る */

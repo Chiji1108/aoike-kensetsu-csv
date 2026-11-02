@@ -9,6 +9,8 @@ export type ValueType =
       maxWidth?: number
       /** 個人名が残っていそうな値の見分け方。name: 値そのものが氏名、residence: 「〇〇様邸」のような個人の住まい */
       person?: "name" | "residence"
+      /** 市区町村の名前（場所名。spec/place.ts の決まり） */
+      municipality?: true
     }
   | { type: "prefecture" }
   | { type: "thousandYen"; maxDigits: number }

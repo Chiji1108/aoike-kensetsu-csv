@@ -2,6 +2,7 @@ import type { PlanHints } from "../convert/heuristic-plan"
 import { parseYearMonth } from "../convert/dates"
 import { collapseSpaces, nfkc, removeSpaces } from "../convert/text"
 import { gyoshuCode, looksLikeOrganization, PERSONAL_WORK_NAME_RE, type TransformId } from "../convert/transforms"
+import { PLACE_FORMAT } from "./place"
 import { prefectureFromShortName } from "./prefectures"
 import type { CsvSpec, FieldSpec } from "./types"
 
@@ -74,8 +75,8 @@ const FIELDS = [
     label: "場所名",
     required: false,
     filing: true,
-    valueType: { type: "text" },
-    description: "工事場所の市区町村名。都道府県名は含めない",
+    valueType: { type: "text", municipality: true },
+    description: `工事場所の市区町村名。${PLACE_FORMAT}。建設業.NET は市・区・町・村で終わる値だけを取り込む`,
   },
   {
     id: "engineer",
@@ -246,7 +247,7 @@ export const KOJI_PLAN_HINTS: PlanHints<KojiFieldId> = {
       { derive: ["workName"], transform: "ai.inferPrefecture" },
     ],
     place: [
-      { match: ["市区町村", "場所名"], transform: "rule.text" },
+      { match: ["市区町村", "場所名"], transform: "rule.place" },
       { match: ADDRESS_HEADERS, transform: "rule.addressCity", shared: true },
       { derive: ["workName", "client"], transform: "ai.inferPlace" },
       { derive: ["workName"], transform: "ai.inferPlace" },

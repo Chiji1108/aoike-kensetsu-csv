@@ -118,6 +118,48 @@ test("覚えた結果で調べる → 進み具合 → 変更案 → 承認 → 
   await expect(page.getByTestId("preview-table")).toContainText("墨田区")
 })
 
+test("承認の前に行ごとの都道府県・場所名（今 → 新）と出典が見え、行を外して残りを承認できる。決まりを守らない覚えた場所名は使わない", async ({ page }) => {
+  const { customer } = await openNewCase(page)
+  created.push(customer)
+  await convertAll(page)
+  seedMemory(customer, [
+    { ...SKYTREE, prefecture: "東京都", place: "墨田区", url: "https://example.com/skytree" },
+    // 前の版で覚えた、複数の地域を並べた場所名（今の決まりでは使わない）
+    { ...REDBRICK, prefecture: "神奈川県", place: "横浜市中区、西区", url: "https://example.com/redbrick" },
+  ])
+  await saved(page)
+  await reload(page)
+  await expect(page.getByTestId("preview-table")).toBeVisible({ timeout: 120_000 })
+  await openTab(page, "location")
+  await runSearch(page)
+
+  // 一覧を開かなくても、カードに行ごとの今 → 新と出典が出る
+  const preview = page.getByTestId("location-panel").getByTestId("proposal-preview")
+  const sky = preview.getByTestId("proposal-preview-item").filter({ hasText: "東京スカイツリー" })
+  await expect(sky.locator('[data-testid="change-part"][data-label="都道府県名"]')).toContainText("東京都")
+  await expect(sky.locator('[data-testid="change-part"][data-label="場所名"]').getByTestId("change-to")).toHaveText("墨田区")
+  await expect(sky.getByTestId("change-note")).toContainText("出典: 前の年度に承認した結果")
+  const brick = preview.getByTestId("proposal-preview-item").filter({ hasText: "横浜赤レンガ" })
+  await expect(brick.locator('[data-testid="change-part"][data-label="都道府県名"]')).toContainText("神奈川県")
+  // 並べた場所名は入れず、今の場所名のまま（顧客に確かめる）
+  await expect(brick.locator('[data-testid="change-part"][data-label="場所名"]')).toContainText("今のまま")
+  await expect(brick.getByTestId("change-note")).toContainText("推定（顧客に確かめる）")
+
+  // スカイツリーの行を外し、残りをまとめて承認する（キーボードで外す）
+  await sky.getByTestId("proposal-preview-reject").focus()
+  await page.keyboard.press("Enter")
+  await expect(preview.getByTestId("proposal-preview-item").filter({ hasText: "東京スカイツリー" })).toHaveCount(0)
+  await page.getByTestId("location-panel").getByTestId("proposal-apply-all").click()
+  await expect(page.getByTestId("location-panel").getByTestId("proposal")).toHaveCount(0)
+
+  await showAllRows(page)
+  const csv = await downloadCsv(page)
+  const lines = csv.split(/\r?\n/)
+  for (const l of lines.filter((x) => x.includes("東京スカイツリー"))) expect(l).not.toContain(",東京都,墨田区,")
+  expect(lines.find((l) => l.includes("赤レンガ"))).toContain(",神奈川県,")
+  expect(csv).not.toContain("横浜市中区、西区")
+})
+
 /** 本物の AI と Web 検索（E2E_LIVE_AI=1 のときだけ。費用は1回 $0.2 ほど） */
 test("本物の検索で調べて承認すると、翌年度の案件では覚えた結果を使い、検索しない", async ({ page }) => {
   test.skip(process.env.E2E_LIVE_AI !== "1", "E2E_LIVE_AI=1 のときだけ")

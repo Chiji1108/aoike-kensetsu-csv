@@ -1,4 +1,5 @@
 import { CODE_SETS } from "../spec/code-sets"
+import { placeIssue } from "../spec/place"
 import { isPrefecture } from "../spec/prefectures"
 import type { CsvSpec, FieldSpec, ValueType } from "../spec/types"
 import { nonCp932Chars, removeSpaces } from "./text"
@@ -27,6 +28,8 @@ const VALUE_CHECKS: { [K in ValueType["type"]]: Check<K> } = {
     const width = widthOf(v)
     if (vt.maxWidth !== undefined && width > vt.maxWidth) return error(`字数が上限を超えています（${width}字／全角${vt.maxWidth}字まで。半角は0.5字）`)
     if (vt.person && PERSON_LIKE[vt.person](v)) return warning("個人名が残っていそうです（個人なら「Ａ」等の記号に）")
+    const place = vt.municipality ? placeIssue(v) : undefined
+    if (place) return error(place)
     return undefined
   },
   prefecture: (v) => (isPrefecture(v) ? undefined : error(`「${v}」は47都道府県名と一致しません`)),

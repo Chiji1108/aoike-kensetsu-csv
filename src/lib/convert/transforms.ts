@@ -1,4 +1,5 @@
 import { GYOSHU } from "../spec/code-sets"
+import { placeIssue, tidyPlace, withoutGun } from "../spec/place"
 import { isPrefecture, leadingPrefecture, prefectureFromShortName } from "../spec/prefectures"
 import { valueTypeKey, type ValueType, type ValueTypeKey } from "../spec/types"
 import { addressKey, type AddressBook } from "./address"
@@ -379,6 +380,23 @@ export const TRANSFORMS = {
       return check.ok ? reviewed(r, r.prefecture, check.message) : { value: "", status: "error", message: check.message }
     }, "empty"),
   },
+  "rule.place": {
+    id: "rule.place",
+    label: "場所名（市区町村の形に）",
+    kind: "rule",
+    accepts: ["text"],
+    fits: (vt) => vt.type === "text" && vt.municipality === true,
+    readsAddress: true,
+    // 住所データで市区町村まで読めればその名前（町名・番地を落とし、郡を除く）。読めなければ決まった処理で直せるところだけ直し、
+    // 決まりを守らない値（施設名だけ・郡だけ）は元の値をエラーで残す（直すの「AI で案を出す」＝工事場所の調査へ）
+    run: ([raw = ""], ctx) => {
+      const city = ctx.addresses.get(addressKey(raw))?.city
+      if (city) return value(city)
+      const t = tidyPlace(raw)
+      return t.issue ? fail(t.issue) : value(t.value)
+    },
+    cleanAnswer: (answer) => tidyPlace(answer).value,
+  },
   "rule.addressCity": {
     id: "rule.addressCity",
     label: "住所 → 市区町村",
@@ -391,7 +409,11 @@ export const TRANSFORMS = {
     },
     ai: aiStep("splitAddress", (raw, r) => {
       const check = verifyAddress(raw, r)
-      return check.ok ? reviewed(r, r.city, check.message) : { value: raw, status: "error", message: check.message }
+      if (!check.ok) return { value: raw, status: "error", message: check.message }
+      // 検算は郡を含めた形でしたので、場所名の決まり（郡を付けない）にそろえる
+      const city = withoutGun(r.city)
+      const issue = placeIssue(city)
+      return issue ? { value: raw, status: "error", message: `AIの市区町村「${r.city}」: ${issue}` } : reviewed(r, city, check.message)
     }),
   },
   "rule.personNameSpace": {
@@ -483,7 +505,17 @@ export const TRANSFORMS = {
     accepts: ["text"],
     multiColumn: true,
     run: () => toAi("所在地が元データに無い"),
-    ai: aiStep("inferLocation", (_raw, r) => inferred(r, isPrefecture(r.prefecture) && r.place.startsWith(r.prefecture) ? r.place.slice(r.prefecture.length) : r.place), "unknown", locationInput),
+    ai: aiStep(
+      "inferLocation",
+      (_raw, r) => {
+        const t = tidyPlace(r.place, isPrefecture(r.prefecture) ? r.prefecture : undefined)
+        // 決まりの形に直せない推定は使わない（空の推定として工事場所の調査に回す）
+        if (t.issue) return { value: "", status: "warning", message: `AIの場所名「${r.place}」を使えません: ${t.issue}` }
+        return inferred(r, t.value)
+      },
+      "unknown",
+      locationInput,
+    ),
   },
   "ai.freeform": {
     id: "ai.freeform",

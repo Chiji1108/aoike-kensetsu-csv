@@ -1,5 +1,6 @@
 import { PREFECTURES, type Prefecture } from "../spec/prefectures"
 import { z } from "zod"
+import { withoutGun } from "../spec/place"
 import { nfkc, removeSpaces } from "./text"
 
 /**
@@ -11,7 +12,7 @@ import { nfkc, removeSpaces } from "./text"
 export type AddressSplit = {
   /** 住所に書いてあった都道府県（正式名か「神奈川」のような省略形）。書いていなければ無い（市区町村から推し量らない） */
   prefecture?: Prefecture
-  /** 市区町村（政令市は区まで、郡部は郡＋町村）。住所データの正式な表記 */
+  /** 市区町村（政令市は区まで、郡部は郡を付けない町村。spec/place.ts の決まり）。住所データの正式な表記 */
   city?: string
 }
 
@@ -103,6 +104,12 @@ async function cityIn({ normalize, wards }: Reader, p: Prefecture, rest: string,
  * 都道府県は住所に書いてあるときだけ返す（市区町村から推し量らない。「北区」は東京都とは限らない）
  */
 async function splitOne(reader: Reader, key: string): Promise<AddressSplit> {
+  const split = await splitWithGun(reader, key)
+  return split.city ? { ...split, city: withoutGun(split.city) } : split
+}
+
+/** 住所を1つ分ける（市区町村はライブラリの表記のまま。郡部は郡＋町村） */
+async function splitWithGun(reader: Reader, key: string): Promise<AddressSplit> {
   const full = PREFECTURES.find((p) => key.startsWith(p))
   if (full) {
     const city = await cityIn(reader, full, key.slice(full.length), true)
@@ -110,10 +117,12 @@ async function splitOne(reader: Reader, key: string): Promise<AddressSplit> {
   }
   // 読んでみる都道府県を、市区町村の名前の索引で絞る（47都道府県すべてをライブラリで試さない）
   const folded = fold(key)
+  // 都道府県を書かずに郡から書いた住所（「愛甲郡愛川町」）は、郡を除いた名前で絞る（読むのは書いたままの住所）
+  const bareGun = folded.replace(/^.+?郡/, "")
   const tries = PREFECTURES.flatMap((p) => {
     const short = shortName(p)
     const written = short !== p && key.startsWith(short) ? [{ p, rest: key.slice(short.length), written: true }] : []
-    const bare = reader.cities.get(p)?.some((n) => folded.startsWith(n)) ? [{ p, rest: key, written: false }] : []
+    const bare = reader.cities.get(p)?.some((n) => folded.startsWith(n) || bareGun.startsWith(n)) ? [{ p, rest: key, written: false }] : []
     return [...written, ...bare]
   })
   const results = await Promise.all(tries.map(async (t) => ({ ...t, city: await cityIn(reader, t.p, t.rest, t.written) })))
