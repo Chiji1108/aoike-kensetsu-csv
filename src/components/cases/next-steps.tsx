@@ -4,12 +4,13 @@ import { FIX_KINDS, FIX_LABELS, fixActionText, type FixActionGroup, type FixCoun
 import { cn } from "@/lib/utils"
 
 /**
- * 次にやること: 答える（報告の聞き返し・承認待ちの変更案）→ 直す（職員が直すセルのある載せる行）→ 問い合わせ（顧客に聞くこと）→ 書き出す。
+ * 次にやること: 答える（報告の聞き返し・承認待ちの変更案）→ 業種を決める（7割で載りうる行の業種。決めるたびに載せる行が入れ替わるので直すより先）
+ * → 直す（職員が直すセルのある載せる行）→ 問い合わせ（顧客に聞くこと）→ 書き出す。
  * 数は表の絞り込み・問い合わせのタブ・書き出すの確認と同じもの（案件の画面が1回だけ数えて渡す）。済んだ段は済みと出して押せなくし、
  * 押すとそこへ移る
  */
 
-export type StepId = "answer" | "fix" | "inquiry" | "export"
+export type StepId = "answer" | "gyoshu" | "fix" | "inquiry" | "export"
 
 /** 問い合わせの段: todo まだ送っていない、waiting 送った・返事待ち（案件の状態が問い合わせ中・記入用Excelかメールの下書きを出した）、done 済み（聞くことが無い・返事を取り込んだ） */
 export type InquiryStep = { count: number; state: "todo" | "waiting" | "done" }
@@ -17,6 +18,8 @@ export type InquiryStep = { count: number; state: "todo" | "waiting" | "done" }
 export type NextStepsData = {
   /** チャットで答えを待つもの（報告の聞き返し・承認待ちの変更案） */
   answer: number
+  /** 業種を決める行（status.ts の gyoshuTodo。載せる行と、7割の選び直しで載りうる行） */
+  gyoshu: number
   fix: FixCounts
   /** 直す行のうち、まとめて頼める直し方（status.ts の fixActionGroups） */
   fixActions: readonly FixActionGroup[]
@@ -31,6 +34,7 @@ type Remaining = { id: Exclude<StepId, "export">; text: string }
 export function remainingSteps(s: NextStepsData): Remaining[] {
   const out: Remaining[] = []
   if (s.answer > 0) out.push({ id: "answer", text: `答える ${s.answer}` })
+  if (s.gyoshu > 0) out.push({ id: "gyoshu", text: `業種を決める ${s.gyoshu}行` })
   if (s.fix.rows > 0) out.push({ id: "fix", text: `直す ${s.fix.rows}行（${fixBreakdown(s.fix)}）` })
   if (s.inquiry.state !== "done") out.push({ id: "inquiry", text: `問い合わせ ${s.inquiry.count}件${s.inquiry.state === "waiting" ? "（送った・返事待ち）" : ""}` })
   return out
@@ -48,12 +52,12 @@ export const exportTitle = (s: NextStepsData) => {
   return left.length ? `残り: ${left.map((r) => r.text).join(" → ")}` : "残りはありません"
 }
 
-const STEP_LABEL = { answer: "答える", fix: "直す", inquiry: "問い合わせ" } as const
+const STEP_LABEL = { answer: "答える", gyoshu: "業種を決める", fix: "直す", inquiry: "問い合わせ" } as const
 
 export function NextSteps({ steps, onGo, exportDisabled, className }: { steps: NextStepsData; onGo: (id: StepId) => void; exportDisabled?: boolean; className?: string }) {
-  const counts = { answer: steps.answer, fix: steps.fix.rows, inquiry: steps.inquiry.count }
-  const done = { answer: steps.answer === 0, fix: steps.fix.rows === 0, inquiry: steps.inquiry.state === "done" }
-  const order = ["answer", "fix", "inquiry"] as const
+  const counts = { answer: steps.answer, gyoshu: steps.gyoshu, fix: steps.fix.rows, inquiry: steps.inquiry.count }
+  const done = { answer: steps.answer === 0, gyoshu: steps.gyoshu === 0, fix: steps.fix.rows === 0, inquiry: steps.inquiry.state === "done" }
+  const order = ["answer", "gyoshu", "fix", "inquiry"] as const
   const current = order.find((id) => !done[id]) ?? "export"
   const left = remainingSteps(steps).length > 0
   const waiting = steps.inquiry.state === "waiting"
@@ -84,7 +88,7 @@ export function NextSteps({ steps, onGo, exportDisabled, className }: { steps: N
               {id === "inquiry" && waiting && <span>返事待ち</span>}
               <span className="num font-medium">
                 {counts[id]}
-                {id === "fix" ? "行" : id === "inquiry" ? "件" : ""}
+                {id === "fix" || id === "gyoshu" ? "行" : id === "inquiry" ? "件" : ""}
               </span>
             </Button>
           )}
@@ -101,6 +105,7 @@ export function NextSteps({ steps, onGo, exportDisabled, className }: { steps: N
 
 function stepTitle(id: Exclude<StepId, "export">, s: NextStepsData) {
   if (id === "answer") return "チャットの聞き返し・変更案に答える"
+  if (id === "gyoshu") return "業種のタブで、7割で載りうる行の業種をまとめて決める（決めるたびに載せる行が入れ替わるので、直すより先に）"
   if (id === "fix") return [`表で直す行（${fixBreakdown(s.fix)}）`, ...s.fixActions.map(fixActionText)].join("\n")
   return s.inquiry.state === "waiting" ? "顧客に送りました。返事の記入用Excelをチャットの📎でアップロードすると取り込みます" : "問い合わせのタブで、顧客に聞くことを確かめて送る"
 }

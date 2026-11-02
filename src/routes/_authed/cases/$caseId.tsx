@@ -14,7 +14,10 @@ import { InquiryPanel } from "@/components/convert/inquiry-panel"
 import { LocationPanel, useLocationSearch } from "@/components/convert/location-panel"
 import { PreviewTable } from "@/components/convert/preview-table"
 import { ReplacePanel } from "@/components/convert/replace-panel"
-import { countFixes, fixActionGroups, rowFix, type FixActionId, type TableFilter } from "@/components/convert/status"
+import { CONFIRM_LABEL, countFixes, fixActionGroups, gyoshuTodo, rowFix, shortLabel, type FixActionId, type TableFilter } from "@/components/convert/status"
+import { GyoshuPanel, type GyoshuDecision, type GyoshuItem } from "@/components/convert/gyoshu-panel"
+import { choicesOf } from "@/lib/spec/choices"
+import { codeLabel } from "@/lib/spec/code-sets"
 import { FixSuggestionPanel, useGyoshuSuggestion } from "@/components/convert/fix-suggestion"
 import { NextSteps, type NextStepsData, type StepId } from "@/components/cases/next-steps"
 import { GyoshuSummaryTable, RoundingNote } from "@/components/convert/summary-panel"
@@ -46,7 +49,7 @@ import { askFacts, askImpact, askPrompt, askWording, needsConfirm } from "@/lib/
 import { carryoverReady } from "@/lib/chat/carryover"
 import { caseContext, NO_SOURCE_CONTEXT } from "@/lib/chat/context"
 import type { ChatAction } from "@/lib/chat/messages"
-import { addedCountAfter, answer, applyChanges, approvedChange, decide, decisionOf, discard, isAnswered, newProposal, withRecorded, type Proposal, type ProposalRecord } from "@/lib/chat/proposals"
+import { addedCountAfter, answer, applyChanges, approvedChange, decide, decisionOf, discard, isAnswered, newProposal, withRecorded, type ChatChange, type Proposal, type ProposalRecord } from "@/lib/chat/proposals"
 import { toWire } from "@/lib/chat/wire"
 import { ADDRESS_API_PATH, addressCache, addressKey, lookupAddresses, NO_ADDRESSES, type AddressBook, type AddressLookup } from "@/lib/convert/address"
 import { convertRows, editKey, editSession, resolveRows, staffEdit, type CellEdit, type RowResult } from "@/lib/convert/convert"
@@ -107,6 +110,22 @@ const ASK_KINDS: Record<PlanAskKind, { label: string; options: { value: "exclude
 }
 /** 報告の聞き返しの答えの取り消しの記録（cases/undo.ts）の印 */
 const reportUndoId = (questionId: string) => `report:${questionId}`
+/** 業種の一覧で決めたもの・「これでよい」の取り消しの記録（cases/undo.ts）の印。1回の操作ごとに1つ */
+const GYOSHU_UNDO = "gyoshu:"
+const CONFIRM_UNDO = "confirm:"
+/** 業種の AI の案（出どころ fix）の開いている変更案の、未決の業種の項目（行 → 変更案と項目の番号・案） */
+function pendingGyoshuItems(proposals: readonly Proposal[], changes: ReadonlyMap<string, readonly ChatChange[]>) {
+  const out = new Map<string, { proposalId: string; index: number; rowKey: string; edit: CellEdit }>()
+  for (const p of proposals) {
+    if (p.origin.kind !== "fix" || p.state !== "open") continue
+    changes.get(p.id)?.forEach((c, i) => {
+      if (c.kind === "cell" && c.field === "gyoshu" && decisionOf(p, i) === "pending") out.set(c.rowKey, { proposalId: p.id, index: i, rowKey: c.rowKey, edit: c.edit })
+    })
+  }
+  return out
+}
+/** 業種の選ぶ欄の選択肢 */
+const GYOSHU_CHOICES = choicesOf(KOJI_KEIREKI.fields.find((f) => f.id === "gyoshu")!)!
 
 type Plan = MappingPlan<KojiFieldId>
 type Source = { fileId: string; name: string; sheets: SheetGrid[] }
@@ -642,8 +661,10 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
    */
   const rowFixes = useMemo(() => new Map((shown ?? []).map((r) => [r.key, rowFix(r, (f) => !dismissed.has(editKey(r.key, f)))])), [shown, dismissed])
   const fixCounts = useMemo(() => (shown ? countFixes(shown, inclusion, rowFixes) : null), [shown, inclusion, rowFixes])
-  /** まとめて頼める直し方（「業種が空の N 行に AI で案を出す」など。表の上・次にやること・書き出すの確認で同じもの） */
+  /** まとめて頼める直し方（「業種が空の N 行を一覧で決める」など。表の上・次にやること・書き出すの確認で同じもの） */
   const fixGroups = useMemo(() => (shown ? fixActionGroups(shown, inclusion, rowFixes) : []), [shown, inclusion, rowFixes])
+  /** 業種を決める行（載せる行と、7割の選び直しで載りうる行）。業種のタブ・次にやることで同じもの */
+  const gyoshuRows = useMemo(() => (shown ? gyoshuTodo(shown, inclusion, rowFixes) : []), [shown, inclusion, rowFixes])
   const inquiries = useMemo(() => (output ? collectInquiries(output, { tax }) : []), [output, tax])
   /** まだ答えの無いセルの問い合わせ（外したものは数えない）。「AI で読む」に出す */
   const leftInquiries = inquiries.filter((q) => q.kind === "cell" && !dismissed.has(inquiryKey(q))).length
@@ -722,8 +743,98 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
   const undecidedLocation = work.proposals.some((p) => p.state === "open" && (proposalChanges.get(p.id) ?? []).some((c, i) => c.kind === "location" && decisionOf(p, i) === "pending"))
   const locationSearch = useLocationSearch({ caseId: kase.id, view, table: tableWire, undecided: undecidedLocation, onRecord: addRecorded, onCaseCost: setCostUsd })
   const gyoshuSuggestion = useGyoshuSuggestion({ caseId: kase.id, onRecord: addRecorded, onCaseCost: addCost })
-  /** まだ決めていない業種の AI の案がある（決めるまで重ねて頼ませない） */
-  const pendingFix = fixProposals.some((p) => p.state === "open")
+  /** 業種の AI の案の、まだ決めていない項目（行 → 変更案と項目の番号・案）。業種の一覧の「案」・決めるとき・次にやることで同じものを使う */
+  const pendingGyoshu = useMemo(() => pendingGyoshuItems(work.proposals, proposalChanges), [work.proposals, proposalChanges])
+  const gyoshuItems = useMemo(
+    (): GyoshuItem[] =>
+      gyoshuRows
+        .map((r) => {
+          const c = r.cells.gyoshu
+          const pending = pendingGyoshu.get(r.key)
+          const kind = rowFixes.get(r.key)!.gyoshu!
+          // 案: AI の案の未決の項目、無ければ今の値（AI の推定・要確認でコード表にある値）。根拠は注意書き
+          const plan = pending
+            ? { value: pending.edit.value, note: pending.edit.message ?? "" }
+            : (kind === "guess" || kind === "review") && codeLabel("gyoshu", c.value)
+              ? { value: c.value, note: c.message ?? "" }
+              : null
+          return {
+            key: r.key,
+            workName: r.cells.workName.value,
+            amount: /^\d+$/.test(r.cells.amount.value) ? r.cells.amount.value : "",
+            included: inclusion.get(r.key)?.included ?? false,
+            kind,
+            plan,
+            values: Object.fromEntries(SPEC.fields.map((f) => [f.id, r.cells[f.id].value])) as Record<KojiFieldId, string>,
+          }
+        })
+        .sort((a, b) => Number(b.amount || 0) - Number(a.amount || 0)),
+    [gyoshuRows, pendingGyoshu, rowFixes, inclusion],
+  )
+  /**
+   * 業種の AI の案の変更案のうち、一覧の外の行（表で手で直した・除外した・手動で外した行など）に未決の項目があるもの。
+   * 一覧では決められないので「答える」に数え、チャットで承認か却下するまで新しい案を頼ませない（一覧の行の未決は一覧の「案」で決める）
+   */
+  const fixOutsideList = useMemo(() => {
+    const inList = new Set(gyoshuItems.map((i) => i.key))
+    return fixProposals.filter((p) => p.state === "open" && [...pendingGyoshu.values()].some((x) => x.proposalId === p.id && !inList.has(x.rowKey)))
+  }, [fixProposals, pendingGyoshu, gyoshuItems])
+
+  /** 作業を変え、取り消しの記録が積めたかを返す（積めたときだけ「取り消す」を出す） */
+  function commitWithUndo(id: string, next: (w: CaseWork) => CaseWork) {
+    const after = next(workRef.current)
+    setWork(after)
+    return after.undo.some((e) => e.proposalId === id)
+  }
+
+  /**
+   * 業種の一覧で決める（1回の操作を1つの取り消しの記録に）。値は職員が決めた手直し（表で選んだのと同じ staffEdit）。
+   * 案が AI の案の変更案の未決の項目なら、案のまま決めた行はその項目を承認（承認と同じ値・注意書き）、違う値を選んだ行はその項目を却下にする。
+   * 取り消すと値を戻す（変更案の項目は決めたまま。チャットの承認の取り消しと同じ）。項目はそのときの作業から引く
+   */
+  function decideGyoshu(decisions: readonly GyoshuDecision[], how: "plan" | "pick") {
+    if (!decisions.length) return
+    const id = `${GYOSHU_UNDO}${crypto.randomUUID()}`
+    const pushed = commitWithUndo(id, (w) => {
+      const pending = pendingGyoshuItems(w.proposals, proposalChangesRef.current)
+      const edits = new Map(w.edits)
+      const decided = new Map<string, { applied: number[]; rejected: number[] }>()
+      for (const d of decisions) {
+        const item = pending.get(d.key)
+        const same = item?.edit.value === d.value
+        if (item) {
+          const x = decided.get(item.proposalId) ?? { applied: [], rejected: [] }
+          ;(same ? x.applied : x.rejected).push(item.index)
+          decided.set(item.proposalId, x)
+        }
+        // 案のまま決めた AI の案は、承認したときと同じ値（推定の印を外し、根拠を注意書きに残す）
+        const approved = item && same ? approvedChange(w.proposals.find((x) => x.id === item.proposalId)!, { kind: "cell", rowKey: d.key, field: "gyoshu", edit: item.edit }) : null
+        edits.set(editKey(d.key, "gyoshu"), approved?.kind === "cell" ? approved.edit : staffEdit(d.value, letters))
+      }
+      const proposals = w.proposals.map((p) => {
+        const x = decided.get(p.id)
+        return x ? decide(decide(p, x.applied, "applied"), x.rejected, "rejected") : p
+      })
+      return withUndo(w, { ...w, edits, proposals }, id, [])
+    })
+    const text = how === "plan" ? `${decisions.length} 行の業種を案のまま決めました` : "業種を決めました"
+    toast.success(text, pushed ? { action: { label: "取り消す", onClick: () => undoProposal(id, "業種の決定") } } : undefined)
+  }
+  /** 直前に業種の一覧で決めたもの（取り消せるもの） */
+  const lastGyoshuUndo = [...work.undo].reverse().find((e) => e.proposalId.startsWith(GYOSHU_UNDO) && canUndo(e)) ?? null
+
+  /**
+   * 「これでよい」: 要確認・AI の推定の値を、職員が同じ値を手で入れた手直し（by staff）にする（表で手で入れたのと同じ editSession）。取り消しの記録に残す
+   */
+  function confirmCell(rowKey: string, field: KojiFieldId) {
+    const cell = shown?.find((r) => r.key === rowKey)?.cells[field]
+    if (!cell) return
+    const session = editSession(cell, letters)
+    const id = `${CONFIRM_UNDO}${crypto.randomUUID()}`
+    const pushed = commitWithUndo(id, (w) => withUndo(w, { ...w, edits: new Map(w.edits).set(editKey(rowKey, field), session.read(session.text)) }, id, []))
+    toast.success(`${shortLabel(field)}を確かめた値にしました`, pushed ? { action: { label: "取り消す", onClick: () => undoProposal(id, `「${CONFIRM_LABEL}」`) } } : undefined)
+  }
+  const lastConfirmUndo = [...work.undo].reverse().find((e) => e.proposalId.startsWith(CONFIRM_UNDO) && canUndo(e)) ?? null
 
   /** 変換の元の表が無く（PDF だけ）、AI に一から表を作らせる案件か */
   const noSheetSource = !work.sourceFileId && onlyNonSheetSources(files)
@@ -1064,14 +1175,25 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
   function runFixAction(action: FixActionId, keys: readonly string[]) {
     if (action === "findLocation") return showTab("location")
     if (action === "askCustomer") return showTab("inquiry")
-    if (!shown || !chatEnabled) return
-    if (!wide) setWorkChoice(false)
-    void gyoshuSuggestion.run(shown, keys).then(() =>
-      requestAnimationFrame(() => document.querySelector<HTMLElement>('[data-testid="fix-suggestion"]')?.scrollIntoView({ block: "nearest", behavior: "smooth" })),
-    )
+    showTab("gyoshu")
+    // 1行から開いたときは、その行の選ぶ欄へ
+    if (keys.length === 1)
+      requestAnimationFrame(() => {
+        const row = document.querySelector<HTMLElement>(`[data-testid="gyoshu-list"] li[data-key="${CSS.escape(keys[0]!)}"]`)
+        row?.scrollIntoView({ block: "nearest" })
+        row?.querySelector<HTMLElement>('[data-testid="gyoshu-pick"]')?.focus({ preventScroll: true })
+      })
   }
-  /** AI で案を出せるか（AI が使える・頼んでいる最中でない・前の案を決め終えた） */
-  const canSuggest = chatEnabled && gyoshuSuggestion.running === null && !pendingFix
+  /** 業種の AI の案を頼む（業種の一覧から。結果は一覧の「案」と、チャットの流れの最後の変更案に出る） */
+  function suggestGyoshu(keys: readonly string[]) {
+    if (shown && canSuggest) void gyoshuSuggestion.run(shown, keys)
+  }
+  /**
+   * AI で案を出せるか（AI が使える・頼んでいる最中でない・一覧の外の行に前の案の未決が無い）。一覧の行の未決は一覧の「案」に出ていて、
+   * 頼むのは案の無い行だけなので重ならない
+   */
+  const canSuggest = chatEnabled && gyoshuSuggestion.running === null && fixOutsideList.length === 0
+  const suggestBlocked = canSuggest ? undefined : !chatEnabled ? "AI を使えません" : gyoshuSuggestion.running !== null ? "AI が案を考えています" : "前の AI の案がチャットに残っています（承認か却下してください）"
 
   function onChatAction(a: ChatAction) {
     if (a === "export") setExportOpen(true)
@@ -1264,7 +1386,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
       view={view}
       actions={proposalActions}
       busy={savingRule}
-      onRetry={canSuggest ? (keys) => runFixAction("suggestGyoshu", keys) : null}
+      onRetry={canSuggest ? suggestGyoshu : null}
     />
   )
 
@@ -1395,9 +1517,9 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
     },
   }
 
-  /** チャットに職員の答えを待つもの（承認待ちの変更案・聞き返し）。次にやることの「答える」 */
+  /** チャットに職員の答えを待つもの（承認待ちの変更案・聞き返し）。次にやることの「答える」。業種の AI の案は一覧の行の分は「業種を決める」の段で決め、一覧の外の行に未決があるものだけここに数える */
   const chatPending =
-    work.proposals.filter((p) => p.state === "open" && (p.origin.kind === "chat" || p.origin.kind === "excel" || p.origin.kind === "fix")).length + questions.filter((q) => q.answered === null).length
+    work.proposals.filter((p) => p.state === "open" && (p.origin.kind === "chat" || p.origin.kind === "excel")).length + fixOutsideList.length + questions.filter((q) => q.answered === null).length
   /**
    * 問い合わせの段: 聞くことが無いか、返事（記入用Excel）を取り込んだら済み。案件の状態が問い合わせ中か、記入用Excel・メールの下書き（件名）を
    * 出したら、送った・返事待ち
@@ -1409,12 +1531,13 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
         ? ("waiting" as const)
         : ("todo" as const)
   /** 次にやること（作業の画面の上と書き出すの確認）。数は表・問い合わせのタブと同じもの */
-  const nextSteps: NextStepsData | null = fixCounts && output ? { answer: chatPending, fix: fixCounts, fixActions: fixGroups, inquiry: { count: activeInquiries, state: inquiryState }, exportRows: output.length } : null
+  const nextSteps: NextStepsData | null = fixCounts && output ? { answer: chatPending, gyoshu: gyoshuItems.length, fix: fixCounts, fixActions: fixGroups, inquiry: { count: activeInquiries, state: inquiryState }, exportRows: output.length } : null
 
   /** 次にやることの段へ移る。答えるはチャットの最初の答えを待つものへ（狭い画面では作業の画面を閉じる） */
   function goStep(id: StepId) {
     if (id === "export") return setExportOpen(true)
     if (id === "inquiry") return showTab("inquiry")
+    if (id === "gyoshu") return showTab("gyoshu")
     if (id === "fix") {
       setFilter({ kind: "fix" })
       return showTab("table")
@@ -1429,7 +1552,7 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
     })
   }
 
-  const tabBadge = (t: WorkTab) => (t === "inquiry" ? inquiries.length : t === "location" ? locationProposals.filter((p) => p.state === "open").length : 0)
+  const tabBadge = (t: WorkTab) => (t === "inquiry" ? inquiries.length : t === "gyoshu" ? gyoshuItems.length : t === "location" ? locationProposals.filter((p) => p.state === "open").length : 0)
 
   /** 作業の画面（表と、7割・問い合わせ・工事場所・一括置換のタブ）。広い画面ではチャットの右、狭い画面では上に重ねて開く */
   const workPanel =
@@ -1486,7 +1609,17 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
               asks={askRows}
               onOpenInquiry={() => showTab("inquiry")}
               onFixAction={runFixAction}
-              suggest={{ can: canSuggest, running: gyoshuSuggestion.running !== null, pending: pendingFix }}
+              onConfirm={confirmCell}
+              confirmUndo={lastConfirmUndo ? () => undoProposal(lastConfirmUndo.proposalId, `「${CONFIRM_LABEL}」`) : null}
+            />
+          </TabsContent>
+          <TabsContent value="gyoshu" keepMounted className="min-h-0 overflow-auto p-4">
+            <GyoshuPanel
+              items={gyoshuItems}
+              choices={GYOSHU_CHOICES}
+              onDecide={decideGyoshu}
+              suggest={{ run: suggestGyoshu, blocked: suggestBlocked, running: gyoshuSuggestion.running, last: gyoshuSuggestion.last }}
+              undo={lastGyoshuUndo ? { count: lastGyoshuUndo.edits.length, onUndo: () => undoProposal(lastGyoshuUndo.proposalId, "業種の決定") } : null}
             />
           </TabsContent>
           <TabsContent value="selection" keepMounted className="min-h-0 overflow-auto p-4" data-testid="selection-section">
@@ -1657,7 +1790,6 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
             setExportOpen(false)
             runFixAction(action, keys)
           }}
-          canSuggest={canSuggest}
         />
       )}
 

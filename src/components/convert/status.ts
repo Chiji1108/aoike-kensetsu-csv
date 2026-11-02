@@ -1,6 +1,8 @@
 import type { CellResult, CellStatus, RowResult } from "@/lib/convert/convert"
 import { askReasonOf } from "@/lib/inquiry/inquiry"
-import { fieldLabel, type KojiFieldId } from "@/lib/spec/koji-keireki"
+import { checkRow, checkValue } from "@/lib/convert/validate"
+import type { Inclusion } from "@/lib/convert/koji-selection"
+import { fieldLabel, KOJI_KEIREKI, type KojiFieldId } from "@/lib/spec/koji-keireki"
 import { needsLookup } from "@/lib/location/sites"
 
 export const STATUS: Record<CellStatus, { label: string; cell: string; dot: string }> = {
@@ -50,25 +52,62 @@ export function cellFix(c: CellResult, field: string, asked: boolean): CellFixKi
   return undefined
 }
 
-/** 行の片付けること: 職員が直すセル（fixes。action はその理由の直し方。無ければセルで直す）と、顧客に聞くセルの数（ask） */
-export type RowFix<F extends string = string> = { fixes: { field: F; kind: FixKind; action?: FixActionId }[]; ask: number }
+/**
+ * 行の片付けること: 職員が直すセル（fixes。action はその理由の直し方。無ければセルで直す。confirm は「これでよい」で片付くか）と、
+ * 顧客に聞くセルの項目（ask）、業種の未決（gyoshu）。
+ * 業種は業種のタブで7割で載りうる行とまとめて決める（決めるたびに載せる行が入れ替わる）ので、直すの理由（fixes）には入れず、
+ * 「業種を決める」の段だけに数える（直すと業種を決めるで二重に数えない）
+ */
+export type RowFix<F extends string = string> = { fixes: { field: F; kind: FixKind; action?: FixActionId; confirm?: true }[]; ask: F[]; gyoshu?: FixKind }
 
 /** 行の片付けること。isAsked(field) はそのセルの問い合わせを外していないか */
 export function rowFix<F extends string>(row: RowResult<F>, isAsked: (field: F) => boolean): RowFix<F> {
   const fixes: RowFix<F>["fixes"] = []
-  let ask = 0
+  const ask: F[] = []
+  let gyoshu: FixKind | undefined
+  // 行をまたぐ検査は行ごとに1回だけ（「これでよい」を出すかに使う）
+  let rowIssues: ReadonlyMap<KojiFieldId, unknown> | null = null
+  const issuesOf = () => (rowIssues ??= checkRow(KOJI_KEIREKI, Object.fromEntries(KOJI_KEIREKI.fields.map((f) => [f.id, (row.cells as Record<string, CellResult>)[f.id]?.value ?? ""])) as Record<KojiFieldId, string>))
   for (const [field, c] of Object.entries<CellResult>(row.cells) as [F, CellResult][]) {
     const kind = cellFix(c, field, isAsked(field))
-    if (kind === "ask") ask++
+    if (kind === "ask") ask.push(field)
+    else if (kind && field === "gyoshu") gyoshu = kind
     else if (kind) {
       const action = fixActionOf(field, row.cells)
-      fixes.push(action ? { field, kind, action } : { field, kind })
+      fixes.push({ field, kind, ...(action ? { action } : {}), ...(confirmable(kind, field, c, issuesOf) ? { confirm: true as const } : {}) })
     }
   }
-  return { fixes, ask }
+  return gyoshu ? { fixes, ask, gyoshu } : { fixes, ask }
 }
 
-export const NO_FIX: RowFix<never> = { fixes: [], ask: 0 }
+export const NO_FIX: RowFix<never> = { fixes: [], ask: [] }
+
+/**
+ * 「これでよい」: 要確認・AI の推定の値を、職員が同じ値を手で入れたのと同じ手直し（by staff）にして片付ける。
+ * 手で入れた値も決まった検査（checkValue・checkRow）を通るので、検査の警告が残る値（姓と名の間の空白など）は片付かない。そういう値には出さない。
+ * 検査するのは画面の値（個人名は記号）: 手直しには本当の値（印）を書くが、finalizeRows は記号にした画面の値を検査するので、手直しのあとに検査されるのもこの値
+ */
+export const CONFIRM_LABEL = "これでよい"
+function confirmable(kind: FixKind, field: string, c: CellResult, rowIssues: () => ReadonlyMap<KojiFieldId, unknown>) {
+  if ((kind !== "review" && kind !== "guess") || !c.value) return false
+  const spec = KOJI_KEIREKI.fields.find((f) => f.id === field)
+  return !!spec && !checkValue(spec, c.value) && !rowIssues().has(field as KojiFieldId)
+}
+
+/** 顧客に聞く印の言葉（例「配置技術者は顧客に聞く」）。どの欄を聞くのかを書き、ほかの理由（業種など）と見分ける */
+export const askText = (fields: readonly string[]) => `${fields.map(shortLabel).join("・")}は顧客に聞く`
+
+/**
+ * 業種を決める行: 業種が空・エラー・要確認・AI の推定の行のうち、7割で載りうる行（載せる行と、7割の選び直しで載る側に入りうる行）。
+ * 業種を決めると、その業種の7割で選ぶ行が入れ替わる。業種が決まっていない行は、どの業種になるかでどの行とも入れ替わりうるので、
+ * 載せる行だけでなく、除外・手動で外した行のほかは全部を先に決める。業種がそろってから7割を選ぶと、入れ替わって入ってくる行の業種はもう決まっている
+ */
+export function gyoshuTodo<F extends string>(rows: readonly RowResult<F>[], inclusion: ReadonlyMap<string, Inclusion>, fixes: ReadonlyMap<string, RowFix<F>>) {
+  return rows.filter((r) => {
+    const inc = inclusion.get(r.key)
+    return (inc?.included || inc?.reason === "unselected") && fixes.get(r.key)?.gyoshu !== undefined
+  })
+}
 
 /** 表の絞り込みの状態。reason は直すの中の理由、ask は計画の聞き返しの対象の行だけ（載せない行も） */
 export type TableFilter = { kind: RowFilter; reason?: FixKind; ask?: string }
@@ -108,20 +147,21 @@ export const fixText = (f: { field: string; kind: FixKind }) => (f.kind === "emp
 
 /**
  * 直し方。理由（項目と種類）ごとに、職員が押せる操作を1つ決める（1か所の表）。
- * suggestGyoshu: 業種は事務所が決めるので、AI に案を出させて職員が承認する。
+ * decideGyoshu: 業種は事務所が決める。業種を決めるたびに7割で載せる行が入れ替わるので、1行ずつでなく「業種」のタブの一覧で
+ * 7割で載りうる行（gyoshuTodo）をまとめて決める（AI の案もそこで頼む）。
  * findLocation: 工事場所は今の調査の仕組み（費用のかかる検索は工事場所のタブで職員が押して始める）。
  * askCustomer: 顧客にしか分からない項目は問い合わせへ（外した問い合わせを戻す）。
  * 表にない理由（元請下請・金額など）は、職員がセルを選んで直す
  */
-export type FixActionId = "suggestGyoshu" | "findLocation" | "askCustomer"
+export type FixActionId = "decideGyoshu" | "findLocation" | "askCustomer"
 export const FIX_ACTIONS: Record<FixActionId, { label: string; title: string }> = {
-  suggestGyoshu: { label: "AI で案を出す", title: "AI が業種の案と根拠を出します。承認したものだけが表に入ります" },
+  decideGyoshu: { label: "業種を決める", title: "業種のタブを開きます。7割の選び直しで載る行も一緒に決めます" },
   findLocation: { label: "AI で案を出す", title: "工事場所のタブを開きます。費用の目安を見てから調べ始めます" },
   askCustomer: { label: "顧客に聞く", title: "問い合わせのタブを開きます（外した問い合わせを戻すと顧客に聞きます）" },
 }
 
 const ACTION_OF_FIELD: Partial<Record<KojiFieldId, FixActionId>> = {
-  gyoshu: "suggestGyoshu",
+  gyoshu: "decideGyoshu",
   prefecture: "findLocation",
   place: "findLocation",
   client: "askCustomer",
@@ -169,7 +209,7 @@ export function fixActionGroups(
   return [...groups.values()].map((g) => ({ action: g.action, field: g.field, kinds: [...g.kinds], keys: [...g.keys] }))
 }
 
-/** まとめて頼む操作の言葉（例「業種が空の 3 行に AI で案を出す」「注文者が空の 2 行を顧客に聞く」）。表の上・次にやること・書き出すの確認で同じ言葉 */
+/** まとめて頼む操作の言葉（例「工事場所が空の 3 行に AI で案を出す」「注文者が空の 2 行を顧客に聞く」）。表の上・次にやること・書き出すの確認で同じ言葉 */
 export function fixActionText(g: FixActionGroup) {
   const what = g.action === "findLocation" ? "工事場所" : shortLabel(g.field)
   const reasons = FIX_KINDS.filter((k) => g.kinds.includes(k)).map((k) => (k === "empty" ? "空" : FIX_LABELS[k]))
