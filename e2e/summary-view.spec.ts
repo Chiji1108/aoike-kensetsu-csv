@@ -62,6 +62,8 @@ test("表は見るだけ。「決算書の額を入れる」で開いて入れ�
   const row = table.locator("[data-gyoshu]").first()
   const code = (await row.getAttribute("data-gyoshu"))!
   const before = (await row.getByTestId("total-ratio").textContent())!
+  // 金額は見るだけの形で出す（載せる額 / 基準）
+  await expect(row.getByTestId("total-ratio").getByTestId("ratio-amounts")).toContainText(/載せる [\d,]+\s*\/ 基準 [\d,]+/)
 
   await test.step("開くとキーボードで欄に届き、入れると割合が変わる", async () => {
     await panel.getByTestId("basis-open").click()
@@ -111,6 +113,25 @@ test("表は見るだけ。「決算書の額を入れる」で開いて入れ�
     await expect(dialog.getByTestId("export-rule7")).toHaveText("7割: すべての業種で満たしています（基準は顧客の表の合計）")
     await expect(dialog.getByTestId("gyoshu-summary")).toHaveCount(0)
     await page.keyboard.press("Escape")
+  })
+
+  await test.step("書き出すの確認で打った額は Escape で閉じても確定する。読めない字なら閉じずに知らせる", async () => {
+    await page.getByTestId("export-button").click()
+    const dialog = page.getByTestId("export-dialog")
+    await dialog.getByTestId("basis-open").click()
+    const input = dialog.locator(`[data-basis-gyoshu="${code}"]`).getByRole("textbox").first()
+    await input.fill("abc")
+    await input.press("Escape")
+    await expect(dialog).toBeVisible()
+    await expect(dialog.getByText("1以上の数字（千円）で入力してください")).toBeVisible()
+    await input.fill("999999")
+    await input.press("Escape")
+    await expect(dialog).toBeHidden()
+    await expect(row.getByTestId("total-ratio").getByTestId("from-book")).toBeVisible()
+    await page.getByTestId("export-button").click()
+    await expect(dialog.getByTestId("export-basis")).toContainText("決算書 999,999 千円")
+    await page.keyboard.press("Escape")
+    await expect(dialog).toBeHidden()
   })
 })
 

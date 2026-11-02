@@ -2,16 +2,15 @@ import { useMemo } from "react"
 import { ChevronRight, CircleAlert, CircleCheck, Download, FileSpreadsheet, TriangleAlert } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
-import { BasisSection, enteredGyoshuCount, ShortGyoshuTable } from "@/components/convert/summary-panel"
+import { BasisSection, fmt, fmtSigned, GyoshuRatioTable } from "@/components/convert/summary-panel"
 import { remainingSteps, type NextStepsData, type StepId } from "@/components/cases/next-steps"
 import { FIX_ACTIONS, fixActionText, type FixActionId } from "@/components/convert/status"
-import { exportCheck, issueLabel } from "@/lib/cases/export-check"
+import { exportCheck, issueLabel, type ExportCheck } from "@/lib/cases/export-check"
 import type { RowResult } from "@/lib/convert/convert"
 import { type Basis, type GyoshuSummary, type Rule7Tax } from "@/lib/convert/koji-selection"
 import type { KojiFieldId } from "@/lib/spec/koji-keireki"
 import { cn } from "@/lib/utils"
 
-const fmt = (n: number) => Math.round(n).toLocaleString("ja-JP")
 const SIDE = { total: "完成工事高", motouke: "うち元請" } as const
 
 /**
@@ -50,8 +49,7 @@ export function ExportDialog({
   onFixAction: (action: FixActionId, keys: readonly string[]) => void
   canSuggest: boolean
 }) {
-  const check = useMemo(() => (open ? exportCheck(output, summary, basis) : null), [open, output, summary, basis])
-  const entered = enteredGyoshuCount(summary, basis) > 0
+  const check = useMemo(() => (open ? exportCheck(output, summary) : null), [open, output, summary])
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-3xl" data-testid="export-dialog">
@@ -65,22 +63,13 @@ export function ExportDialog({
           <div className="grid gap-3 text-sm">
             <Remaining steps={steps} onGo={onGo} onFixAction={onFixAction} canSuggest={canSuggest} />
             <ul className="grid gap-1.5" data-testid="export-checks">
-              <CheckLine ok={check.short.length === 0} testId="export-rule7">
-                {check.short.length === 0
-                  ? `7割: すべての業種で満たしています${entered ? "" : "（基準は顧客の表の合計）"}`
-                  : `7割に届かない: ${check.short.map((s) => `${s.label}（${SIDE[s.side]}）`).join("・")}`}
-              </CheckLine>
-              {check.short.length > 0 && (
-                <li className="pl-6">
-                  <ShortGyoshuTable summary={summary} basis={basis} />
-                </li>
-              )}
+              <Rule7Line check={check} summary={summary} />
               <CheckLine ok={check.mismatches.length === 0} testId="export-basis">
                 {check.mismatches.length === 0
-                  ? entered
+                  ? check.fromBook.total + check.fromBook.motouke
                     ? "決算書の額と合っています"
                     : "決算書の額はまだ入れていません"
-                  : check.mismatches.map((m) => `${m.label}の${SIDE[m.side]}: 決算書 ${fmt(m.entered)} 千円・表の合計 ${fmt(m.rows)} 千円（差 ${m.diff > 0 ? "+" : ""}${fmt(m.diff)} 千円）`).join(" / ")}
+                  : check.mismatches.map((m) => `${m.label}の${SIDE[m.side]}: 決算書 ${fmt(m.entered)} 千円・表の合計 ${fmt(m.rows)} 千円（差 ${fmtSigned(m.diff)} 千円）`).join(" / ")}
               </CheckLine>
               {check.mismatches.length > 0 && <li className="pl-6 text-xs text-muted-foreground">工事の漏れ・税込と税抜の取り違え・業種の分け方の違いが考えられます</li>}
               <CheckLine ok={check.errors === 0} testId="export-errors">
@@ -168,6 +157,35 @@ function Remaining({ steps, onGo, onFixAction, canSuggest }: { steps: NextStepsD
       )}
       <span className="basis-full pt-0.5 text-xs text-amber-800/80">残っていても書き出せます。</span>
     </div>
+  )
+}
+
+/**
+ * 7割の1行。全部の業種で確かめられて満たしていれば1行だけ。届かない・確かめられない（基準額が 0）業種があれば、その業種だけの表を下に出す
+ */
+function Rule7Line({ check, summary }: { check: ExportCheck; summary: readonly GyoshuSummary[] }) {
+  const { short, unchecked, fromBook } = check
+  const ok = summary.length > 0 && short.length === 0 && unchecked.length === 0
+  const text = ok
+    ? `7割: すべての業種で満たしています${fromBook.total + fromBook.motouke ? "" : "（基準は顧客の表の合計）"}`
+    : summary.length === 0
+      ? "7割: 確かめる業種がありません"
+      : [
+          ...(short.length ? [`7割に届かない: ${short.map((s) => `${s.label}（${SIDE[s.side]}）`).join("・")}`] : []),
+          ...(unchecked.length ? [`7割を確かめられない（金額が 0）: ${unchecked.map((u) => u.label).join("・")}`] : []),
+        ].join("。")
+  const codes = new Set([...short, ...unchecked].map((s) => s.code))
+  return (
+    <>
+      <CheckLine ok={ok} testId="export-rule7">
+        {text}
+      </CheckLine>
+      {codes.size > 0 && (
+        <li className="pl-6">
+          <GyoshuRatioTable summary={summary.filter((g) => codes.has(g.code))} />
+        </li>
+      )}
+    </>
   )
 }
 
