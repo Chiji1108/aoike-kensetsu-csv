@@ -196,6 +196,8 @@ test("最初はチャットだけ。📎でアップロードすると作業の�
     await expect(page.getByPlaceholder("表の中を検索")).toHaveValue("株式会社")
     await page.getByPlaceholder("表の中を検索").fill("")
     await page.getByTestId("tab-table").focus()
+    // 表 → 業種 → 7割と金額
+    await page.keyboard.press("ArrowRight")
     await page.keyboard.press("ArrowRight")
     await page.keyboard.press("Enter")
     await expect(page.getByTestId("tab-selection")).toHaveAttribute("aria-selected", "true")

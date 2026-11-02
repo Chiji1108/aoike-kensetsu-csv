@@ -78,7 +78,7 @@ export async function openCaseDelete(page: Page) {
 }
 
 /** 作業の画面のタブを開く */
-export async function openTab(page: Page, tab: "table" | "selection" | "inquiry" | "location" | "replace") {
+export async function openTab(page: Page, tab: "table" | "gyoshu" | "selection" | "inquiry" | "location" | "replace") {
   await page.getByTestId(`tab-${tab}`).click()
   await expect(page.getByTestId(`tab-${tab}`)).toHaveAttribute("aria-selected", "true")
 }

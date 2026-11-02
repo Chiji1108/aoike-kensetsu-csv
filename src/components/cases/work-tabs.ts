@@ -3,6 +3,7 @@
  */
 export const WORK_TABS = [
   { id: "table", label: "表" },
+  { id: "gyoshu", label: "業種" },
   { id: "selection", label: "7割と金額" },
   { id: "inquiry", label: "問い合わせ" },
   { id: "location", label: "工事場所" },
