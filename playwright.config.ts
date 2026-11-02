@@ -10,12 +10,15 @@ function browserPath() {
   throw new Error("Playwright の chromium がありません。`bunx playwright install chromium` で入れるか、E2E_CHROME に Chrome の実行ファイルのパスを入れてください")
 }
 
+/** dev server のポート（並べて動かす worktree とぶつからないよう E2E_PORT で変えられる） */
+const PORT = Number(process.env.E2E_PORT ?? 3211)
+
 export default defineConfig({
   testDir: "e2e",
   timeout: 300_000,
   workers: 1,
   use: {
-    baseURL: "http://localhost:3211",
+    baseURL: `http://localhost:${PORT}`,
     viewport: { width: 1500, height: 1000 },
     launchOptions: { executablePath: browserPath() },
   },
@@ -23,5 +26,5 @@ export default defineConfig({
     { name: "login", testMatch: /login\.setup\.ts/ },
     { name: "app", dependencies: ["login"], use: { storageState: STORAGE_STATE } },
   ],
-  webServer: { command: "bun run dev", url: "http://localhost:3211/login", reuseExistingServer: true, timeout: 120_000 },
+  webServer: { command: `bun run dev -- --port ${PORT}`, url: `http://localhost:${PORT}/login`, reuseExistingServer: true, timeout: 120_000 },
 })

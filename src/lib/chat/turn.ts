@@ -27,6 +27,7 @@ import { introSchema, otherCustomerTest, subjectSchema } from "../inquiry/text"
 import type { AddressLookup } from "../convert/address"
 import type { AiCache, AiCaller } from "../convert/pipeline"
 import type { Rounding } from "../convert/transforms"
+import { MAX_VIEW_CALLS, MAX_VIEW_PAGES, MAX_VIEW_PAGES_PER_CHAT, newViewState, viewFile, viewStepFinished, viewFileInputSchema, viewResultOutput, type FileViewer, type ViewFileInput, type ViewResult, type ViewState } from "./view-file"
 
 /**
  * チャットの1回の指示。AI はコード実行（Anthropic のコンテナ）で元のファイルと今の表を読み、表の変更はコードから呼ぶ道具
@@ -75,6 +76,8 @@ export function systemPrompt(rules: ChatRules, caseContext: string, files: reado
 ${fileLines || "（なし）"}
 - 今の表は、事務所の変換（列の対応＋決まった変換＋AI の整形）で作ったもの。コードから await get_table({}) で読む（JSON 文字列。行は key・source・included・cells・issues を持つ）。
 - 表を直すのは必ずコードから: await set_cells({"changes":[{"key","field","value"}]})、await set_include({"rows":[{"key","include"}]})、await ask_customer({"items":[{"key","field","reason"}]})。
+- 文字の層の無い PDF（スキャン・手書き。pypdf で文字が取れない）と画像（JPEG・PNG など）は、view_file を直接呼んでファイルそのものを見て読む（コードからは呼ばない）。PDF は pages でページを指定する（1回${MAX_VIEW_PAGES}ページ・1つの会話で${MAX_VIEW_PAGES_PER_CHAT}ページまで。見たページは以後の往復でも読み直すので、要るページだけを見る）。文字の層のある PDF は pypdf で読む方が安い。上限で見られなかったページは、返事で職員に伝える。
+  - 見て読んだ値は add_rows・set_cells・record_answers に read_from:"image" を付けて送る（道具がセルのメモに印を付ける）。読めない・自信の無い字は推測で埋めず空にする（空の欄は顧客への問い合わせに回る）。
 - 元のファイルの表に無い工事は await add_rows({"rows":[{"cells":{"field":"value"}}]}) で足す（変換の元の表が無い PDF だけの案件は、これで一から表を作る）。足した行はすべて要確認になる。返る keys で、続けて set_cells などに使える。
 - 変換の元のほかのファイル（技術者の一覧・別の年の表など）も読んで使ってよい（例: 技術者の一覧から配置技術者を埋める）。
 - 個人名は表では「〔Ａ〕」「〔未掲載１〕」の形の記号で出る。値に個人名を入れるときはこの形のまま書く（例:「〔Ａ〕邸新築工事」）。個人名をそのまま書かない。
@@ -109,7 +112,7 @@ ${fileLines || "（なし）"}
   - 要望を残しても職員への返事と作業は続ける。できないことはその場で職員に伝える（残したことは画面が知らせる）。
 - CSV は書かない（CSV の形式・7割の計算・字数・個人名の検査は決まった処理がやる）。
 - 最後に、何を何件変えたか、残った問題、職員に確かめたいことを短い日本語で返す。コードや JSON は返事に貼らない。
-- 道具を呼べるのは1回の指示で${MAX_TOOL_CALLS}回まで（コード実行は数えない）。表は get_table でまとめて読み、変更はまとめて送る。
+- 道具を呼べるのは1回の指示で${MAX_TOOL_CALLS}回まで（コード実行と view_file は数えない。view_file は別に${MAX_VIEW_CALLS}回まで）。表は get_table でまとめて読み、変更はまとめて送る。
 
 ## 14列
 ${fieldsDoc()}
@@ -184,6 +187,10 @@ export type TurnState = {
   feedbackListed: Set<string> | null
   /** この指示で残した要望（新しい要望と、件数を足した要望） */
   feedbackRecorded: { id: string; kind: FeedbackInput["kind"]; added: boolean }[]
+  /** 案件のファイルを AI に見せる状態（view_file。見せた数・範囲・上げたファイル）。無ければ道具は使えない */
+  view: ViewState | null
+  /** view_file を呼んだ回数（ほかの道具の toolCalls とは別に数える） */
+  viewCalls: number
 }
 
 export type { FeedbackDeps }
@@ -218,6 +225,9 @@ export function newTurnState(
   review: ReviewDeps | null = null,
   inquiry: InquiryDeps | null = null,
   feedback: FeedbackDeps | null = null,
+  viewer: FileViewer | null = null,
+  /** 今の会話の履歴（view_file が見せた数・範囲を数える） */
+  history: readonly ModelMessage[] = [],
 ): TurnState {
   return {
     start: table,
@@ -243,6 +253,8 @@ export function newTurnState(
     feedback,
     feedbackListed: null,
     feedbackRecorded: [],
+    view: viewer ? newViewState(viewer, history) : null,
+    viewCalls: 0,
   }
 }
 
@@ -300,6 +312,15 @@ const json = (v: unknown) => JSON.stringify(v)
 
 /** AI が足した行のセルに添える（PDF などから作った値なので、全部を要確認にする） */
 export const AI_ADDED_NOTE = "AI がファイルから作った行です。元のファイルと照らして確かめてください"
+/** 手書き・画像（文字の層の無い PDF・写真）から AI が読んだ値のセルに添える（道具の read_from:"image" で道具が付ける） */
+export const IMAGE_READ_NOTE = "手書き・画像から AI が読んだ値です。読み違いがないか元のファイルで確かめてください"
+
+/** 値をどこから読んだか（image は view_file で見た手書き・画像。セルのメモに IMAGE_READ_NOTE を付ける） */
+const valueSourceSchema = z.enum(["text", "image"]).optional()
+type ValueSource = z.infer<typeof valueSourceSchema>
+/** 手書き・画像から読んだ値のメモ（ほかのメモの前に付ける） */
+const withImageNote = (source: ValueSource, message: string | undefined) => (source === "image" ? [IMAGE_READ_NOTE, message].filter(Boolean).join(" / ") : message)
+const SOURCE_DOC = 'read_from: 値を読んだもと（"image"＝view_file で見た手書き・画像の文字。省くと text）。'
 
 
 /** AI のコードに渡す表（画面の順）。issues は検証のエラー・警告 */
@@ -363,13 +384,18 @@ export function chatTools(state: TurnState) {
   let started: TableView | null = null
   const startView = () => (started ??= deriveTable(state.start))
   /** 回数の上限を数える。超えたら道具を動かさず、ここまでで返すよう伝える */
-  const counted =
-    <A,>(run: (args: A) => string | Promise<string>) =>
-    async (args: A) => {
-      if (++state.toolCalls > MAX_TOOL_CALLS)
-        return json({ ok: false, error: `この指示で道具を呼べる回数（${MAX_TOOL_CALLS}回）を使い切りました。ここまでの変更案と残りを職員に返してください。` })
-      return run(args)
+  const limited =
+    <A, R>(key: "toolCalls" | "viewCalls", max: number, refuse: (error: string) => R, run: (args: A, options: { abortSignal?: AbortSignal }) => R | Promise<R>) =>
+    async (args: A, options: { abortSignal?: AbortSignal } = {}): Promise<R> => {
+      if (++state[key] > max)
+        return refuse(
+          key === "viewCalls"
+            ? `この指示でファイルを見られる回数（${max}回）を使い切りました。見られなかったファイル・ページを職員に伝え、ここまでの変更案を返してください。`
+            : `この指示で道具を呼べる回数（${max}回）を使い切りました。ここまでの変更案と残りを職員に返してください。`,
+        )
+      return run(args, options)
     }
+  const counted = <A,>(run: (args: A) => string | Promise<string>) => limited<A, string>("toolCalls", MAX_TOOL_CALLS, (error) => json({ ok: false, error }), run)
   /** ルールの案・振り返りの材料の個人名（表の人と、分かっている個人名。指示の間で1回だけ作る。集められなければ道具は理由を返す） */
   // 名前は確かめるときの表（この指示で AI が入れた手直しも）から集める。分かっている個人名は指示の間で1回だけ読む
   let knownNames: Promise<Iterable<string>> | null = null
@@ -418,6 +444,21 @@ export function chatTools(state: TurnState) {
   }
 
   return {
+    view_file: tool({
+      description:
+        `案件のファイル（PDF・JPEG・PNG・GIF・WebP の画像）をそのまま見る。文字の層の無い PDF（スキャン・手書き）や画像を読むときに使う。file はコンテナの中の名前（例 file-2.pdf）、` +
+        `pages は PDF のページ（1 から。例「1-5」。省くと全部。1回${MAX_VIEW_PAGES}ページ・1つの会話で${MAX_VIEW_PAGES_PER_CHAT}ページまで）。` +
+        "見せたファイルは以後の往復でも読み直すので、要るページだけを見る。{ok, file, pages?:{from, to, total}} とファイルを返す（見られなければ ok:false と error）。",
+      inputSchema: viewFileInputSchema,
+      execute: limited<ViewFileInput, ViewResult>("viewCalls", MAX_VIEW_CALLS, (error) => ({ ok: false, error }), async (input, { abortSignal }) => {
+        if (!state.view) return { ok: false, error: "ファイルを見る道具は今使えません" }
+        const result = await viewFile(state.view, input, abortSignal)
+        const pages = result.ok && result.pages ? ` ${result.pages.from}-${result.pages.to}/${result.pages.total}ページ` : ""
+        state.log.push({ tool: "view_file", summary: result.ok ? `${result.file}${pages}${"repeated" in result ? "（もう見せた）" : ""}` : `${input.file}: ${result.error}` })
+        return result
+      }),
+      toModelOutput: ({ output }) => viewResultOutput(output),
+    }),
     get_table: tool({
       description:
         "今の表（この指示で出した変更案を重ねたもの）を JSON 文字列で返す: [{key, source, included, why, excluded?, cells:{field:value}, issues?:{field:message}}]。only_included=true なら CSV に載せる行だけ。",
@@ -438,9 +479,9 @@ export function chatTools(state: TurnState) {
       providerOptions: FROM_CODE,
     }),
     set_cells: tool({
-      description: "セルの値を変える案を出す。changes: [{key, field, value}]。値の個人名は「〔Ａ〕」の形のまま。JSON 文字列 {ok, applied, report} を返す（読めない key・記号があれば ok:false で何も変えない）。",
-      inputSchema: z.strictObject({ changes: z.array(z.object({ key: z.string(), field: fieldIdSchema, value: z.string().max(500) })).max(5000) }),
-      execute: counted<{ changes: { key: string; field: KojiFieldId; value: string }[] }>(async ({ changes }) => {
+      description: `セルの値を変える案を出す。changes: [{key, field, value}]。値の個人名は「〔Ａ〕」の形のまま。${SOURCE_DOC}JSON 文字列 {ok, applied, report} を返す（読めない key・記号があれば ok:false で何も変えない）。`,
+      inputSchema: z.strictObject({ changes: z.array(z.object({ key: z.string(), field: fieldIdSchema, value: z.string().max(500) })).max(5000), read_from: valueSourceSchema }),
+      execute: counted<{ changes: { key: string; field: KojiFieldId; value: string }[]; read_from?: ValueSource }>(async ({ changes, read_from: source }) => {
         const known = keys()
         const unknownKeys = changes.filter((c) => !known.has(c.key)).map((c) => c.key)
         const read = changes.map((c) => ({ c, edit: staffEdit(c.value.trim(), state.letters) }))
@@ -459,7 +500,7 @@ export function chatTools(state: TurnState) {
           })
         return push(
           "set_cells",
-          anonymized.changes.map((c) => ({ kind: "cell", rowKey: c.key, field: c.field, edit: c.edit })),
+          anonymized.changes.map((c) => ({ kind: "cell", rowKey: c.key, field: c.field, edit: source === "image" ? imageEdit(c.edit) : c.edit })),
           `${changes.length}セル`,
         )
       }),
@@ -467,9 +508,9 @@ export function chatTools(state: TurnState) {
     }),
     add_rows: tool({
       description:
-        "元のファイルの表に無い工事（行）を足す案を出す。rows: [{cells:{field:value}}]（空の項目は書かない）。値の個人名は「〔Ａ〕」の形。足した行は要確認になる。JSON 文字列 {ok, keys, report} を返す（keys は足した行の key、rows と同じ順）。",
-      inputSchema: z.strictObject({ rows: z.array(z.object({ cells: z.partialRecord(fieldIdSchema, z.string().max(500)) })).min(1).max(2000) }),
-      execute: counted<{ rows: { cells: Partial<Record<KojiFieldId, string>> }[] }>(async ({ rows }) => {
+        `元のファイルの表に無い工事（行）を足す案を出す。rows: [{cells:{field:value}}]（空の項目は書かない）。値の個人名は「〔Ａ〕」の形。足した行は要確認になる。${SOURCE_DOC}JSON 文字列 {ok, keys, report} を返す（keys は足した行の key、rows と同じ順）。`,
+      inputSchema: z.strictObject({ rows: z.array(z.object({ cells: z.partialRecord(fieldIdSchema, z.string().max(500)) })).min(1).max(2000), read_from: valueSourceSchema }),
+      execute: counted<{ rows: { cells: Partial<Record<KojiFieldId, string>> }[]; read_from?: ValueSource }>(async ({ rows, read_from: source }) => {
         if (state.current.added.length + rows.length > MAX_ADDED_ROWS)
           return json({ ok: false, error: `足せる行は案件で ${MAX_ADDED_ROWS} 行までです（今 ${state.current.added.length} 行）。何も足していません。` })
         const planned = rows.map((r) => ({ key: newAddedKey(), cells: Object.entries(r.cells).flatMap(([f, v]) => (v?.trim() ? [{ field: f as KojiFieldId, value: v.trim() }] : [])) }))
@@ -486,7 +527,7 @@ export function chatTools(state: TurnState) {
         const byRow = new Map<string, Partial<Record<KojiFieldId, CellEdit>>>()
         for (const c of anonymized.changes) {
           const { status: _, ...edit } = c.edit
-          byRow.set(c.key, { ...byRow.get(c.key), [c.field]: { ...edit, status: "warning", message: [AI_ADDED_NOTE, edit.message].filter(Boolean).join(" / ") } })
+          byRow.set(c.key, { ...byRow.get(c.key), [c.field]: { ...edit, status: "warning", message: [AI_ADDED_NOTE, withImageNote(source, edit.message)].filter(Boolean).join(" / ") } })
         }
         return push(
           "add_rows",
@@ -602,8 +643,9 @@ export function chatTools(state: TurnState) {
     record_answers: tool({
       description:
         "顧客の回答を表に入れる案を出す。items: [{key, field, answer} | {key, field, confirm:true}]。answer は顧客の答え（年月は「2024年4月」、工事場所は field=place で都道府県から市区町村まで、注文者・工事名・配置技術者は書いたまま）。" +
-        "返ってきた Excel（印付き・記入用Excel）の取り込みと同じ決まりで値にし（注文者・工事名は匿名化する）、JSON 文字列 {ok, applied, answered（問い合わせへの答え）, confirmed, corrected（聞いていない項目の訂正。送った項目だけ変える）, same, invalid:[{key, field, answer, message}], needsCheck, report} を返す（読めない答えは入れず invalid で返す）。返事では問い合わせへの答えと訂正を分けて職員に伝える。",
+        `${SOURCE_DOC}返ってきた Excel（印付き・記入用Excel）の取り込みと同じ決まりで値にし（注文者・工事名は匿名化する）、JSON 文字列 {ok, applied, answered（問い合わせへの答え）, confirmed, corrected（聞いていない項目の訂正。送った項目だけ変える）, same, invalid:[{key, field, answer, message}], needsCheck, report} を返す（読めない答えは入れず invalid で返す）。返事では問い合わせへの答えと訂正を分けて職員に伝える。`,
       inputSchema: z.strictObject({
+        read_from: valueSourceSchema,
         items: z
           .array(
             z
@@ -613,7 +655,7 @@ export function chatTools(state: TurnState) {
           .min(1)
           .max(2000),
       }),
-      execute: counted<{ items: { key: string; field: KojiFieldId; answer?: string; confirm?: true }[] }>(async ({ items }) => {
+      execute: counted<{ items: { key: string; field: KojiFieldId; answer?: string; confirm?: true }[]; read_from?: ValueSource }>(async ({ items, read_from: source }) => {
         const deps = state.answers
         if (!deps) return json({ ok: false, error: "顧客の回答を読む道具は今使えません" })
         const known = keys()
@@ -629,9 +671,12 @@ export function chatTools(state: TurnState) {
           view().shown,
           { ctx: { rounding: state.current.rounding }, lookup: deps.lookup, cache: state.answerCache, callAi, fields: state.plan?.plan.fields ?? {} },
         )
+        const confirmed = new Set(items.flatMap((i) => (i.confirm ? [`${i.key}:${i.field}`] : [])))
         const changes = report.edits.map(([key, edit]): ChatChange => {
           const at = key.lastIndexOf(":")
-          return { kind: "cell", rowKey: key.slice(0, at), field: key.slice(at + 1) as KojiFieldId, edit }
+          const field = key.slice(at + 1) as KojiFieldId
+          // 印を付けるのは顧客が答えた値だけ（今の値のとおりという確認 confirm:true は、読んだ値ではない）
+          return { kind: "cell", rowKey: key.slice(0, at), field, edit: source === "image" && !confirmed.has(key) ? imageEdit(edit) : edit }
         })
         const result = answerResult(report)
         if (!changes.length) {
@@ -893,6 +938,16 @@ export function chatTools(state: TurnState) {
   }
 }
 
+/**
+ * 手書き・画像から読んだ値の手直し（set_cells・record_answers）: セルのメモの前に IMAGE_READ_NOTE を付け、要確認（warning）にする。
+ * 要確認は「直す」に出て、職員が元のファイルと見比べて「これでよい」で片付ける（読み違いを確かめないまま CSV に出さない）。
+ * 推定（guessed）にはしないので、顧客への問い合わせには回らない（読み違いは事務所で確かめる）。エラーの値はエラーのまま
+ */
+function imageEdit(edit: CellEdit): CellEdit {
+  const message = withImageNote("image", edit.message)
+  return { ...edit, ...(edit.status === "error" ? {} : { status: "warning" as const }), message }
+}
+
 /** 要望に入れない、案件の工事名とその注文者 */
 const caseWorks = (view: TableView) => view.shown.map((r) => ({ client: r.cells.client.value, workName: r.cells.workName.value }))
 
@@ -945,6 +1000,8 @@ export function startTurn(args: TurnArgs) {
     maxOutputTokens: 64_000,
     abortSignal: args.abortSignal,
     onStepFinish: (step) => {
+      // この往復で見せたファイルは、次の API の呼び出しで初めて送る（API が断ったら、そのファイルを見られないと覚える）
+      if (args.state.view) viewStepFinished(args.state.view)
       const meta = step.providerMetadata?.anthropic as { container?: { id: string; expiresAt: string } | null } | undefined
       args.onStep?.({ usage: step.usage, messages: step.response.messages, container: meta?.container ?? null })
     },
@@ -966,20 +1023,26 @@ export function startTurn(args: TurnArgs) {
 
 const replaceAt = <T,>(xs: readonly T[], i: number, x: T) => xs.map((y, k) => (k === i ? x : y))
 const CACHE = { anthropic: { cacheControl: { type: "ephemeral" } } }
+/**
+ * キャッシュの区切りを付けられる道具の呼び出しと結果: コード実行と、直接呼ぶ view_file（見せたファイルは大きいので、
+ * 結果の直後に区切りを置き、以後の往復でキャッシュから読む）
+ */
+const CACHEABLE_TOOLS: ReadonlySet<string> = new Set(["code_execution", "view_file"])
 
 /**
- * 最後の文章かコード実行のブロックにキャッシュの区切りを付ける。コードから呼んだ道具の呼び出しと結果には付けられない
+ * 最後の文章かコード実行・view_file のブロックにキャッシュの区切りを付ける。コードから呼んだ道具の呼び出しと結果には付けられない
  * （Claude の文脈に入らないブロックなので 400 になる）
  */
 export function withCacheBreakpoint(messages: ModelMessage[]): ModelMessage[] {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i]!
     if (m.role === "user" && typeof m.content === "string") return replaceAt(messages, i, { ...m, content: [{ type: "text", text: m.content, providerOptions: CACHE }] })
-    if ((m.role !== "user" && m.role !== "assistant") || typeof m.content === "string") continue
+    // tool は直接呼んだ道具の結果（view_file の結果に区切りを付ける。コードから呼んだ道具の結果は CACHEABLE_TOOLS に無いので付けない）
+    if ((m.role !== "user" && m.role !== "assistant" && m.role !== "tool") || typeof m.content === "string") continue
     const parts = m.content as { type: string; toolName?: string; providerOptions?: unknown }[]
     for (let j = parts.length - 1; j >= 0; j--) {
       const p = parts[j]!
-      const ok = p.type === "text" || ((p.type === "tool-call" || p.type === "tool-result") && p.toolName === "code_execution")
+      const ok = p.type === "text" || ((p.type === "tool-call" || p.type === "tool-result") && CACHEABLE_TOOLS.has(p.toolName ?? ""))
       if (ok) return replaceAt(messages, i, { ...m, content: replaceAt(parts, j, { ...p, providerOptions: CACHE }) } as ModelMessage)
     }
   }

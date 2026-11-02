@@ -48,6 +48,7 @@ import { baseRows, editRows, orderAndFinalize, selectRows } from "@/lib/cases/vi
 import { askFacts, askImpact, askPrompt, askWording, needsConfirm } from "@/lib/cases/ask-impact"
 import { carryoverReady } from "@/lib/chat/carryover"
 import { caseContext, NO_SOURCE_CONTEXT } from "@/lib/chat/context"
+import { viewKindOf } from "@/lib/chat/view-kind"
 import type { ChatAction } from "@/lib/chat/messages"
 import { addedCountAfter, answer, applyChanges, approvedChange, decide, decisionOf, discard, isAnswered, newProposal, withRecorded, type ChatChange, type Proposal, type ProposalRecord } from "@/lib/chat/proposals"
 import { toWire } from "@/lib/chat/wire"
@@ -461,7 +462,9 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
       const saved = await keepFile("source", f, f.name)
       if (!saved) continue
       if (isPdf(saved.name) || !isSheetFile(saved.name)) {
-        note({ name: f.name, text: "届いたファイルとして保存しました（チャットの AI は読めます）" })
+        // HEIC（iPhone の写真）は Claude が見られない（lib/chat/view-file.ts）。保存はして、JPEG で付け直すよう知らせる
+        if (viewKindOf(saved.name)?.kind === "heic") note({ name: f.name, text: "届いたファイルとして保存しました。HEIC の写真はチャットの AI が見られないので、JPEG で保存し直して付けてください", tone: "error" })
+        else note({ name: f.name, text: "届いたファイルとして保存しました（チャットの AI は読めます）" })
         continue
       }
       if (warnsUnlinked(kind, hasSource)) {

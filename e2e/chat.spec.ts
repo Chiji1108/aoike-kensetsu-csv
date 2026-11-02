@@ -1,9 +1,12 @@
+import { fileURLToPath } from "node:url"
 import { expect, test, type Page, type Route } from "@playwright/test"
 import { createUIMessageStream, createUIMessageStreamResponse } from "ai"
 import type { ChatMetadata } from "../src/lib/chat/messages"
 import type { ChatChange, Proposal } from "../src/lib/chat/proposals"
 import { callsServerFn, caseCostText, caseCostUsd, convertFixture, csvCount, deleteCustomer, downloadCsv, open, openNewCase, reload, showAllRows } from "./helpers"
 import { syntheticPdf } from "./pdf"
+import { NO_SOURCE_CONTEXT } from "../src/lib/chat/context"
+import { AI_ADDED_NOTE, IMAGE_READ_NOTE } from "../src/lib/chat/turn"
 
 const FIXTURE = new URL("../fixtures/sample-messy.xlsx", import.meta.url).pathname
 
@@ -423,6 +426,64 @@ test("PDF だけの案件: チャットで AI が作った行は変更案にな�
   await open(page, caseUrl)
   await showAllRows(page)
   await expect(rows).toHaveCount(2)
+})
+
+const SCAN_PDF = fileURLToPath(new URL("./fixtures/scan.pdf", import.meta.url))
+const PHOTO = fileURLToPath(new URL("../fixtures/eval/synth-scan/手書きメモ.jpg", import.meta.url))
+
+test("スキャンの PDF と手書きの写真だけの案件: チャットに AI がそのまま見る指示が届き、手書き・画像から読んだ行は印付きの変更案になる", async ({ page }) => {
+  const opened = await openNewCase(page)
+  created.push(opened.customer)
+  await page.getByTestId("chat-file-input").setInputFiles([SCAN_PDF, PHOTO])
+  await expect(page.getByTestId("no-sheet-source")).toBeVisible()
+  await expect(page.getByTestId("no-sheet-source")).toContainText("写真も AI が見て読みます")
+  const note = `${AI_ADDED_NOTE} / ${IMAGE_READ_NOTE}`
+  await fakeChat(page, [
+    (body) => {
+      // 変換の元の表が無い案件の文脈で、文字の層の無い PDF と画像は view_file で見て読むよう伝える
+      expect((body as unknown as { context: string }).context).toBe(NO_SOURCE_CONTEXT)
+      expect(NO_SOURCE_CONTEXT).toContain("view_file")
+      return {
+        text: "スキャンの PDF から1件、写真から1件の工事を足す案を出しました。",
+        changes: [
+          { kind: "add", rowKey: "add-e2e-scan-1", by: "chat", cells: { gyoshu: { value: "8", by: "chat", status: "warning", message: note }, client: { value: "さいたま市", by: "chat", status: "warning", message: note }, motoukeShitauke: { value: "0", by: "chat", status: "warning", message: note }, workName: { value: "サンプル中学校体育館照明LED化工事", by: "chat", status: "warning", message: note }, amount: { value: "18640", by: "chat", status: "warning", message: note } } },
+          { kind: "add", rowKey: "add-e2e-scan-2", by: "chat", cells: { gyoshu: { value: "8", by: "chat", status: "warning", message: note }, client: { value: "株式会社サンプル製作所", by: "chat", status: "warning", message: note }, workName: { value: "工場動力配線工事", by: "chat", status: "warning", message: note }, amount: { value: "5270", by: "chat", status: "warning", message: note } } },
+        ],
+      }
+    },
+  ])
+  await send(page, "PDF と写真から工事経歴の表を作って")
+  const proposal = page.getByTestId("proposal")
+  await expect(proposal).toContainText("工事を足す 2")
+  await proposal.getByTestId("proposal-apply-all").click()
+  await showAllRows(page)
+  const rows = page.locator('[data-testid="preview-table"] tbody tr[data-row-key]')
+  await expect(rows).toHaveCount(2)
+  await expect(rows.first()).toContainText("サンプル中学校体育館照明LED化工事")
+  await expect(rows.first().locator(`[title*="${IMAGE_READ_NOTE}"]`).first()).toBeAttached()
+})
+
+test("本物の AI: スキャンの PDF の2ページ目（手書き）だけを見て行を足す（ページを切り出して見せる）", async ({ page }) => {
+  test.skip(process.env.E2E_LIVE_AI !== "1", "E2E_LIVE_AI=1 のときだけ")
+  const opened = await openNewCase(page)
+  created.push(opened.customer)
+  await page.getByTestId("chat-file-input").setInputFiles(fileURLToPath(new URL("../fixtures/eval/synth-scan/工事経歴_スキャン.pdf", import.meta.url)))
+  await expect(page.getByTestId("no-sheet-source")).toBeVisible()
+  await send(page, "PDF の2ページ目（手書きの表）の工事だけを表に足して。1ページ目は見なくていい。業種は電気（8）")
+  await expect(page.getByTestId("chat-reply-cost")).toBeVisible({ timeout: 300_000 })
+  const proposal = page.getByTestId("proposal").last()
+  if (await proposal.getByTestId("confirmation-yes").isVisible()) await proposal.getByTestId("confirmation-yes").click()
+  await expect(proposal).toContainText("工事を足す 2")
+  await proposal.getByTestId("proposal-apply-all").click()
+  await showAllRows(page)
+  const rows = page.locator('[data-testid="preview-table"] tbody tr[data-row-key]')
+  await expect(rows).toHaveCount(2)
+  await expect(rows.first().locator(`[title*="${IMAGE_READ_NOTE}"]`).first()).toBeAttached()
+  // AI は2ページ目だけを見た（サーバーが PDF のページを切り出して見せた）
+  const caseId = new URL(opened.caseUrl).pathname.split("/").at(-1)
+  const history = (await (await page.request.get(`/api/cases/${caseId}/chat`)).json()) as { messages: { parts: { type: string; output?: { ok?: boolean; pages?: unknown } }[] }[] }
+  const views = history.messages.flatMap((m) => m.parts.filter((p) => p.type === "tool-view_file" && p.output?.ok).map((p) => p.output!.pages))
+  expect(views).toContainEqual({ from: 2, to: 2, total: 2 })
 })
 
 test("本物の AI: PDF だけの案件で AI が一から表を作る", async ({ page }) => {

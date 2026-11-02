@@ -3,7 +3,7 @@ import Anthropic, { toFile } from "@anthropic-ai/sdk"
 import { createUIMessageStream, createUIMessageStreamResponse, generateId, toUIMessageStream, type ModelMessage, type UserModelMessage } from "ai"
 import { z } from "zod"
 import { getDb } from "@/db"
-import { containerName, contentTypeOf, type Case, type FileKind } from "@/lib/cases/types"
+import { containerName, contentTypeOf, r2KeyOf, type Case, type FileKind } from "@/lib/cases/types"
 import { fromWire, caseTableWireSchema } from "@/lib/chat/wire"
 import { ENDED_TEXT, type ChatHistory, type ChatMessage, type ChatMetadata } from "@/lib/chat/messages"
 import { approvedChatProposals, carryoverPrompt, cleanCarryoverCodes, codesFromUi, knownWords, namesForCarryover, type Carryover } from "@/lib/chat/carryover"
@@ -44,6 +44,7 @@ import { personalChecker } from "./location-guard"
 import { namesOfSaved, readSavedCase } from "./case-names"
 import { guardPersonal, type Site } from "@/lib/location/sites"
 import { GYOSHU } from "@/lib/spec/code-sets"
+import { unviewableAfter, viewIdle, type FileViewer } from "@/lib/chat/view-file"
 
 
 const requestSchema = z.object({
@@ -211,6 +212,24 @@ async function runTurn(request: Request, caseId: string): Promise<Response> {
   /** ほかの顧客の名前（問い合わせのメールの下書きと要望に入れない。指示の間で1回だけ読む） */
   let others: Promise<readonly string[]> | undefined
   const otherCustomers = () => (others ??= store.otherCustomerNames(db, kase.customerId))
+  // 案件のファイルを AI にそのまま見せる（view_file。文字の層の無い PDF・画像）。コンテナに置いたのと同じ Files API のファイルを見せ、
+  // PDF のページを切り出したとき・画像の拡張子と中身が違うときだけ新しく上げる（上げたものは state.view.uploads に溜め、会話の作ったファイルとして記録して会話を終えるときに消す）。
+  // 中身は案件のファイルの R2 のキー（r2KeyOf。保存するときと同じ決まり）から読み、DB を引き直さない
+  const sizeOf = new Map(files.map((f) => [f.id, f.size]))
+  const viewer: FileViewer = {
+    // 案件から消したファイルは見せない（会話の履歴にはまだあるが、元のファイルが無い）
+    files: session.files.flatMap((f) => {
+      const size = sizeOf.get(f.caseFileId)
+      const unviewable = session.unviewable?.find((u) => u.name === f.name)?.reason
+      return size === undefined ? [] : [{ name: f.name, original: f.original, id: f.anthropicId, size, ...(unviewable ? { unviewable } : {}) }]
+    }),
+    read: async (name) => {
+      const f = session.files.find((x) => x.name === name)
+      const object = f && (await env.FILES.get(r2KeyOf(caseId, f.caseFileId)))
+      return object ? new Uint8Array(await object.arrayBuffer()) : null
+    },
+    upload: async (bytes, name, type) => (await anthropic().files.upload({ file: await toFile(bytes, name, { type }) })).id,
+  }
   // 注文者・工事名に AI が書いた値は、変換と同じ匿名化の AI に通す（lib/chat/turn.ts の anonymizeChanges）
   const state = newTurnState(
     fromWire(body.table),
@@ -250,6 +269,8 @@ async function runTurn(request: Request, caseId: string): Promise<Response> {
       names: async () => [customer?.name ?? "", ...(await otherCustomers())],
       known: [rules.global, rules.customer],
     },
+    viewer,
+    session.model,
   )
   /** 履歴・作ったファイル・費用を書き終えたら resolve する。印がまだ自分のもの（画面の会話を書いて下ろしてよい）なら true */
   const recorded = Promise.withResolvers<boolean>()
@@ -297,8 +318,13 @@ async function runTurn(request: Request, caseId: string): Promise<Response> {
           putProposal: proposal && (() => putProposal(caseId, { proposal, changes: state.pending })),
           deleteProposal: () => env.FILES.delete(proposalKey(caseId, proposal!.id)),
           cleanup: () => env.FILES.delete(stopKey(caseId, turn.id)),
-          record: (ok) => {
-            const settled = settleSession(session, ok ? outcome : { ...outcome, completed: null }, added.length > 0)
+          record: async (ok) => {
+            // 止めた回は view_file が上げている途中のことがあるので、上げ終わるのを待ってから記録する（上げたものは必ず記録して、会話を終えるときに消す）
+            if (state.view) await viewIdle(state.view)
+            const settled = settleSession(session, ok ? outcome : { ...outcome, completed: null }, added.length > 0, {
+              uploads: state.view?.uploads,
+              unviewable: state.view && failure ? unviewableAfter(state.view, failure) : [],
+            })
             // 去年のコードを添えた回が履歴に入ったら、この会話ではもう添えない
             return record(caseId, loaded, ok && outcome.completed && carryText ? { ...settled, carryover: true } : settled)
           },
