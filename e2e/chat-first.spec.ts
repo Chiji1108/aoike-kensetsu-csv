@@ -175,6 +175,8 @@ test("ファイルをアップロードすると自動で変換して報告で�
     await dialog.getByTestId("download-button").click()
     const text = new TextDecoder("shift_jis").decode(readFileSync((await (await csv).path())!))
     expect(text.split("\r\n").filter(Boolean)).toHaveLength(rows)
+    // Excel で開いて保存すると文字化けするので、ダウンロードしたときに知らせる
+    await expect(page.getByText("CSV は Excel で開いて保存しないでください", { exact: false })).toBeVisible()
     await expect(page.locator('[data-testid="file-list"] [data-kind="final_sheet"]')).toHaveCount(1)
   })
 })

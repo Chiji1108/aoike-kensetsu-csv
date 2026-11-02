@@ -1016,6 +1016,8 @@ function CaseWorkspace({ kase, customer, files: initialFiles, state, chatEnabled
     const bytes = toCsvBytes(SPEC, output)
     const name = csvFileName(SPEC, customer.name, new Date())
     saveFile(bytes, name, "text/csv")
+    // Excel で開いて保存すると文字コードが変わり、建設業.NET で文字化けする（都道府県も読めず選ぶ欄の先頭になる）
+    toast.info("CSV は Excel で開いて保存しないでください（文字化けします）。そのまま建設業.NET に取り込んでください。直すときは Excel をダウンロードして直し、📎でアップロードし直します。", { duration: 10000 })
     void keepFile("csv", new Blob([bytes as BlobPart], { type: "text/csv" }), name)
   }
 
