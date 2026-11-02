@@ -140,6 +140,14 @@ describe("印付きの Excel を書く", () => {
     expect(m.plan.askCount).toBe(m.plan.cells.length)
   })
 
+  test("ほかの列から推し量る変換（工事名から工事場所）の項目は、その列に付けずに列を足す", async () => {
+    const c = await convertSource(await sourceXlsx())
+    const plan = { ...c.plan, fields: { ...c.plan.fields, place: { kind: "column" as const, column: 2, transform: "ai.inferPlace" as const } } }
+    const placement = placeMarks(c.sheets, plan, c.rows, c.inquiries)!
+    expect(placement.columns.map((x) => x.header)).toContain("工事場所（ご記入ください）")
+    expect(placement.cells.some((x) => x.col === 2)).toBe(false)
+  })
+
   test("足した行（元のファイルに無い工事）の問い合わせは「追加の確認」のシートにまとめる", async () => {
     const source = await sourceXlsx()
     const c = await convertSource(source)

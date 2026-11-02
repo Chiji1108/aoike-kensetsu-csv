@@ -105,12 +105,17 @@ const textAt = (grid: SheetGrid | undefined, row: number, cols: readonly number[
     .join(" ")
 const storedOf = (r: KojiRow, f: KojiFieldId) => r.cells[f].stored ?? r.cells[f].value
 
-/** 計画がその項目に使う元の列（無ければ null。列を足す） */
+/**
+ * 計画がその項目に使う元の列（無ければ null。列を足す）。ほかの項目の列から推し量る変換（工事名から工事場所を推定するなど）は、
+ * その列に答えを書いてもらうものではないので列を足す
+ */
 function planColumns(p: FieldPlan | undefined): number[] | null {
+  if ((p?.kind === "column" || p?.kind === "columns") && INFERS.has(p.transform)) return null
   if (p?.kind === "column") return [p.column]
   if (p?.kind === "columns" && p.columns.length) return p.columns
   return null
 }
+const INFERS: ReadonlySet<string> = new Set(["ai.inferPrefecture", "ai.inferPlace"])
 
 /** 元のファイルの行か（足した行・計画のシートに無い行は、追加の確認のシートに回す） */
 const inSource = (r: KojiRow, sheets: readonly SheetGrid[], plan: Plan) => !r.key.startsWith("add-") && plan.sheets.includes(r.sheet) && sheets.some((s) => s.name === r.sheet)
