@@ -46,7 +46,7 @@ export async function listCustomers(db: Db): Promise<CustomerSummary[]> {
   return rows.map((r) => ({ ...toCustomer(r.customer), caseCount: r.caseCount }))
 }
 
-/** ほかの顧客の名前（問い合わせの文に入れない。lib/inquiry/text.ts の otherCustomerTest） */
+/** ほかの顧客の名前（問い合わせのメールの下書きに入れない。lib/inquiry/text.ts の otherCustomerTest） */
 export async function otherCustomerNames(db: Db, customerId: string): Promise<string[]> {
   const rows = await db.select({ name: csvCustomers.name }).from(csvCustomers).where(ne(csvCustomers.id, customerId))
   return rows.map((r) => r.name)

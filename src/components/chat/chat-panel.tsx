@@ -67,7 +67,7 @@ const TOOL_LABELS: Record<string, string> = {
   find_location: "工事場所を調べる",
   get_inquiries: "問い合わせを読む",
   record_answers: "顧客の回答の変更案",
-  propose_inquiry: "問い合わせの文面の案",
+  propose_inquiry: "問い合わせのメールの下書きの案",
   list_feedback: "要望の一覧を読む",
   record_feedback: "要望を残す",
 }
@@ -115,7 +115,7 @@ export type ChatPanelProps = {
   /** 今の列の対応（列の対応の変更案を「今 → 案」で出す） */
   plan: MappingPlan<KojiFieldId> | null
   /**
-   * AI に頼むとよいこと（返ってきた記入用Excelの、決まった欄で読めなかった記入〔ファイルごと。fileName はそのファイル〕と、案件を完了にしたときの振り返り）。
+   * AI に頼むとよいこと（返ってきた Excel〔印付き・記入用Excel〕の、色付きの欄で読めなかった記入〔ファイルごと。fileName はそのファイル〕と、案件を完了にしたときの振り返り）。
    * 押すと prompt を送り、送れたら onSuggestionSent。会話の最後に出す
    */
   suggestions: readonly Suggestion[]

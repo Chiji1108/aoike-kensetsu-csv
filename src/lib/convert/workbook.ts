@@ -39,7 +39,8 @@ function sheetToGrid(name: string, ws: XLSX.WorkSheet): SheetGrid {
     const text = comments.map((x) => x.t ?? "").join("\n").trim()
     return text ? [{ row: r, column: c, text }] : []
   })
-  return { name, rows, hidden: rows.map((_, r) => !!info[r]?.hidden), ...(notes.length ? { notes } : {}) }
+  const merges = (ws["!merges"] ?? []).map((m) => ({ s: { r: m.s.r, c: m.s.c }, e: { r: m.e.r, c: m.e.c } }))
+  return { name, rows, hidden: rows.map((_, r) => !!info[r]?.hidden), ...(notes.length ? { notes } : {}), ...(merges.length ? { merges } : {}) }
 }
 
 /** .xlsx / .xls / .csv を読み、シートごとの表にする。CSV は UTF-8 で読めなければ CP932 として読む */

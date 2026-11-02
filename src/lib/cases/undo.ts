@@ -57,7 +57,7 @@ export type UndoEntry = {
   /** 千円未満の扱い（この項目より前の記録には無い） */
   rounding?: Pair<Rounding>
   plan?: Pair<SavedPlan | null>
-  /** 問い合わせの文面（この項目より前の記録には無い） */
+  /** 問い合わせのメールの件名と前置き（この項目より前の記録には無い） */
   inquiryText?: InquiryTextDiff
   /** 変換の報告の聞き返しへの答え（この項目より前の記録には無い） */
   reportAnswers?: [string, string | null, string | null][]
@@ -210,7 +210,7 @@ export function undo<W extends Undoable & { undo: readonly UndoEntry[] }>(work: 
     if (present.length) plan = { ...plan, plan: { ...plan.plan, rowFilter: withExclusions(plan.plan.rowFilter, [], present) } }
   }
   const tax = revert(entry.tax, { tax: work.tax, taxBy: work.taxBy })
-  // 問い合わせの文面は質問ごと・件名・前置きごとに戻す（あとで直した文は残す）
+  // メールの件名・前置きごとに戻す（あとで直した文は残す）
   const text = entry.inquiryText ? revertInquiryText(work.inquiryText, entry.inquiryText) : { text: work.inquiryText, reverted: 0, kept: 0 }
   reverted += text.reverted
   kept += text.kept

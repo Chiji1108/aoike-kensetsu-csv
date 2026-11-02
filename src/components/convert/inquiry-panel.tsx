@@ -1,91 +1,69 @@
-import { useMemo } from "react"
-import { createClientOnlyFn } from "@tanstack/react-start"
-import { Copy, FileDown } from "lucide-react"
+import { useMemo, useState } from "react"
+import { Copy, FileDown, Loader2 } from "lucide-react"
 import { toast } from "sonner"
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import type { RowResult } from "@/lib/convert/convert"
-import { datedFileName } from "@/lib/convert/csv"
 import { withNames } from "@/lib/convert/persons"
 import { fieldLabel } from "@/lib/spec/koji-keireki"
 import { errorMessage } from "@/lib/errors"
-import { saveFile } from "@/lib/save-file"
-import { DEFAULT_INTRO, inquiryEmail } from "@/lib/inquiry/email"
+import { countsByItem, DEFAULT_INTRO, inquiryEmail } from "@/lib/inquiry/email"
 import { DraftText } from "./draft-text"
-import { editQuestion, groupCount, MAX_INTRO_LENGTH, MAX_QUESTION_LENGTH, MAX_SUBJECT_LENGTH, questionGroups, type InquiryText, type QuestionGroup } from "@/lib/inquiry/text"
-import {
-  CASE_TOPICS,
-  inquiryKey,
-  inquirySheet,
-  REASONS,
-  type AnswerReport,
-  type CellInquiry,
-  type Inquiry,
-} from "@/lib/inquiry/inquiry"
+import { MAX_INTRO_LENGTH, MAX_SUBJECT_LENGTH, type InquiryText } from "@/lib/inquiry/text"
+import { CASE_TOPICS, inquiryKey, REASONS, type AnswerReport, type CellInquiry, type Inquiry } from "@/lib/inquiry/inquiry"
+import type { AttachmentChoice } from "@/lib/inquiry/marked"
 import type { KojiFieldId } from "@/lib/spec/koji-keireki"
 
 type Row = RowResult<KojiFieldId>
 
-/** ExcelJS はブラウザでだけ読み込む（サーバーのバンドルに入れない） */
-const loadXlsxWriter = createClientOnlyFn(() => import("@/lib/inquiry/inquiry-xlsx"))
-
 /**
- * 顧客に問い合わせる: 件数・項目ごとの件数・外すチェック、質問の文（AI の案を承認したもの・職員が直したもの・決まった文）、メールの件名と本文、記入用Excel、取り込んだ回答の結果（記入された Excel はチャットの📎でアップロードする）。
- * inquiries は CSV に載せる行から集めたもの。回答の照合は記入用Excelの各行の照合用の列で行うので、どの版の記入用Excelでも取り込める。
+ * 顧客に問い合わせる: 件数・項目ごとの件数・外すチェック、メールの件名と本文、添付の Excel（印付き。書けなければ記入用Excel）、
+ * 取り込んだ回答の結果（返ってきた Excel はチャットの📎でアップロードする）。
+ * inquiries は CSV に載せる行から集めたもの。聞くことは添付の Excel の色付きのセルとメモで伝え、質問の文は書かない
  */
 export function InquiryPanel({
   inquiries,
-  outputRows,
   allRows,
-  customer,
   dismissed,
   answers,
   text,
   onText,
-  keepFile,
+  attachment,
+  onDownload,
   onToggle,
 }: {
   inquiries: Inquiry[]
-  outputRows: Row[]
   allRows: Row[]
-  customer: string
   dismissed: ReadonlySet<string>
   /** 最後に取り込んだ回答の結果 */
   answers: AnswerReport | null
-  /** 問い合わせの文面（案件の作業） */
+  /** 問い合わせのメールの件名と前置き（案件の作業） */
   text: InquiryText
   onText: (next: (prev: InquiryText) => InquiryText) => void
-  /** ダウンロードした記入用Excelを案件に残す */
-  keepFile: (name: string, bytes: Uint8Array, type: string) => void
+  /** 添付する Excel（印付きか記入用Excelか。lib/inquiry/marked.ts の chooseAttachment） */
+  attachment: AttachmentChoice
+  /** 添付の Excel を作ってダウンロードし、案件に残す（印付きを書けなければ記入用Excel） */
+  onDownload: () => Promise<void>
   onToggle: (key: string, ask: boolean) => void
 }) {
   const active = useMemo(() => inquiries.filter((q) => !dismissed.has(inquiryKey(q))), [inquiries, dismissed])
-  const activeCells = useMemo(() => active.filter((q): q is CellInquiry => q.kind === "cell"), [active])
-  const { groups, groupOf } = useMemo(() => questionGroups(active, text), [active, text])
-  const sheet = useMemo(() => inquirySheet(outputRows, activeCells, (q) => groupOf.get(inquiryKey(q))!.text), [outputRows, activeCells, groupOf])
-  const email = useMemo(() => inquiryEmail(groups, sheet, text), [groups, sheet, text])
+  const email = useMemo(() => inquiryEmail(active, attachment, text), [active, attachment, text])
   const byItem = useMemo(() => {
-    const counts = new Map<string, number>()
-    for (const q of active) {
-      const label = q.kind === "case" ? CASE_TOPICS[q.topic].label : fieldLabel(q.field)
-      counts.set(label, (counts.get(label) ?? 0) + 1)
-    }
-    return [...counts]
+    const cases = active.flatMap((q) => (q.kind === "case" ? [{ label: CASE_TOPICS[q.topic].label, count: 1 }] : []))
+    return [...cases, ...countsByItem(active)]
   }, [active])
   const rowLabel = useMemo(() => new Map(allRows.map((r) => [r.key, `${r.sheet}!${r.row + 1}`])), [allRows])
   const rowByKey = useMemo(() => new Map(allRows.map((r) => [r.key, r])), [allRows])
+  const [downloading, setDownloading] = useState(false)
 
-  async function downloadXlsx() {
+  async function download() {
+    setDownloading(true)
     try {
-      const { inquiryXlsx } = await loadXlsxWriter()
-      const bytes = await inquiryXlsx(sheet, customer)
-      const name = datedFileName("記入のお願い", customer, new Date(), "xlsx")
-      const type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-      saveFile(bytes, name, type)
-      keepFile(name, bytes, type)
+      await onDownload()
     } catch (e) {
-      toast.error(errorMessage(e, "記入用Excelを作れませんでした"))
+      toast.error(errorMessage(e, "Excel を作れませんでした"))
+    } finally {
+      setDownloading(false)
     }
   }
 
@@ -98,22 +76,21 @@ export function InquiryPanel({
     }
   }
 
-  const editGroup = (g: QuestionGroup, next: string) => onText((t) => editQuestion(t, g, next, crypto.randomUUID()))
   /** 件名・前置きは空にすると決まった文に戻す */
   const editMail = (key: "subject" | "intro", next: string) => onText((t) => ({ ...t, [key]: next.trim() || null }))
 
   return (
     <section className="mt-10 space-y-4" data-testid="inquiry-panel">
       <div>
-        <p className="mt-0.5 text-xs text-muted-foreground">載せる行で、データに無い・推定に自信がない項目です。聞かなくてよいものはチェックを外します。質問の文は直せます（空にすると決まった文）。</p>
+        <p className="mt-0.5 text-xs text-muted-foreground">載せる行で、データに無い・推定に自信がない項目です。聞かなくてよいものはチェックを外します。</p>
       </div>
 
       <div className="flex flex-wrap items-center gap-2 text-sm" data-testid="inquiry-counts">
         <span className="font-semibold">問い合わせ {active.length} 件</span>
         {inquiries.length !== active.length && <span className="text-muted-foreground">（外した {inquiries.length - active.length} 件）</span>}
-        {byItem.map(([label, n]) => (
+        {byItem.map(({ label, count }) => (
           <span key={label} className="rounded-full border bg-muted/40 px-2 py-0.5 text-xs">
-            {label} {n}件
+            {label} {count}件
           </span>
         ))}
       </div>
@@ -154,23 +131,6 @@ export function InquiryPanel({
       )}
 
       {active.length > 0 && (
-        <div className="grid gap-2" data-testid="inquiry-questions">
-          <p className="text-sm font-semibold">質問の文</p>
-          {groups.map((g) => (
-            <div key={g.id} className="flex items-start gap-2" data-testid="inquiry-question" data-by={g.by} data-group={g.id}>
-              {/* 空にすると AI・職員の文は消して決まった文に戻る（決まった文は決まった文のまま） */}
-              <DraftText multiline label="質問の文" maxLength={MAX_QUESTION_LENGTH} value={g.text} onCommit={(v) => editGroup(g, v)} />
-              <div className="grid shrink-0 justify-items-end gap-1 pt-1 text-xs text-muted-foreground">
-                <span>{groupCount(g)}件</span>
-                <Badge variant="outline">{g.by === "ai" ? "AI" : g.by === "staff" ? "直した文" : "決まった文"}</Badge>
-                {g.aiBehind && <span data-testid="ai-behind">AI の文あり（空にすると使う）</span>}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {active.length > 0 && (
         <div className="grid gap-3">
           <p className="text-sm font-semibold">メール</p>
           {/* 空にすると決まった件名・前置きに戻る */}
@@ -185,22 +145,27 @@ export function InquiryPanel({
               <Copy />
               本文をコピー
             </Button>
-            {sheet.askCount > 0 && (
-              <Button variant="outline" onClick={downloadXlsx} data-testid="download-inquiry-xlsx">
-                <FileDown />
-                記入用Excelをダウンロード（{sheet.askCount}件）
+            {attachment.askCount > 0 && (
+              <Button variant="outline" onClick={() => void download()} disabled={downloading} data-testid="download-inquiry-xlsx" data-kind={attachment.kind}>
+                {downloading ? <Loader2 className="animate-spin" /> : <FileDown />}
+                Excel をダウンロード（{attachment.kind === "marked" ? "印付き" : "記入用Excel"}・{attachment.askCount}件）
               </Button>
             )}
           </div>
+          {attachment.askCount > 0 && (
+            <p className="text-xs text-muted-foreground" data-testid="inquiry-attachment">
+              {attachment.kind === "marked" ? "顧客の元の Excel に、聞くセルの色と推定のメモを付けます。" : `${attachment.reason}、こちらの形の記入用Excelにします。`}
+            </p>
+          )}
           <Textarea readOnly className="h-64 font-mono text-xs" value={email.body} data-testid="inquiry-email" />
         </div>
       )}
 
       {allRows.length > 0 && (
         <div className="grid gap-2">
-          {/* 返ってきた記入用Excel のアップロードは、ほかのファイルと同じくチャットの📎（印で見分けて取り込む） */}
+          {/* 返ってきた Excel のアップロードは、ほかのファイルと同じくチャットの📎（印で見分けて取り込む） */}
           <p className="text-xs text-muted-foreground" data-testid="answer-upload-note">
-            記入された Excel は、チャットの📎でアップロードすると取り込みます。
+            顧客から返ってきた Excel は、チャットの📎でアップロードすると顧客の回答の変更案になります。
           </p>
           {answers && <AnswerReportView report={answers} rowLabel={rowLabel} />}
         </div>
@@ -213,27 +178,27 @@ function AnswerReportView({ report, rowLabel }: { report: AnswerReport; rowLabel
   const where = (q: CellInquiry) => `${rowLabel.get(q.rowKey) ?? q.rowKey} ${fieldLabel(q.field)}`
   const problems = [
     ...report.alsoChanged.map(
-      (c) => `${rowLabel.get(c.rowKey) ?? c.rowKey} ${fieldLabel(c.field)}: 聞いていない欄が「${c.was}」から「${c.answer}」に書き換えられていたので反映しました`,
+      (c) => `${rowLabel.get(c.rowKey) ?? c.rowKey} ${fieldLabel(c.field)}: 聞いていない欄が「${c.was}」から「${c.answer}」に書き換えられていたので変更案にしました`,
     ),
     ...report.changed.map(
       (c) => `${rowLabel.get(c.rowKey) ?? c.rowKey} ${fieldLabel(c.field)}: 送ったあとに「${withNames(c.now)}」に変わっていたため反映していません（回答「${withNames(c.answer)}」）`,
     ),
     ...report.invalid.map((c) => `${where(c.inquiry)}: ${c.message}（記入「${c.answer}」）`),
-    ...report.needsCheck.map((c) => `${rowLabel.get(c.rowKey) ?? c.rowKey} ${fieldLabel(c.field)}: 「${c.answer}」を反映しましたが要確認です（${c.message}）`),
+    ...report.needsCheck.map((c) => `${rowLabel.get(c.rowKey) ?? c.rowKey} ${fieldLabel(c.field)}: 「${c.answer}」を変更案にしましたが要確認です（${c.message}）`),
     ...report.heldBack.map(
       (c) => `${rowLabel.get(c.rowKey) ?? c.rowKey} ${fieldLabel(c.field)}: 同じ欄のもう一方を反映できなかったため、「${c.answer}」も反映していません`,
     ),
     ...report.unknownKeys.map((k) => `管理番号「${k}」の行が今のデータにありません`),
-    ...report.unreadable.map((u) => `記入用Excelの${u.line}行目${u.rowKey ? `（管理番号「${u.rowKey}」）` : ""}は取り込めませんでした（${u.reason}）`),
+    ...report.unreadable.map((u) => `${u.line}行目${u.rowKey ? `（${rowLabel.get(u.rowKey) ?? u.rowKey}）` : ""}は取り込めませんでした（${u.reason}）`),
     ...report.duplicateKeys.map((k) => `管理番号「${k}」の行が2つ以上あり、どれが回答か分からないため取り込みませんでした`),
   ]
   return (
     <div className="rounded-xl border bg-muted/30 px-4 py-3 text-sm" data-testid="answer-report">
       <p>
-        反映 <strong>{report.applied.length}</strong> 件
+        変更案 <strong>{report.applied.length}</strong> 件
         {report.alsoChanged.length > 0 && <> ／ 聞いていない欄の書き換え {report.alsoChanged.length} 件</>} ／ 未記入 {report.unanswered.length} 件
         {report.confirmed.length > 0 && <> ／ 推定のまま確認 {report.confirmed.length} 件</>}
-        {report.alreadyApplied.length > 0 && <> ／ 反映済み {report.alreadyApplied.length} 件</>}
+        {report.alreadyApplied.length > 0 && <> ／ 表にもうある {report.alreadyApplied.length} 件</>}
         {problems.length > 0 && <> ／ 要確認 {problems.length} 件</>}
       </p>
       {problems.length > 0 && (

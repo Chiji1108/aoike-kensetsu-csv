@@ -22,7 +22,7 @@ export type CaseTable = {
   rounding: Rounding
   /** 職員が外した問い合わせ（inquiryKey）。チャットの問い合わせの道具はこれを除く */
   dismissed: ReadonlySet<string>
-  /** 問い合わせの文面（承認した AI の文・職員が直した文） */
+  /** 問い合わせのメールの件名と前置き（承認した AI の文・職員が直した文） */
   inquiryText: InquiryText
 }
 

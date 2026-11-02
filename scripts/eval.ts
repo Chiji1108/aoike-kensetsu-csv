@@ -731,13 +731,13 @@ async function answersEval() {
 }
 
 /**
- * 問い合わせの文面の照合。変換の結果（新しい案件の設定のまま）に「AI で文面を作る」と同じ指示を1回送り、質問の文とメールの下書きの案を全部承認したものとする。
- * 数えるもの: 問い合わせ・AI の文で聞く問い合わせ・まとめた質問の数、決まった言葉（「データに無い」など）・事務所の中の言葉・個人名（表の人）・
- * 工事名や注文者の値・ほかの案件の顧客名が入った文。文そのものは EVAL_OUT の結果にだけ書く（顧客の情報を含みうる）
+ * 問い合わせのメールの下書きの照合。変換の結果（新しい案件の設定のまま）に「AI でメールの下書きを作る」と同じ指示を1回送り、件名と前置きの案を承認したものとする。
+ * 数えるもの: 問い合わせの数、メールの下書きが出たか、決まった言葉・事務所の中の言葉・個人名（表の人）・工事名や注文者の値・ほかの案件の顧客名が入った文。
+ * 文そのものは EVAL_OUT の結果にだけ書く（顧客の情報を含みうる）
  */
 async function inquiryEval() {
-  const { collectInquiries, inquiryKey } = await import("../src/lib/inquiry/inquiry")
-  const { INQUIRY_TEXT_PROMPT, otherCustomerTest, questionGroups } = await import("../src/lib/inquiry/text")
+  const { collectInquiries } = await import("../src/lib/inquiry/inquiry")
+  const { INQUIRY_TEXT_PROMPT, otherCustomerTest } = await import("../src/lib/inquiry/text")
   const { reviewGuard } = await import("../src/lib/chat/review")
   const table = tableOf(base)
   const view = deriveTable(table)
@@ -747,9 +747,7 @@ async function inquiryEval() {
   const run = await chatPhase({ turns: [INQUIRY_TEXT_PROMPT], table, plan: base.plan, customerItems: def!.customerRules.split("\n").map((t) => t.trim()).filter(Boolean), inquiry: { customerName: def!.customerName, otherCustomers: async () => others } })
   // 変更案は画面の承認と同じく表に重ねてある（applyChanges が問い合わせの文面にも重ねる）
   const text = run.table.inquiryText
-  const { groups } = questionGroups(inquiries, text)
-  const byAi = groups.filter((g) => g.by === "ai")
-  const texts = [text.subject ?? "", text.intro ?? "", ...text.questions.map((q) => q.text)].filter(Boolean)
+  const texts = [text.subject ?? "", text.intro ?? ""].filter(Boolean)
   const guard = reviewGuard(table)
   const otherNames = otherCustomerTest(others, def!.customerName)
   const values = [...new Set(view.output.flatMap((r) => [r.cells.workName.value, r.cells.client.value]).filter((v) => [...v].length >= 4 && !v.includes("〔")))]
@@ -761,20 +759,10 @@ async function inquiryEval() {
     fixedWords: texts.filter((t) => FIXED_WORDS.some((w) => t.includes(w))).length,
   }
   const calls = run.log.flatMap((l) => (l.calls as string[]) ?? [])
-  const outcome = {
-    inquiries: inquiries.length,
-    byAi: byAi.reduce((n, g) => n + g.inquiries.length, 0),
-    fallback: groups.filter((g) => g.by === "fixed").reduce((n, g) => n + g.inquiries.length, 0),
-    questions: text.questions.length,
-    groups: groups.length,
-    mail: text.subject !== null,
-    proposeCalls: calls.filter((c) => c === "propose_inquiry").length,
-    ...check,
-  }
-  console.log(`\n問い合わせ ${outcome.inquiries} 件: AI の文 ${outcome.byAi} 件（質問 ${outcome.questions}）・決まった文 ${outcome.fallback} 件・メール ${outcome.mail ? "あり" : "なし"}・propose_inquiry ${outcome.proposeCalls} 回`)
+  const outcome = { inquiries: inquiries.length, mail: text.subject !== null, proposeCalls: calls.filter((c) => c === "propose_inquiry").length, ...check }
+  console.log(`\n問い合わせ ${outcome.inquiries} 件: メール ${outcome.mail ? "あり" : "なし"}・propose_inquiry ${outcome.proposeCalls} 回`)
   console.log(`文の確かめ: 個人名 ${check.personal} / ほかの顧客名 ${check.otherCustomers} / 工事名・注文者の値 ${check.rowValues} / 決まった言葉・中の言葉 ${check.fixedWords}  $${run.total.toFixed(3)}`)
-  const shown = groups.map((g) => ({ by: g.by, text: g.text, count: g.inquiries.length, keys: g.inquiries.slice(0, 5).map(inquiryKey) }))
-  writeFileSync(join(OUT!, `${caseId}-inquiry.json`), JSON.stringify({ status: run.status, reason: run.reason, outcome, subject: text.subject, intro: text.intro, groups: shown, total: run.total, ms: Date.now() - t00, log: run.log }, null, 1))
+  writeFileSync(join(OUT!, `${caseId}-inquiry.json`), JSON.stringify({ status: run.status, reason: run.reason, outcome, subject: text.subject, intro: text.intro, total: run.total, ms: Date.now() - t00, log: run.log }, null, 1))
   writeSummary("inquiry", { status: run.status, ...(run.reason ? { reason: run.reason } : {}), score: compare(csvRows(run.table)), turns: run.log.length, ms: Date.now() - t00, conversionUsd: base.usd, usd: run.total })
   if (run.error) throw run.error
 }

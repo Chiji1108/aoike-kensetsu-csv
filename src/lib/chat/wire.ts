@@ -52,7 +52,7 @@ export const caseTableWireSchema: z.ZodType<CaseTableWire> = z.object({
   selection: selectionSchema,
   /** 金額の千円未満の扱い。無い形（この項目より前の画面が送る表）は切り捨て（新しい案件の初期値） */
   rounding: roundingSchema.default("floor"),
-  /** 外した問い合わせと問い合わせの文面。無い形（この項目より前の画面が送る表）は空 */
+  /** 外した問い合わせと問い合わせのメールの件名・前置き。無い形（この項目より前の画面が送る表）は空 */
   dismissed: z.array(z.string().max(300)).max(50_000).default([]),
   inquiryText: inquiryTextSchema.default(EMPTY_INQUIRY_TEXT),
 })

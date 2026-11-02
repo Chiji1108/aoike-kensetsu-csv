@@ -62,7 +62,7 @@ const requestSchema = z.object({
   carryoverHeaders: z.array(z.string()).max(2_000).optional(),
 })
 
-/** AI のコンテナに渡す案件のファイルの種類（届いたファイルと、返ってきた記入用Excel。顧客の回答を AI が読む） */
+/** AI のコンテナに渡す案件のファイルの種類（届いたファイルと、返ってきた Excel〔印付き・記入用Excel〕。顧客の回答を AI が読む） */
 const CONTAINER_KINDS: ReadonlySet<FileKind> = new Set(["source", "answer"])
 
 /** 止める印を見に行く間隔 */
@@ -149,7 +149,7 @@ async function runTurn(request: Request, caseId: string): Promise<Response> {
   const carryText = carryover && carryoverPrompt(carryover)
   const containerLive = startSession.container !== null && Date.parse(startSession.container.expiresAt) > Date.now() + CONTAINER_MARGIN_MS
 
-  // 案件の届いたファイルと返ってきた記入用Excelをコンテナに渡す。まだ上げていないものは Files API に上げ、上げるたびに記録する（途中で失敗しても、会話を終えるときに消せる）。
+  // 案件の届いたファイルと返ってきた Excel（印付き・記入用Excel）をコンテナに渡す。まだ上げていないものは Files API に上げ、上げるたびに記録する（途中で失敗しても、会話を終えるときに消せる）。
   // コンテナが新しくなるときは全部を付け直す
   let session = startSession
   const added: ChatSession["files"] = []
@@ -208,7 +208,7 @@ async function runTurn(request: Request, caseId: string): Promise<Response> {
   /** 保存した作業（振り返りと名前の確かめで、指示の間に1回だけ読む） */
   let savedCase: ReturnType<typeof readSavedCase> | undefined
   const saved = () => (savedCase ??= readSavedCase(db, caseId))
-  /** ほかの顧客の名前（問い合わせの文と要望に入れない。指示の間で1回だけ読む） */
+  /** ほかの顧客の名前（問い合わせのメールの下書きと要望に入れない。指示の間で1回だけ読む） */
   let others: Promise<readonly string[]> | undefined
   const otherCustomers = () => (others ??= store.otherCustomerNames(db, kase.customerId))
   // 注文者・工事名に AI が書いた値は、変換と同じ匿名化の AI に通す（lib/chat/turn.ts の anonymizeChanges）
@@ -429,7 +429,8 @@ export async function endChat(caseId: string): Promise<{ id: string; text: strin
 }
 
 /**
- * 画面が作った変更案を置く: 上げ直した最後の Excel の差分（lib/excel/final-import.ts。元の Excel は案件のファイル）と、
+ * 画面が作った変更案を置く: 上げ直した最後の Excel の差分（lib/excel/final-import.ts。元の Excel は案件のファイル）、
+ * 返ってきた顧客の回答（印付きの Excel・記入用Excel。lib/inquiry）と、
  * 「AI で案を出す」の案（AI の答えは画面が runAiBatch で受け取って案にする）。形は recordable で確かめる。同じ id の変更案は上書きしない。削除と重なったら置いたものを消して断る（削除のあとに R2 に残さない）
  */
 export async function recordProposal(caseId: string, record: ProposalRecord) {
@@ -439,7 +440,7 @@ export async function recordProposal(caseId: string, record: ProposalRecord) {
   const db = getDb()
   const kase = await store.getCase(db, caseId)
   if (!kase || kase.deleting) throw new Error("案件が見つかりません")
-  if (p.origin.kind === "excel") {
+  if (p.origin.kind === "excel" || p.origin.kind === "answer") {
     const file = await store.getFileRow(db, p.origin.fileId)
     if (file?.caseId !== caseId) throw new Error("変更案の元の Excel が案件にありません")
   }
@@ -454,11 +455,12 @@ export async function recordProposal(caseId: string, record: ProposalRecord) {
 }
 
 /**
- * 画面が作って置く変更案の形: 上げ直した Excel の差分（セル・載せる・足す）か、「AI で案を出す」の業種の案（業種のセルだけ。値は業種コード、承認はチャットの承認と同じ印）
+ * 画面が作って置く変更案の形: 上げ直した Excel の差分（セル・載せる・足す）、顧客の回答（顧客の答えか確認のセルだけ）か、「AI で案を出す」の業種の案（業種のセルだけ。値は業種コード、承認はチャットの承認と同じ印）
  */
 function recordable({ proposal: p, changes }: ProposalRecord) {
   const origin = p.origin
   if (origin.kind === "excel") return changes.every((c) => c.kind === "cell" || c.kind === "include" || c.kind === "add")
+  if (origin.kind === "answer") return changes.length > 0 && changes.every((c) => c.kind === "cell" && (c.edit.by === "customer" || c.edit.by === "confirmed"))
   if (origin.kind === "fix") return changes.length > 0 && changes.every((c) => c.kind === "cell" && c.field === origin.field && c.edit.by === "chat" && GYOSHU.some((g) => g.code === c.edit.value))
   return false
 }

@@ -51,13 +51,18 @@ export type CaseWork = {
   undo: UndoEntry[]
   /** 変換の報告の聞き返しへの答え（聞き返しの id → 答え。例: 金額の税込・税抜を「顧客に聞く」）。前の作業には無いので、読むときは空 */
   reportAnswers: Record<string, string>
-  /** 問い合わせの文面（承認した AI の質問の文・職員が直した文、メールの件名・前置き。lib/inquiry/text.ts）。前の作業には無いので、読むときは空 */
+  /** 問い合わせのメールの件名・前置き（承認した AI の文・職員が直した文。lib/inquiry/text.ts）。前の作業には無いので、読むときは空。前の作業の質問の文は読み捨てる */
   inquiryText: InquiryText
   /**
-   * 直した Excel の変更案で却下した項目（lib/excel/final-import.ts の changeSignature）。同じ Excel を上げ直しても出し直さない。
+   * 直した Excel・返ってきた顧客の回答の変更案で却下した項目（lib/excel/final-import.ts の changeSignature）。同じ Excel を上げ直しても出し直さない。
    * 前の作業には無いので、読むときは空
    */
   rejectedExcel: string[]
+  /**
+   * 印付きの Excel を書いてみて、元を壊さずに書けなかったこと（変換の元・印を付ける場所の印〔inquiry/marked.ts の placementKey〕・理由）。
+   * 同じ元・同じ場所なら記入用Excelにし、メールの本文も合わせる。問い合わせや列の対応が変わって場所が変われば判定し直す。前の作業には無いので、読むときは null
+   */
+  markFailure: { fileId: string; key: string; reason: string } | null
 }
 
 export type SavedPlan = { plan: MappingPlan<KojiFieldId>; source: "ai" | "rule"; notice?: string }
@@ -85,6 +90,7 @@ export const newWork = (sourceFileId: string | null = null, rule7Tax: Rule7Tax =
   reportAnswers: {},
   inquiryText: EMPTY_INQUIRY_TEXT,
   rejectedExcel: [],
+  markFailure: null,
 })
 
 // ---- 保存する形（D1 の csv_case_states.json）。Map・Set は組の配列にする ----
@@ -149,6 +155,7 @@ export const savedWorkSchema = z
   reportAnswers: z.record(z.string(), z.string().max(100)).default({}),
   inquiryText: inquiryTextSchema.default(EMPTY_INQUIRY_TEXT),
   rejectedExcel: z.array(z.string().max(4000)).max(MAX_REJECTED_EXCEL).default([]),
+  markFailure: z.object({ fileId: z.string().max(64), key: z.string().max(64), reason: z.string().max(200) }).nullable().default(null),
   })
   .transform(({ alreadyApplied, selection, ...w }) => ({ ...w, selection: legacySelection(selection, alreadyApplied) ?? "rule7" }))
 export type SavedWork = z.infer<typeof savedWorkSchema>

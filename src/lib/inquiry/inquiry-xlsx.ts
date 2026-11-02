@@ -1,14 +1,14 @@
 import ExcelJS from "exceljs"
 import { OFFICE_NAME } from "../constants"
-import { QUESTION_HEADER, type InquirySheet } from "./inquiry"
+import type { InquirySheet } from "./inquiry"
 
 /**
- * 記入用Excel。記入してほしいセルだけ塗り、他は灰色の文字にする。
+ * 記入用Excel。記入してほしいセルだけ塗り、他は灰色の文字にする。推定の確かめはセルのメモ。
  * SheetJS の無料版はセルの書式を書けないので ExcelJS を使う（ブラウザだけで読み込む。ワーカーには入れない）。
  */
 
-const ASK_FILL: ExcelJS.Fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFF2CC" } }
-const HEADER_FILL: ExcelJS.Fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFE7E6E6" } }
+export const ASK_FILL: ExcelJS.Fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFF2CC" } }
+export const HEADER_FILL: ExcelJS.Fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFE7E6E6" } }
 const GRAY = { argb: "FF808080" }
 const THIN: Partial<ExcelJS.Borders> = {
   top: { style: "thin", color: { argb: "FFBFBFBF" } },
@@ -17,14 +17,12 @@ const THIN: Partial<ExcelJS.Borders> = {
   right: { style: "thin", color: { argb: "FFBFBFBF" } },
 }
 
-export async function inquiryXlsx(sheet: InquirySheet, customer: string): Promise<Uint8Array> {
-  const wb = new ExcelJS.Workbook()
-  wb.creator = OFFICE_NAME
-  const ws = wb.addWorksheet("ご記入のお願い")
-
+/** 記入用Excelの形のシートを足す（印付きの Excel の「追加の確認」のシートも同じ形）。lead はお願いの文の1行目 */
+export function addInquiryWorksheet(wb: ExcelJS.Workbook, name: string, sheet: InquirySheet, lead: string) {
+  const ws = wb.addWorksheet(name)
   const notes = [
-    `${customer ? `${customer} 様　` : ""}工事経歴書の確認のお願い（${OFFICE_NAME}）`,
-    `色付きの欄（${sheet.askCount}件）にご記入ください。行ごとの質問は「${QUESTION_HEADER}」の欄にあります。灰色の文字の欄は確認のためのもので、記入は不要です。`,
+    lead,
+    `色付きの欄（${sheet.askCount}件）にご記入ください。灰色の文字の欄は確認のためのもので、記入は不要です。`,
     ...sheet.hints,
     "「管理番号」の列は照合に使いますので、消したり書き換えたりしないでください。分からない欄は空欄のままで構いません。",
   ]
@@ -55,10 +53,18 @@ export async function inquiryXlsx(sheet: InquirySheet, customer: string): Promis
       cell.alignment = { vertical: "top", wrapText: true }
       if (c.note) cell.note = c.note
       if (c.ask) cell.fill = ASK_FILL
-      else if (!c.question) cell.font = { color: GRAY }
+      else cell.font = { color: GRAY }
     })
   })
   ws.views = [{ state: "frozen", ySplit: headerRow, xSplit: 1 }]
+  return ws
+}
 
+export const inquiryLead = (customer: string) => `${customer ? `${customer} 様　` : ""}工事経歴書の確認のお願い（${OFFICE_NAME}）`
+
+export async function inquiryXlsx(sheet: InquirySheet, customer: string): Promise<Uint8Array> {
+  const wb = new ExcelJS.Workbook()
+  wb.creator = OFFICE_NAME
+  addInquiryWorksheet(wb, "ご記入のお願い", sheet, inquiryLead(customer))
   return new Uint8Array(await wb.xlsx.writeBuffer())
 }
