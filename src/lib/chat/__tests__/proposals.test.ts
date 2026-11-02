@@ -159,17 +159,18 @@ describe("足した行の上限", () => {
   })
 })
 
-describe("問い合わせの文面の変更案", () => {
-  test("保存の形で読み直せる。表は変えず、問い合わせの文面に重ねる", () => {
+describe("問い合わせのメールの下書きの変更案", () => {
+  test("保存の形で読み直せる。表は変えず、メールの件名と前置きに重ねる。前の形の質問の文は読めるが、承認しても何もしない", () => {
     const changes: ChatChange[] = [
-      { kind: "inquiry", id: "q1", text: "この工事は引渡日を完成日としてよいですか。", targets: [{ field: "endYm", reason: "needsReview", keys: ["s!2"] }, { topic: "tax" }] },
+      { kind: "inquiry", id: "q1", text: "この工事は引渡日を完成日としてよいですか。" },
       { kind: "inquiryMail", subject: "件名", intro: "前置き" },
     ]
     expect(z.array(chatChangeSchema).parse(JSON.parse(JSON.stringify(changes)))).toEqual(changes)
-    expect(chatChangeSchema.safeParse({ kind: "inquiry", id: "q", text: "", targets: [{ field: "endYm" }] }).success).toBe(false)
+    // 前の形の記録（targets 付き）も読む
+    expect(chatChangeSchema.parse({ kind: "inquiry", id: "q", text: "前の質問", targets: [{ field: "endYm" }] })).toEqual({ kind: "inquiry", id: "q", text: "前の質問" })
     const target = { edits: new Map(), manual: new Map(), tax: "unknown" as const, basis: {}, selection: "rule7" as const, rounding: "floor" as const, added: [], inquiryText: EMPTY_INQUIRY_TEXT }
     const applied = applyChanges(target, [], changes)
     expect({ ...applied, inquiryText: target.inquiryText }).toEqual(target)
-    expect(applied.inquiryText).toEqual({ subject: "件名", intro: "前置き", questions: [{ id: "q1", text: "この工事は引渡日を完成日としてよいですか。", targets: [{ field: "endYm", reason: "needsReview", keys: ["s!2"] }, { topic: "tax" }], by: "ai" }] })
+    expect(applied.inquiryText).toEqual({ subject: "件名", intro: "前置き" })
   })
 })

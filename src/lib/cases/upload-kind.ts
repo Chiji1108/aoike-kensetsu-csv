@@ -2,14 +2,16 @@ import type { SheetGrid } from "../convert/plan"
 import { finalCheckOf } from "../excel/final-import"
 import { CHECK_SHEET_NAME } from "../excel/final-sheet"
 import { ASKED_HEADER, MANAGEMENT_HEADER } from "../inquiry/inquiry"
+import { MARKED_SHEET_NAME } from "../inquiry/marked"
 
 /**
  * 上げたファイルの種類を、決まった印で見分ける（チャット欄の📎・画面にドラッグしたファイル）。
- * final: この画面でダウンロードした最後の Excel（照合用の隠しシート）。answer: 記入用Excel（管理番号と照合用の列）。
+ * final: この画面でダウンロードした最後の Excel（照合用の隠しシート）。marked: 印付きの Excel（顧客の元の Excel に印を付けたもの。照合用の隠しシート）。
+ * answer: 記入用Excel（管理番号と照合用の列）。
  * unlinked: 表に戻せない Excel（照合用の隠しシートの無い、最後の Excel の形の表・前の編集用の Excel）。元データと取り違えないよう、何として読むかを職員に聞く。
  * sheet: そのほかの表（元データの候補）。document: 表として読まないファイル（PDF）
  */
-export type UploadKind = "final" | "answer" | "unlinked" | "sheet" | "document"
+export type UploadKind = "final" | "marked" | "answer" | "unlinked" | "sheet" | "document"
 
 /** 前の「Excel で直す」の編集用の Excel の印（隠しシートの名前と、見出しの照合用の列） */
 const OLD_EDIT_SHEET = "照合用"
@@ -17,6 +19,8 @@ const OLD_EDIT_SHEET = "照合用"
 export function uploadKind(sheets: readonly SheetGrid[] | null): UploadKind {
   if (!sheets) return "document"
   if (finalCheckOf(sheets)) return "final"
+  // 印付きの Excel は「追加の確認」のシートに記入用Excelと同じ列を持つので、記入用Excelより先に見る
+  if (sheets.some((s) => s.name === MARKED_SHEET_NAME)) return "marked"
   if (sheets.some((s) => s.rows.some((r) => r.some((c) => c.trim() === MANAGEMENT_HEADER) && r.some((c) => c.trim() === ASKED_HEADER)))) return "answer"
   if (sheets.some((s) => s.name === OLD_EDIT_SHEET) && sheets.some((s) => s.rows[0]?.some((c) => c.trim() === OLD_EDIT_SHEET))) return "unlinked"
   const first = sheets.find((s) => s.name !== CHECK_SHEET_NAME)

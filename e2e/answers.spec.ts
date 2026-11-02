@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs"
 import ExcelJS from "exceljs"
+import * as XLSX from "xlsx"
 import { expect, test, type Page } from "@playwright/test"
 import { createUIMessageStream, createUIMessageStreamResponse } from "ai"
 import type { ChatChange, Proposal } from "../src/lib/chat/proposals"
@@ -7,12 +8,14 @@ import type { KojiFieldId } from "../src/lib/spec/koji-keireki"
 import { callsServerFn, deleteCustomer, openNewCase, openTab, showAllRows } from "./helpers"
 
 /**
- * 顧客の回答を AI で読む流れ: 記入用Excelの色付きの欄に書かず、右に足した「備考」の列に書いて返ってきた → 決まった欄の取り込みでは入らない →
+ * 顧客の回答を AI で読む流れ: 元の Excel が .xls（印を付けて返せない）なので記入用Excelにする → 色付きの欄に書かず、右に足した「備考」の列に書いて返ってきた → 決まった欄の取り込みでは入らない →
  * チャットに「AI で読む」が出る → 押すと AI に読ませる指示を送る → 顧客の回答の変更案を承認すると表に入る。
  * 列の対応は見出しからの推定にし（計画の AI を断る）、チャットは決まった返事にする（AI なしで同じ結果になる）
  */
 
 const FIXTURE = new URL("../fixtures/sample-inquiry.xlsx", import.meta.url).pathname
+/** 同じ中身の .xls（印付きにできないので記入用Excelになる） */
+const XLS = { name: "sample-inquiry.xls", mimeType: "application/vnd.ms-excel", buffer: Buffer.from(XLSX.write(XLSX.read(readFileSync(FIXTURE)), { type: "buffer", bookType: "xls" })) }
 
 const created: string[] = []
 const pageErrors: string[] = []
@@ -59,13 +62,15 @@ test("記入用Excelの色付きの欄の外に書いた答えは、チャット
   const { customer } = await openNewCase(page)
   created.push(customer)
   await page.route((url) => callsServerFn(url.href, ["planWithAi"]), (route) => route.fulfill({ status: 500, body: "計画の AI を使わない" }))
-  await page.getByTestId("chat-file-input").setInputFiles(FIXTURE)
+  await page.getByTestId("chat-file-input").setInputFiles(XLS)
   await expect(page.getByTestId("preview-table")).toBeVisible({ timeout: 180_000 })
   await expect(page.getByTestId("case-report")).toHaveAttribute("data-phase", "done")
 
   /** 返す記入用Excel（色付きの欄は空のまま、右に足した「備考」の列に答えを書く）と、答えた行・項目 */
   const answered = await test.step("記入用Excelをダウンロードし、色付きの欄でなく「備考」の列に答えを書く", async () => {
     await openTab(page, "inquiry")
+    await expect(page.getByTestId("download-inquiry-xlsx")).toHaveAttribute("data-kind", "sheet")
+    await expect(page.getByTestId("inquiry-attachment")).toHaveText("元のファイルが .xls（古い形）なので、こちらの形の記入用Excelにします。")
     const downloading = page.waitForEvent("download")
     await page.getByTestId("download-inquiry-xlsx").click()
     const wb = new ExcelJS.Workbook()
@@ -110,7 +115,7 @@ test("記入用Excelの色付きの欄の外に書いた答えは、チャット
     await suggestion("回答.xlsx").getByTestId("chat-suggestion-send").click()
     const proposal = page.getByTestId("proposal")
     await expect(proposal).toBeVisible()
-    expect(texts).toEqual(["返ってきた記入用Excel「回答.xlsx」の、色付きの欄の外（別の列・メモ・別のシート）の記入と読めなかった記入を読んで、まだ聞いている項目の答えを変更案にして"])
+    expect(texts).toEqual(["返ってきた Excel「回答.xlsx」の、色付きの欄の外（印の無いセルの書き換え・別の列・メモ・別のシート）の記入と読めなかった記入を読んで、まだ聞いている項目の答えを変更案にして"])
     await expect(suggestion("回答.xlsx")).toHaveCount(0)
     await expect(suggestion("回答2.xlsx")).toBeVisible()
     await expect(page.getByTestId("chat-input")).toHaveValue("書きかけ")
@@ -130,7 +135,7 @@ test("本物の AI: 「備考」の列に書いた工事場所を読み、Worker
   const { customer } = await openNewCase(page)
   created.push(customer)
   await page.route((url) => callsServerFn(url.href, ["planWithAi"]), (route) => route.fulfill({ status: 500, body: "計画の AI を使わない" }))
-  await page.getByTestId("chat-file-input").setInputFiles(FIXTURE)
+  await page.getByTestId("chat-file-input").setInputFiles(XLS)
   await expect(page.getByTestId("case-report")).toHaveAttribute("data-phase", "done", { timeout: 180_000 })
   await openTab(page, "inquiry")
   const downloading = page.waitForEvent("download")

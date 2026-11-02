@@ -1,6 +1,6 @@
 import { OFFICE_NAME } from "../constants"
-import { QUESTION_HEADER, type InquirySheet } from "./inquiry"
-import { groupCount, type InquiryText, type QuestionGroup } from "./text"
+import { askLabel, CASE_TOPICS, columnOf, SHEET_COLUMNS, type Inquiry, type SheetColumn } from "./inquiry"
+import type { InquiryText } from "./text"
 
 /** 宛名の差し込み位置（職員が書き換える） */
 export const ADDRESSEE_PLACEHOLDER = "〇〇〇〇"
@@ -13,21 +13,41 @@ export const DEFAULT_INTRO = [
 ].join("\n")
 
 /**
- * 顧客への問い合わせメールの件名と本文。groups は質問の文のまとまり（text.ts の questionGroups）。案件全体の質問は1つずつ、
- * セルの質問はまとまりごとに件数を添え、記入用Excelへの記入のお願いにまとめる。宛名・挨拶・記入のしかた・結びは決まった文
+ * 添付する Excel。marked: 顧客の元の Excel に色とメモを付けたもの（印付き）。sheet: こちらの形の記入用Excel。
+ * askCount は色付きのセルの数、hints は記入のしかた（inquiry.ts の answerHints）
  */
-export function inquiryEmail(groups: readonly QuestionGroup[], sheet: InquirySheet, text: Pick<InquiryText, "subject" | "intro">): { subject: string; body: string } {
+export type InquiryAttachment = { kind: "marked" | "sheet"; askCount: number; hints: readonly string[] }
+
+/** 項目ごとの、聞く工事の数（工事場所の都道府県と場所名は1件。並びは記入用Excelの欄の順） */
+export function countsByItem(inquiries: readonly Inquiry[]): { label: string; count: number }[] {
+  const rows = new Map<SheetColumn, Set<string>>()
+  for (const q of inquiries) {
+    const column = q.kind === "cell" ? columnOf(q.field) : undefined
+    if (q.kind === "cell" && column) rows.set(column, (rows.get(column) ?? new Set()).add(q.rowKey))
+  }
+  return [...rows]
+    .sort(([a], [b]) => SHEET_COLUMNS.indexOf(a) - SHEET_COLUMNS.indexOf(b))
+    .map(([column, keys]) => ({ label: askLabel(column.fields[0]!), count: keys.size }))
+}
+
+/**
+ * 顧客への問い合わせメールの件名と本文。案件全体の質問（税込・税抜）は1つずつ、セルの問い合わせは添付の Excel への記入のお願いに
+ * まとめ、項目ごとの件数だけを添える（何を書くかは色付きのセルとメモで伝わる）。宛名・挨拶・記入のしかた・結びは決まった文
+ */
+export function inquiryEmail(inquiries: readonly Inquiry[], attachment: InquiryAttachment, text: InquiryText): { subject: string; body: string } {
   const sections: string[] = []
-  const cases = groups.filter((g) => g.inquiries.some((q) => q.kind === "case"))
-  cases.forEach((g, i) => sections.push(`${i + 1}. ${g.text}`))
-  if (sheet.askCount > 0) {
-    const cells = groups.flatMap((g) => (g.inquiries.some((q) => q.kind === "cell") ? [`　・${g.text}（${groupCount(g)}件）`] : []))
+  const cases = inquiries.flatMap((q) => (q.kind === "case" ? [CASE_TOPICS[q.topic].question] : []))
+  cases.forEach((t, i) => sections.push(`${i + 1}. ${t}`))
+  if (attachment.askCount > 0) {
+    const what = attachment.kind === "marked" ? "添付のExcel（お預かりした表に色を付けたもの）" : "添付のExcel"
     sections.push(
       [
-        `${cases.length + 1}. 添付のExcelの色付きの欄にご記入ください（${sheet.askCount}件）。行ごとの質問は「${QUESTION_HEADER}」の欄にあります。`,
-        ...cells,
-        ...sheet.hints.map((h) => `　※${h}`),
-        "　※「管理番号」の列は照合に使いますので、消したり書き換えたりしないでください。",
+        `${cases.length + 1}. ${what}の色付きの欄にご記入ください（${attachment.askCount}件）。`,
+        `　${countsByItem(inquiries).map((c) => `${c.label} ${c.count}件`).join("、")}`,
+        ...attachment.hints.map((h) => `　※${h}`),
+        attachment.kind === "marked"
+          ? "　※行や列の並びは変えずに、色付きの欄に書き込んでください。"
+          : "　※「管理番号」の列は照合に使いますので、消したり書き換えたりしないでください。",
         "　※分からない欄は空欄のままで構いません。",
       ].join("\n"),
     )

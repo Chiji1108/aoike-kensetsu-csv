@@ -9,7 +9,7 @@ import { foundSchema, siteRefSchema, SOURCE_LABELS, type Found } from "../locati
 import { planPatchSchema, type PlanPatch } from "../convert/plan-patch"
 import { proposedRuleSourceSchema, ruleScopeSchema, type ProposedRuleSource, type RuleScope } from "./rules"
 import { setTax, type TaxBy } from "../cases/tax"
-import { applyInquiryChange, introSchema, questionTargetsSchema, questionTextSchema, subjectSchema, type InquiryText, type QuestionTarget } from "../inquiry/text"
+import { applyInquiryChange, introSchema, subjectSchema, type InquiryText } from "../inquiry/text"
 
 /**
  * 変更案。AI（チャット）や返ってきた Excel が出した変更は、すぐには表に入れず、職員が項目ごとかまとめて承認したものだけを
@@ -43,11 +43,8 @@ export type ChatChange =
    * 顧客の覚えた結果に足す（server/location.ts の rememberLocations。site は外に送ってよい値だけ）
    */
   | ({ kind: "location"; site: { key: string; workName: string; client: string }; rowKeys: string[] } & Found)
-  /**
-   * 顧客への問い合わせの質問の文（lib/inquiry/text.ts）。targets の問い合わせをこの文で聞く。承認すると問い合わせの文面に足す
-   * （id は案を作るときに決める質問の id。前の AI の質問の同じ対象は置き換える）
-   */
-  | { kind: "inquiry"; id: string; text: string; targets: QuestionTarget[] }
+  /** 前の形の、顧客への問い合わせの質問の文（今は質問の文を使わないので、承認しても何もしない。保存した変更案を読めるように残す） */
+  | { kind: "inquiry"; id: string; text: string }
   /** 問い合わせのメールの件名と前置き（承認すると案件の作業の問い合わせの文面にする） */
   | { kind: "inquiryMail"; subject: string; intro: string }
 
@@ -56,7 +53,13 @@ export type Decision = "pending" | "applied" | "rejected"
 /**
  * 出どころ。P3b の Excel の取り込みも同じ形で変更案を出す。fix は表の「直す」から頼んだ AI の案（「AI で案を出す」。field はどの項目の案か）
  */
-export type ProposalOrigin = { kind: "chat"; messageId: string } | { kind: "excel"; fileId: string } | { kind: "location"; runId: string } | { kind: "fix"; runId: string; field: "gyoshu" }
+export type ProposalOrigin =
+  | { kind: "chat"; messageId: string }
+  | { kind: "excel"; fileId: string }
+  /** 返ってきた顧客の回答（印付きの Excel・記入用Excel。fileId は案件に残したファイル。中身は顧客の回答のセルだけ） */
+  | { kind: "answer"; fileId: string }
+  | { kind: "location"; runId: string }
+  | { kind: "fix"; runId: string; field: "gyoshu" }
 
 /**
  * AI の聞き返し（「これでよいですか」）。答えるまで承認できない。no と答えたら全部を却下する
@@ -210,10 +213,10 @@ export function applyChanges<T extends Overlay>(target: T, edited: readonly RowR
         }
         break
       }
-      case "inquiry":
       case "inquiryMail":
         inquiryText = applyInquiryChange(inquiryText, c)
         break
+      case "inquiry":
       case "rule":
       case "plan":
         break
@@ -259,7 +262,8 @@ export const chatChangeSchema: z.ZodType<ChatChange> = z.discriminatedUnion("kin
     site: siteRefSchema,
     rowKeys: z.array(z.string()).min(1).max(20_000),
   }),
-  z.object({ kind: z.literal("inquiry"), id: z.string().min(1).max(64), text: questionTextSchema, targets: questionTargetsSchema }),
+  // 前の形の質問の文（対象は読まない）
+  z.object({ kind: z.literal("inquiry"), id: z.string().max(64), text: z.string() }),
   z.object({ kind: z.literal("inquiryMail"), subject: subjectSchema, intro: introSchema }),
 ])
 
@@ -269,6 +273,7 @@ export const proposalSchema: z.ZodType<Proposal> = (() => {
     origin: z.discriminatedUnion("kind", [
       z.object({ kind: z.literal("chat"), messageId: z.string() }),
       z.object({ kind: z.literal("excel"), fileId: z.string() }),
+      z.object({ kind: z.literal("answer"), fileId: z.string() }),
       z.object({ kind: z.literal("location"), runId: z.string() }),
       z.object({ kind: z.literal("fix"), runId: z.string(), field: z.literal("gyoshu") }),
     ]),

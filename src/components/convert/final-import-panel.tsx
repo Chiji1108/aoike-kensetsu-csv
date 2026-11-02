@@ -1,4 +1,4 @@
-import { FileSpreadsheet } from "lucide-react"
+import { FileSpreadsheet, MailOpen } from "lucide-react"
 import { ProposalCard, type ProposalActions } from "@/components/chat/proposal-card"
 import { Message, MessageContent, MessageHeader } from "@/components/ui/message"
 import type { TableView } from "@/lib/cases/view"
@@ -38,6 +38,39 @@ export function FinalImportPanel({
         </MessageHeader>
         {result && <ImportReport result={result} />}
         {view && proposals.map((p) => <ProposalCard key={p.id} proposal={p} changes={changes.get(p.id)} view={view} actions={{ ...actions, canSend: true }} busy={busy} />)}
+      </MessageContent>
+    </Message>
+  )
+}
+
+/**
+ * 返ってきた顧客の回答（印付きの Excel・記入用Excel）の変更案（チャット欄の報告の下）。承認の画面はチャットと同じで、承認は取り消せる。
+ * 読んだ結果の一覧（未記入・読めない記入など）は「問い合わせ」のタブに出す
+ */
+export function AnswerImportPanel({
+  view,
+  proposals,
+  changes,
+  actions,
+  busy,
+}: {
+  view: TableView | null
+  /** 出どころが顧客の回答の、開いているか取り消せる変更案 */
+  proposals: readonly Proposal[]
+  changes: ReadonlyMap<string, readonly ChatChange[]>
+  actions: Omit<ProposalActions, "canSend">
+  busy: boolean
+}) {
+  if (!view || !proposals.length) return null
+  return (
+    <Message data-testid="answer-import">
+      <MessageContent className="gap-2.5">
+        <MessageHeader className="px-0 text-xs text-muted-foreground">
+          <MailOpen className="size-3.5 text-sky-600" /> 顧客の回答
+        </MessageHeader>
+        {proposals.map((p) => (
+          <ProposalCard key={p.id} proposal={p} changes={changes.get(p.id)} view={view} actions={{ ...actions, canSend: true }} busy={busy} />
+        ))}
       </MessageContent>
     </Message>
   )

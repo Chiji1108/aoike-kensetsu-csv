@@ -14,7 +14,7 @@ import type { MappingPlan, SheetGrid } from "../../convert/plan"
 import type { AiBatchRequest } from "../../convert/ai-tasks"
 import { KOJI_KEIREKI, KOJI_PLAN_HINTS, type KojiFieldId } from "../../spec/koji-keireki"
 import { ADDRESSEE_PLACEHOLDER, DEFAULT_SUBJECT, inquiryEmail } from "../email"
-import { EMPTY_INQUIRY_TEXT, questionGroups } from "../text"
+import { EMPTY_INQUIRY_TEXT } from "../text"
 import { collectInquiries, inquirySheet, mergeAnswers, readAnswers, type AnswerReport, type CellInquiry, type Inquiry } from "../inquiry"
 
 const full = {
@@ -124,23 +124,12 @@ describe("記入用Excelとメール", () => {
 
   test("問い合わせのある行だけ、聞くセルだけ塗る。都道府県と場所名は1つの欄にまとめる", () => {
     const headers = sheet.columns.map((c) => c.header)
-    expect(headers).toEqual(["管理番号", "ご質問", "業種", "工事名", "注文者", "請負代金（千円）", "着工年月", "完成年月", "工事場所（都道府県・市区町村）", "配置技術者", "照合用"])
+    expect(headers).toEqual(["管理番号", "業種", "工事名", "注文者", "請負代金（千円）", "着工年月", "完成年月", "工事場所（都道府県・市区町村）", "配置技術者", "照合用"])
     expect(sheet.rows.map((r) => r.cells[0]!.value)).toEqual(["s!2", "s!3", "s!4"])
     const asked = sheet.rows.map((r) => r.cells.flatMap((c, i) => (c.ask ? [headers[i]] : [])))
     expect(asked).toEqual([["配置技術者"], ["工事場所（都道府県・市区町村）"], ["着工年月", "工事場所（都道府県・市区町村）"]])
     expect(sheet.askCount).toBe(4)
-    expect(sheet.rows[1]!.cells[8]!.value).toBe("東京都港区")
-  })
-
-  test("ご質問の欄は行の問い合わせの決まった文（同じ文は1つ）。照合用にも同じ文を残す", () => {
-    const col = sheet.columns.findIndex((c) => c.header === "ご質問")
-    expect(sheet.rows.map((r) => r.cells[col]!.value)).toEqual([
-      "資料に配置技術者が見当たりませんでした。ご記入ください。",
-      "工事場所は資料から推定しました。正しいかご確認ください。",
-      "資料に着工年月が見当たりませんでした。ご記入ください。\n資料に工事場所が見当たりませんでした。ご記入ください。",
-    ])
-    expect(sheet.rows[0]!.cells[col]!.question).toBe(true)
-    expect(JSON.parse(sheet.rows[2]!.cells.at(-1)!.value).question).toBe(sheet.rows[2]!.cells[col]!.value)
+    expect(sheet.rows[1]!.cells[7]!.value).toBe("東京都港区")
   })
 
   test("場所も技術者も聞かないなら、その列を出さない", () => {
@@ -149,14 +138,12 @@ describe("記入用Excelとメール", () => {
   })
 
   test("メールは宛名の空欄・税込税抜の質問・記入件数を含む", () => {
-    const { groups } = questionGroups(qs, EMPTY_INQUIRY_TEXT)
-    const { subject, body: mail } = inquiryEmail(groups, sheet, EMPTY_INQUIRY_TEXT)
+    const { subject, body: mail } = inquiryEmail(qs, { kind: "sheet", askCount: sheet.askCount, hints: sheet.hints }, EMPTY_INQUIRY_TEXT)
     expect(subject).toBe(DEFAULT_SUBJECT)
     expect(mail.startsWith(`${ADDRESSEE_PLACEHOLDER} 様`)).toBe(true)
     expect(mail).toContain("1. いただいた資料の請負代金は、税込・税抜のどちらでしょうか。")
     expect(mail).toContain("2. 添付のExcelの色付きの欄にご記入ください（4件）")
-    expect(mail).toContain("　・資料に配置技術者が見当たりませんでした。ご記入ください。（1件）")
-    expect(mail).toContain("　・資料に工事場所が見当たりませんでした。ご記入ください。（1件）")
+    expect(mail).toContain("　着工年月 1件、工事場所 2件、配置技術者 1件")
   })
 })
 
@@ -557,8 +544,8 @@ describe("回答の取り込み", () => {
     const qs = cellInquiries(collectInquiries([complete, guessedPlace], { tax: "included" }))
     const s = inquirySheet([complete, guessedPlace], qs)
     const col = s.columns.findIndex((c) => c.header.startsWith("工事場所"))
-    expect(s.rows[0]!.cells[col]).toEqual({ value: "東京都港区", ask: true, note: "推定です。正しいか確認し、違えば書き直してください" })
-    expect(s.hints).toContain("工事場所（都道府県・市区町村）の欄にすでに値があるものは推定です。正しいか確認し、違えば書き直してください（正しければそのままで構いません）。")
+    expect(s.rows[0]!.cells[col]).toEqual({ value: "東京都港区", ask: true, note: "推定です（「東京都港区」と読みました）。正しいか確認し、違えば書き直してください" })
+    expect(s.hints).toContain("メモの付いた欄は資料から推定した値です。正しいか確認し、違えば書き直してください（正しければそのままで構いません）。")
   })
 
   test("区切りに自信がない配置技術者は聞き、記入用Excelに区切りの確認を添える。記入は元データと同じ変換（同じ案件の表記・AI）に通す", async () => {
