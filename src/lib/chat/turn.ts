@@ -27,7 +27,7 @@ import { introSchema, otherCustomerTest, subjectSchema } from "../inquiry/text"
 import type { AddressLookup } from "../convert/address"
 import type { AiCache, AiCaller } from "../convert/pipeline"
 import type { Rounding } from "../convert/transforms"
-import { MAX_VIEW_CALLS, MAX_VIEW_PAGES, MAX_VIEW_PAGES_PER_CHAT, newViewState, viewFile, viewFileInputSchema, viewResultOutput, type FileViewer, type ViewFileInput, type ViewResult, type ViewState } from "./view-file"
+import { MAX_VIEW_CALLS, MAX_VIEW_PAGES, MAX_VIEW_PAGES_PER_CHAT, newViewState, viewFile, viewStepFinished, viewFileInputSchema, viewResultOutput, type FileViewer, type ViewFileInput, type ViewResult, type ViewState } from "./view-file"
 
 /**
  * チャットの1回の指示。AI はコード実行（Anthropic のコンテナ）で元のファイルと今の表を読み、表の変更はコードから呼ぶ道具
@@ -385,15 +385,15 @@ export function chatTools(state: TurnState) {
   const startView = () => (started ??= deriveTable(state.start))
   /** 回数の上限を数える。超えたら道具を動かさず、ここまでで返すよう伝える */
   const limited =
-    <A, R>(key: "toolCalls" | "viewCalls", max: number, refuse: (error: string) => R, run: (args: A) => R | Promise<R>) =>
-    async (args: A): Promise<R> => {
+    <A, R>(key: "toolCalls" | "viewCalls", max: number, refuse: (error: string) => R, run: (args: A, options: { abortSignal?: AbortSignal }) => R | Promise<R>) =>
+    async (args: A, options: { abortSignal?: AbortSignal } = {}): Promise<R> => {
       if (++state[key] > max)
         return refuse(
           key === "viewCalls"
             ? `この指示でファイルを見られる回数（${max}回）を使い切りました。見られなかったファイル・ページを職員に伝え、ここまでの変更案を返してください。`
             : `この指示で道具を呼べる回数（${max}回）を使い切りました。ここまでの変更案と残りを職員に返してください。`,
         )
-      return run(args)
+      return run(args, options)
     }
   const counted = <A,>(run: (args: A) => string | Promise<string>) => limited<A, string>("toolCalls", MAX_TOOL_CALLS, (error) => json({ ok: false, error }), run)
   /** ルールの案・振り返りの材料の個人名（表の人と、分かっている個人名。指示の間で1回だけ作る。集められなければ道具は理由を返す） */
@@ -450,9 +450,9 @@ export function chatTools(state: TurnState) {
         `pages は PDF のページ（1 から。例「1-5」。省くと全部。1回${MAX_VIEW_PAGES}ページ・1つの会話で${MAX_VIEW_PAGES_PER_CHAT}ページまで）。` +
         "見せたファイルは以後の往復でも読み直すので、要るページだけを見る。{ok, file, pages?:{from, to, total}} とファイルを返す（見られなければ ok:false と error）。",
       inputSchema: viewFileInputSchema,
-      execute: limited<ViewFileInput, ViewResult>("viewCalls", MAX_VIEW_CALLS, (error) => ({ ok: false, error }), async (input) => {
+      execute: limited<ViewFileInput, ViewResult>("viewCalls", MAX_VIEW_CALLS, (error) => ({ ok: false, error }), async (input, { abortSignal }) => {
         if (!state.view) return { ok: false, error: "ファイルを見る道具は今使えません" }
-        const result = await viewFile(state.view, input)
+        const result = await viewFile(state.view, input, abortSignal)
         const pages = result.ok && result.pages ? ` ${result.pages.from}-${result.pages.to}/${result.pages.total}ページ` : ""
         state.log.push({ tool: "view_file", summary: result.ok ? `${result.file}${pages}${"repeated" in result ? "（もう見せた）" : ""}` : `${input.file}: ${result.error}` })
         return result
@@ -1000,6 +1000,8 @@ export function startTurn(args: TurnArgs) {
     maxOutputTokens: 64_000,
     abortSignal: args.abortSignal,
     onStepFinish: (step) => {
+      // この往復で見せたファイルは、次の API の呼び出しで初めて送る（API が断ったら、そのファイルを見られないと覚える）
+      if (args.state.view) viewStepFinished(args.state.view)
       const meta = step.providerMetadata?.anthropic as { container?: { id: string; expiresAt: string } | null } | undefined
       args.onStep?.({ usage: step.usage, messages: step.response.messages, container: meta?.container ?? null })
     },

@@ -52,6 +52,7 @@ import { batchWithClaude, planWithClaude } from "../src/server/claude"
 import { containerName, contentTypeOf } from "../src/lib/cases/types"
 import { recordCost, type RunSummary } from "../src/lib/eval/report"
 import { localViewer } from "./view-local"
+import { viewIdle, type ViewState } from "../src/lib/chat/view-file"
 
 const ROOT = new URL("..", import.meta.url).pathname
 const apiKey = process.env.ANTHROPIC_API_KEY ?? readFileSync(join(ROOT, ".dev.vars"), "utf8").match(/ANTHROPIC_API_KEY\s*=\s*"?([^"\n]+)/)?.[1]
@@ -357,7 +358,7 @@ async function chatPhase(p: {
   let total = 0
   const log: TurnLogEntry[] = []
   const generated = new Set<string>()
-  const viewUploads: string[][] = []
+  const viewStates: ViewState[] = []
   /** 要望（本番の csv_feedback の代わり。この会話の間だけ持つ。同じ要望は件数を足す） */
   const { deps: feedback } = memoryFeedback([def!.customerName], [GLOBAL_RULES, ...p.customerItems])
   let status: RunSummary["status"] = "done"
@@ -408,7 +409,7 @@ async function chatPhase(p: {
         messages,
       )
       // view_file が上げたファイルは、落ちても消す（state.view.uploads は道具が上げるたびに足される）
-      if (state.view) viewUploads.push(state.view.uploads)
+      if (state.view) viewStates.push(state.view)
       const result = startTurn({ apiKey: apiKey!, system, messages, state, containerId })
       let reply = ""
       const calls: string[] = []
@@ -464,7 +465,9 @@ async function chatPhase(p: {
     reason = String(e).slice(0, 200)
     error = e
   } finally {
-    for (const id of [...uploads.map((u) => u.id), ...generated, ...viewUploads.flat()]) await anthropic.files.delete(id).catch((e) => console.log("delete failed", id, String(e).slice(0, 120)))
+    // view_file が上げている途中のファイルも、上げ終わるのを待って消す
+    for (const v of viewStates) await viewIdle(v)
+    for (const id of [...uploads.map((u) => u.id), ...generated, ...viewStates.flatMap((v) => v.uploads)]) await anthropic.files.delete(id).catch((e) => console.log("delete failed", id, String(e).slice(0, 120)))
   }
   return { table, plan, log, messages, total, status, reason, error }
 }

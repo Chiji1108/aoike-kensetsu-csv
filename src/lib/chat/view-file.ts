@@ -1,4 +1,4 @@
-import type { ModelMessage } from "ai"
+import { APICallError, RetryError, type ModelMessage } from "ai"
 import { PDFDocument } from "pdf-lib"
 import { z } from "zod"
 import { tryParseJson } from "../json"
@@ -18,7 +18,10 @@ export const MAX_VIEW_PAGES_PER_CHAT = 100
 export const MAX_VIEW_IMAGES_PER_CHAT = 20
 /** 1回の指示で view_file を呼べる回数（ほかの道具の回数〔MAX_TOOL_CALLS〕とは別に数える。ページの多い PDF を分けて見ても、表を直す道具まで届く） */
 export const MAX_VIEW_CALLS = 10
-/** 見せられる画像の大きさ（Claude API の上限は base64 で 10MB = 元の大きさで 7.5MB） */
+/**
+ * 見せられる画像の大きさ。Claude API の1枚の上限は base64 で 10MB（vision の docs の Request limits）で、元の大きさで 7.5MB。
+ * Files API の file_id で渡すときの1枚の上限は docs に別に書かれていない（Files API の上限は1ファイル 500MB）ので、同じ上限にする
+ */
 export const MAX_VIEW_IMAGE_BYTES = 7_500_000
 /** 見せられる画像の縦横（Claude API の上限。超えると次の往復が 400 で落ち続けるので、見せる前に断る） */
 export const MAX_VIEW_IMAGE_PX = 8000
@@ -55,7 +58,8 @@ export function parsePages(pages: string | undefined, total: number): { from: nu
  * upload はファイルを Files API に上げて id を返す（切り出したページの PDF と、拡張子と中身の形式が違う画像。上げたものは ViewState.uploads に溜め、会話を終えるときに消す）
  */
 export type FileViewer = {
-  files: readonly { name: string; original: string; id: string; size: number }[]
+  /** unviewable は前の指示で API が断ったファイルの理由（この会話ではもう見せない。unviewableAfter） */
+  files: readonly { name: string; original: string; id: string; size: number; unviewable?: string }[]
   read: (name: string) => Promise<Uint8Array | null>
   upload: (bytes: Uint8Array, name: string, mediaType: string) => Promise<string>
 }
@@ -72,10 +76,43 @@ export type ViewState = {
   uploads: string[]
   pdf: { name: string; doc: PDFDocument } | null
   totals: Map<string, number>
+  /**
+   * view_file を1つずつ順に動かす列（AI SDK は1回の返事の道具の呼び出しを並べて動かすので、同じ PDF を同時に開くとメモリを超え、
+   * 上限と「もう見せた」の確かめもすり抜ける）。最後に入れた呼び出しが終わると決まる。止めた回は、これを待ってから上げたファイルを記録する
+   */
+  queue: Promise<void>
+  /** この往復で見せたファイル（attached）と、次の API の呼び出しで初めて送るファイル（sending。API が断ったら見られないと覚える） */
+  attached: string[]
+  sending: string[]
 }
 
 export function newViewState(viewer: FileViewer, history: readonly ModelMessage[]): ViewState {
-  return { viewer, ...viewedInHistory(history), uploads: [], pdf: null, totals: new Map() }
+  return { viewer, ...viewedInHistory(history), uploads: [], pdf: null, totals: new Map(), queue: Promise.resolve(), attached: [], sending: [] }
+}
+
+/** view_file の呼び出しを全部終えるまで待つ（止めた回に、上げている途中のファイルを記録し損ねない） */
+export const viewIdle = (state: ViewState) => state.queue
+
+/** 往復が1つ終わった: その往復で見せたファイルは、次の API の呼び出しで初めて送る（前に送ったものは受け取られた） */
+export function viewStepFinished(state: ViewState) {
+  state.sending = state.attached
+  state.attached = []
+}
+
+/**
+ * 指示が失敗したとき、API が断ったとみなすファイル: 失敗が API の 400（リクエストの誤り）で、失敗した呼び出しで初めて送ったファイルがあれば、それ。
+ * 失敗した回は履歴に入らないので、覚えないと次の指示でも同じファイルを見て失敗し続ける（会話を終えると忘れる）
+ */
+export function unviewableAfter(state: ViewState, error: unknown): { name: string; reason: string }[] {
+  const rejected = badRequest(error)
+  if (!rejected || !state.sending.length) return []
+  const reason = `API がこのファイルを受け取りませんでした（${rejected.message.slice(0, 200)}）`
+  return [...new Set(state.sending)].map((name) => ({ name, reason }))
+}
+
+function badRequest(e: unknown): APICallError | null {
+  if (RetryError.isInstance(e)) return badRequest(e.lastError)
+  return APICallError.isInstance(e) && e.statusCode === 400 ? e : null
 }
 
 /** 見せた範囲の印（画像はファイル名、PDF はファイル名とページ） */
@@ -90,12 +127,31 @@ export type ViewResult =
 
 const REPEATED_NOTE = "この会話でもう見せた範囲です（会話の上の結果にあります）。見直すときはそれを読んでください"
 
-/** 見せる。見せた数・範囲・上げたファイルは state に足す */
-export async function viewFile(state: ViewState, input: ViewFileInput): Promise<ViewResult> {
+/**
+ * 見せる。見せた数・範囲・上げたファイルは state に足す。呼び出しは state.queue で1つずつ順に動かす。
+ * signal は止めた印（止めたあとに列で待っていた呼び出しは何もしない）
+ */
+export function viewFile(state: ViewState, input: ViewFileInput, signal?: AbortSignal): Promise<ViewResult> {
+  const run = state.queue.then(() => (signal?.aborted ? ({ ok: false, error: "止めました" } as const) : viewOne(state, input)))
+  state.queue = run.then(
+    () => undefined,
+    () => undefined,
+  )
+  return run
+}
+
+async function viewOne(state: ViewState, input: ViewFileInput): Promise<ViewResult> {
+  const result = await viewNow(state, input)
+  if (result.ok && !("repeated" in result)) state.attached.push(result.file)
+  return result
+}
+
+async function viewNow(state: ViewState, input: ViewFileInput): Promise<ViewResult> {
   const { viewer } = state
   const name = input.file.replace(/^.*\//, "")
   const f = viewer.files.find((x) => x.name === name)
   if (!f) return { ok: false, error: `「${input.file}」は案件のファイルにありません（${viewer.files.map((x) => x.name).join("、") || "ファイルなし"}）` }
+  if (f.unviewable) return { ok: false, file: f.name, error: `${f.unviewable}。この会話ではもう見せません。職員に伝え、作り直したファイルを付け直してもらってください` }
   const kind = viewKindOf(f.original)
   if (!kind) return { ok: false, file: f.name, error: "このファイルはそのまま見られません（見られるのは PDF と JPEG・PNG・GIF・WebP の画像）。コード実行で読んでください" }
   if (kind.kind === "heic") return { ok: false, file: f.name, error: HEIC_ERROR }
@@ -191,6 +247,12 @@ const ascii = (b: Uint8Array, i: number, n: number) => String.fromCharCode(...b.
 
 /** 画像の中身の形式と縦横（JPEG・PNG・GIF・WebP。HEIC は "heic"、読めなければ null） */
 export function imageInfo(b: Uint8Array): { mediaType: string; width: number; height: number } | "heic" | null {
+  const info = readImageHeader(b)
+  // 縦横が 0 の画像は API が受け取らない（壊れている）
+  return info && info !== "heic" && (info.width === 0 || info.height === 0) ? null : info
+}
+
+function readImageHeader(b: Uint8Array): { mediaType: string; width: number; height: number } | "heic" | null {
   if (b.length < 30) return null
   if (u32be(b, 0) === 0x89504e47 && ascii(b, 12, 4) === "IHDR") return { mediaType: "image/png", width: u32be(b, 16), height: u32be(b, 20) }
   if (ascii(b, 0, 6) === "GIF87a" || ascii(b, 0, 6) === "GIF89a") return { mediaType: "image/gif", width: u16le(b, 6), height: u16le(b, 8) }

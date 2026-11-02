@@ -14,6 +14,8 @@ export type ChatSession = {
   files: { anthropicId: string; caseFileId: string; name: string; original: string }[]
   /** コード実行が作ったファイル（Files API に残るので、会話を終えるときに消す） */
   generated: string[]
+  /** API が受け取らなかったファイル（コンテナの中の名前と理由。view_file はこの会話ではもう見せない。失敗した回は履歴に入らないので覚えておく） */
+  unviewable?: { name: string; reason: string }[]
   /** この会話の履歴に去年のコードを添えた（「去年のやり方で直す」は1つの会話で1回。履歴に同じ長い文を重ねない） */
   carryover?: true
 }
@@ -47,6 +49,7 @@ const docSchema = z.object({
       container: z.object({ id: z.string(), expiresAt: z.string() }).nullable(),
       files: z.array(z.object({ anthropicId: z.string(), caseFileId: z.string(), name: z.string(), original: z.string() })),
       generated: z.array(z.string()),
+      unviewable: z.array(z.object({ name: z.string(), reason: z.string() })).optional(),
       carryover: z.literal(true).optional(),
     })
     .nullable(),
@@ -143,12 +146,21 @@ export type TurnOutcome = { completed: ModelMessage[] | null; steps: ModelMessag
 /**
  * 指示のあとの会話。終わった回は履歴とコンテナを進める。止めた・失敗した回は履歴を変えず、この回で上げたファイルが
  * コンテナに届いていないかもしれないので、上げたものがあればコンテナを捨てる（次の指示で全部を新しいコンテナに付け直す）。
- * どちらでも、コード実行が作ったファイルと、この回で道具が上げたファイル（view_file が切り出した PDF のページ）は記録する（会話を終えるときに消す）
+ * どちらでも、コード実行が作ったファイルと、この回で道具が上げたファイル（view_file が切り出した PDF のページなど。tools.uploads）は記録する（会話を終えるときに消す）。
+ * tools.unviewable は API が受け取らなかったファイル（失敗した回で分かる。この会話ではもう見せない）
  */
-export function settleSession(session: ChatSession, outcome: TurnOutcome, uploadedThisTurn: boolean, uploadedByTools: readonly string[] = []): ChatSession {
-  const generated = [...new Set([...session.generated, ...generatedFileIds(outcome.steps), ...generatedFileIds(outcome.completed ?? []), ...uploadedByTools])]
-  if (outcome.completed) return { ...session, model: [...session.model, ...outcome.completed], container: outcome.container, generated }
-  return { ...session, container: uploadedThisTurn ? null : session.container, generated }
+export function settleSession(
+  session: ChatSession,
+  outcome: TurnOutcome,
+  uploadedThisTurn: boolean,
+  tools: { uploads?: readonly string[]; unviewable?: readonly { name: string; reason: string }[] } = {},
+): ChatSession {
+  const generated = [...new Set([...session.generated, ...generatedFileIds(outcome.steps), ...generatedFileIds(outcome.completed ?? []), ...(tools.uploads ?? [])])]
+  const known = new Set((session.unviewable ?? []).map((u) => u.name))
+  const unviewable = [...(session.unviewable ?? []), ...(tools.unviewable ?? []).filter((u) => !known.has(u.name))]
+  const base = { ...session, generated, ...(unviewable.length ? { unviewable } : {}) }
+  if (outcome.completed) return { ...base, model: [...session.model, ...outcome.completed], container: outcome.container }
+  return { ...base, container: uploadedThisTurn ? null : session.container }
 }
 
 /** コード実行の結果に出てくる、コンテナが作ったファイルの id */

@@ -6,7 +6,8 @@ import { fileAddressLookup } from "../../convert/address-file"
 import { EMPTY_INQUIRY_TEXT } from "../../inquiry/text"
 import type { ChatChange } from "../proposals"
 import { chatTools, IMAGE_READ_NOTE, MAX_TOOL_CALLS, newTurnState, withCacheBreakpoint } from "../turn"
-import { imageInfo, MAX_VIEW_CALLS, MAX_VIEW_IMAGE_BYTES, MAX_VIEW_IMAGE_PX, MAX_VIEW_IMAGES_PER_CHAT, MAX_VIEW_PAGES, MAX_VIEW_PAGES_PER_CHAT, newViewState, parsePages, viewedInHistory, viewFile, viewResultOutput, type FileViewer, type ViewResult } from "../view-file"
+import { APICallError } from "ai"
+import { imageInfo, unviewableAfter, viewIdle, viewStepFinished, MAX_VIEW_CALLS, MAX_VIEW_IMAGE_BYTES, MAX_VIEW_IMAGE_PX, MAX_VIEW_IMAGES_PER_CHAT, MAX_VIEW_PAGES, MAX_VIEW_PAGES_PER_CHAT, newViewState, parsePages, viewedInHistory, viewFile, viewResultOutput, type FileViewer, type ViewResult } from "../view-file"
 import { deriveTable } from "../../cases/view"
 import { cellFix } from "../../../components/convert/status"
 import { viewKindOf } from "../view-kind"
@@ -142,9 +143,86 @@ describe("ファイルの種類ごとの見せ方", () => {
     expect(state.images).toBe(2)
   })
 
+  test("縦横が 0 の画像は読めない画像として断る", () => {
+    expect(imageInfo(jpeg(0, 100))).toBeNull()
+    expect(imageInfo(png(100, 0))).toBeNull()
+  })
+
   test("中身が PDF でないファイルは開かずに断る", async () => {
     const { state } = viewerOf({ "file-1.pdf": jpg })
     expect(await viewFile(state, { file: "file-1.pdf" })).toMatchObject({ ok: false })
+  })
+})
+
+describe("同時の呼び出し・止めた回・API が断ったファイル", () => {
+  test("同時に呼んでも1つずつ順に動く: 同じ PDF は1回だけ開き、同じ範囲は1回だけ見せ、上限もすり抜けない", async () => {
+    const { state, uploads, reads } = viewerOf({ "file-1.pdf": await pdfOf(30), "file-2.pdf": await pdfOf(30) })
+    let open = 0
+    let most = 0
+    const read = state.viewer.read
+    state.viewer = {
+      ...state.viewer,
+      read: async (name) => {
+        most = Math.max(most, ++open)
+        await new Promise((r) => setTimeout(r, 5))
+        open--
+        return read(name)
+      },
+    }
+    const same = await Promise.all([viewFile(state, { file: "file-1.pdf", pages: "1-5" }), viewFile(state, { file: "file-1.pdf", pages: "1-5" }), viewFile(state, { file: "file-2.pdf", pages: "1-5" })])
+    expect(same.map((r) => r.ok && "repeated" in r)).toEqual([false, true, false])
+    expect(most).toBe(1)
+    expect(reads()).toBe(2)
+    expect(uploads).toHaveLength(2)
+    // 会話の上限: 残り 10 ページのところへ 10 ページを2つ同時に頼むと、1つだけ通る
+    state.pages = MAX_VIEW_PAGES_PER_CHAT - 10
+    const over = await Promise.all([viewFile(state, { file: "file-1.pdf", pages: "11-20" }), viewFile(state, { file: "file-2.pdf", pages: "11-20" })])
+    expect(over.map((r) => r.ok)).toEqual([true, false])
+    expect(state.pages).toBe(MAX_VIEW_PAGES_PER_CHAT)
+  })
+
+  test("止めたあとに列で待っていた呼び出しは何もしない。上げている途中のファイルは、待ってから記録できる", async () => {
+    const { state, uploads } = viewerOf({ "file-1.pdf": await pdfOf(30) })
+    // 1つ目が上げている途中で止める（上げ終わるのは止めたあと）
+    const gate = Promise.withResolvers<void>()
+    const started = Promise.withResolvers<void>()
+    const upload = state.viewer.upload
+    state.viewer = {
+      ...state.viewer,
+      upload: async (...args) => {
+        started.resolve()
+        await gate.promise
+        return upload(...args)
+      },
+    }
+    const abort = new AbortController()
+    const first = viewFile(state, { file: "file-1.pdf", pages: "1-2" }, abort.signal)
+    const second = viewFile(state, { file: "file-1.pdf", pages: "3-4" }, abort.signal)
+    await started.promise
+    abort.abort()
+    gate.resolve()
+    await viewIdle(state)
+    expect(await first).toMatchObject({ ok: true })
+    expect(await second).toMatchObject({ ok: false, error: "止めました" })
+    expect(state.uploads).toEqual(["file_up1"])
+    expect(uploads).toHaveLength(1)
+  })
+
+  test("API が 400 で断ったら、その呼び出しで初めて送ったファイルを見られないと覚える。覚えたファイルは理由を返す", async () => {
+    const { state } = viewerOf({ "file-1.jpg": jpg, "file-2.jpg": jpg })
+    await viewFile(state, { file: "file-1.jpg" })
+    viewStepFinished(state)
+    // file-1 を送った呼び出しは通った。次の往復で file-2 を見せた
+    await viewFile(state, { file: "file-2.jpg" })
+    viewStepFinished(state)
+    const error = new APICallError({ message: "Could not process image", url: "x", requestBodyValues: {}, statusCode: 400, isRetryable: false })
+    expect(unviewableAfter(state, error)).toEqual([{ name: "file-2.jpg", reason: expect.stringContaining("Could not process image") }])
+    expect(unviewableAfter(state, new APICallError({ message: "overloaded", url: "x", requestBodyValues: {}, statusCode: 529, isRetryable: true }))).toEqual([])
+    expect(unviewableAfter(state, new Error("止めました"))).toEqual([])
+    const next = viewerOf({ "file-2.jpg": jpg })
+    const viewer = { ...next.viewer, files: next.viewer.files.map((f) => ({ ...f, unviewable: "API がこのファイルを受け取りませんでした" })) }
+    const r = await viewFile(newViewState(viewer, []), { file: "file-2.jpg" })
+    expect(!r.ok && r.error).toContain("もう見せません")
   })
 })
 

@@ -44,7 +44,7 @@ import { personalChecker } from "./location-guard"
 import { namesOfSaved, readSavedCase } from "./case-names"
 import { guardPersonal, type Site } from "@/lib/location/sites"
 import { GYOSHU } from "@/lib/spec/code-sets"
-import type { FileViewer } from "@/lib/chat/view-file"
+import { unviewableAfter, viewIdle, type FileViewer } from "@/lib/chat/view-file"
 
 
 const requestSchema = z.object({
@@ -220,7 +220,8 @@ async function runTurn(request: Request, caseId: string): Promise<Response> {
     // 案件から消したファイルは見せない（会話の履歴にはまだあるが、元のファイルが無い）
     files: session.files.flatMap((f) => {
       const size = sizeOf.get(f.caseFileId)
-      return size === undefined ? [] : [{ name: f.name, original: f.original, id: f.anthropicId, size }]
+      const unviewable = session.unviewable?.find((u) => u.name === f.name)?.reason
+      return size === undefined ? [] : [{ name: f.name, original: f.original, id: f.anthropicId, size, ...(unviewable ? { unviewable } : {}) }]
     }),
     read: async (name) => {
       const f = session.files.find((x) => x.name === name)
@@ -317,8 +318,13 @@ async function runTurn(request: Request, caseId: string): Promise<Response> {
           putProposal: proposal && (() => putProposal(caseId, { proposal, changes: state.pending })),
           deleteProposal: () => env.FILES.delete(proposalKey(caseId, proposal!.id)),
           cleanup: () => env.FILES.delete(stopKey(caseId, turn.id)),
-          record: (ok) => {
-            const settled = settleSession(session, ok ? outcome : { ...outcome, completed: null }, added.length > 0, state.view?.uploads)
+          record: async (ok) => {
+            // 止めた回は view_file が上げている途中のことがあるので、上げ終わるのを待ってから記録する（上げたものは必ず記録して、会話を終えるときに消す）
+            if (state.view) await viewIdle(state.view)
+            const settled = settleSession(session, ok ? outcome : { ...outcome, completed: null }, added.length > 0, {
+              uploads: state.view?.uploads,
+              unviewable: state.view && failure ? unviewableAfter(state.view, failure) : [],
+            })
             // 去年のコードを添えた回が履歴に入ったら、この会話ではもう添えない
             return record(caseId, loaded, ok && outcome.completed && carryText ? { ...settled, carryover: true } : settled)
           },
